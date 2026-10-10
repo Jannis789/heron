@@ -2,7 +2,6 @@ package tui
 
 import (
 	"sync/atomic"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -55,26 +54,6 @@ func (s *Stream) Thought(text string) {
 // Tool publishes tool activity (FR-2). done clears the busy label.
 func (s *Stream) Tool(name string, done bool) {
 	s.publish(toolMsg{name: name, done: done})
-}
-
-// tickMsg re-renders the frame once per second while a turn runs, so the
-// elapsed time in the prompt box stays live.
-type tickMsg struct{}
-
-// tickInterval is how often the frame re-renders while a turn runs. It is a
-// variable so tests can shrink the wait instead of sleeping for real.
-var tickInterval = time.Second
-
-// tickWhileRunning schedules the next tick; it stops itself as soon as the
-// turn settles, so no timer outlives the turn.
-func (m Model) tickWhileRunning() tea.Cmd {
-	if !m.running {
-		return nil
-	}
-	return func() tea.Msg {
-		time.Sleep(tickInterval)
-		return tickMsg{}
-	}
 }
 
 // chunkMsg carries one piece of the in-flight answer.

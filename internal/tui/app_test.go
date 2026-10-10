@@ -3,7 +3,6 @@ package tui
 import (
 	"strings"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -21,9 +20,8 @@ func TestSendRunsInCommand(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a command on enter")
 	}
-	// Enter returns a batch (send + tick); shrink the tick and collect the
-	// reply from wherever it sits in the batch.
-	tickInterval = time.Millisecond
+	// Enter may return the send command alone or wrapped in a batch; walk
+	// whatever comes back and pick up the reply.
 	var reply replyMsg
 	var have bool
 	var walk func(c tea.Cmd)

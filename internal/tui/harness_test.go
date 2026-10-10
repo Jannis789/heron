@@ -43,10 +43,8 @@ func newRig(t *testing.T) *rig {
 	r.m = New(func(prompt string) (string, error) { return "", nil }, th, func(s string) tea.Cmd {
 		return func() tea.Msg { r.copied = append(r.copied, s); return nil }
 	})
-	// The cursor blink timer otherwise waits a real 530ms per input action,
-	// and the turn tick would sleep a full second per re-render.
+	// The cursor blink timer otherwise waits a real 530ms per input action.
 	r.m.input.Cursor.BlinkSpeed = time.Nanosecond
-	tickInterval = time.Nanosecond
 	r.size(100, 30)
 	return r
 }

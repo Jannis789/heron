@@ -23,7 +23,7 @@ func TestInputBoxIsFramedOnAllSides(t *testing.T) {
 	if !strings.HasPrefix(bottom, "└") || !(strings.HasSuffix(bottom, "┘") || strings.HasSuffix(bottom, "╯")) {
 		t.Fatalf("bottom border missing: %q", bottom)
 	}
-	if !strings.Contains(bottom, "goose * medium") {
+	if !strings.Contains(bottom, "goose · medium") {
 		t.Fatalf("model/effort missing: %q", bottom)
 	}
 }
@@ -36,14 +36,16 @@ func TestPromptBoxShowsWorkspaceTop(t *testing.T) {
 	r.contains("~/projekte/heron")
 }
 
-// TestPromptBoxRunningShowsModelAndAbort: while a turn runs, the bottom shows
-// model * effort, the elapsed state and the abort hint (FR-23/FR-7).
-func TestPromptBoxRunningShowsModelAndAbort(t *testing.T) {
+// TestPromptBoxStableWhileRunning: the bottom shows model · effort in every
+// state — no elapsed seconds, no abort hint. Ctrl+C still aborts (FR-7),
+// it just does not announce itself.
+func TestPromptBoxStableWhileRunning(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
-	r.contains("goose * medium")
-	r.contains("antwortet …")
-	r.contains("ctrl+c bricht ab")
+	r.contains("goose · medium")
+	if v := r.m.View(); strings.Contains(v, "antwortet") || strings.Contains(v, "bricht ab") {
+		t.Fatalf("running state leaked into the box: %q", v)
+	}
 }
 
 // TestPlaceholderCarriesTheHints: the static key hints live in the
