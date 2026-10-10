@@ -21,8 +21,8 @@ func main() {
 	gooseBin := flag.String("goose", "goose", "goose binary (launched with 'acp' as ACP agent)")
 	themeFile := flag.String("theme", "", "path to a theme JSON (default: embedded default.json)")
 	demo := flag.Bool("demo", false, "canned reply instead of a goose session (TUI testing)")
-	modelFlag := flag.String("model", "goose", "model label shown in the prompt box")
-	effortFlag := flag.String("effort", "medium", "effort label shown in the prompt box")
+	modelFlag := flag.String("model", "", "model label override (default: what goose reports, else \"goose\")")
+	effortFlag := flag.String("effort", "", "effort label override (default: what goose reports, else \"medium\")")
 	seedFile := flag.String("seed", "", "markdown file to seed into the chat on startup")
 	flag.Parse()
 	wd, _ := os.Getwd()
@@ -88,11 +88,30 @@ func main() {
 		OnTool:    func(name string, done bool) { stream.Tool(name, done) },
 	}
 
+	// The prompt box shows what goose really runs (ACP configOptions) —
+	// unless the user pinned a value via -model/-effort.
+	pinned := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { pinned[f.Name] = true })
+	publishModelInfo := func(s *acp.Session) {
+		mdl, eff := s.Model(), s.Effort()
+		if pinned["model"] {
+			mdl = ""
+		}
+		if pinned["effort"] {
+			eff = ""
+		}
+		if mdl == "" && eff == "" {
+			return
+		}
+		stream.Info(mdl, eff)
+	}
+
 	sender := func(prompt string) (string, error) {
 		s, err := ensureSession()
 		if err != nil {
 			return "", err
 		}
+		publishModelInfo(s)
 		return s.PromptStream(context.Background(), prompt, events)
 	}
 	if *demo {

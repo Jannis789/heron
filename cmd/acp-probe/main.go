@@ -46,14 +46,17 @@ func main() {
 	}
 	defer c.Close()
 
-	if _, err := c.Request(ctx, "initialize", map[string]any{"protocolVersion": 2, "clientInfo": map[string]any{}}); err != nil {
+	if ires, err := c.Request(ctx, "initialize", map[string]any{"protocolVersion": 2, "clientInfo": map[string]any{}}); err != nil {
 		log.Fatalf("initialize: %v", err)
+	} else {
+		fmt.Printf("[METADATA initialize] %s\n", string(ires))
 	}
 
 	sres, err := c.Request(ctx, "session/new", map[string]any{"cwd": wd, "mcpServers": map[string]any{}})
 	if err != nil {
 		log.Fatalf("session/new: %v", err)
 	}
+	fmt.Printf("[METADATA session/new] %s\n", string(sres))
 	var sn struct {
 		SessionID string `json:"sessionId"`
 	}

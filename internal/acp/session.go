@@ -12,6 +12,50 @@ import (
 type Session struct {
 	client    *Client
 	sessionID string
+	model     string // model goose runs (ACP configOptions), may be empty
+	effort    string // thinking effort (ACP configOptions), may be empty
+}
+
+// Model reports the model goose announced for this session (configOptions
+// "model"); empty when the agent does not say.
+func (s *Session) Model() string { return s.model }
+
+// Effort reports the thinking effort goose announced (configOptions
+// "thinking_effort"); empty when the agent does not say.
+func (s *Session) Effort() string { return s.effort }
+
+// sessionInfo bundles what heron reads out of the session/new response.
+type sessionInfo struct {
+	sessionID string
+	model     string
+	effort    string
+}
+
+// parseSessionInfo extracts the session id plus the config options goose
+// announces. Anything missing stays empty — schema drift cannot break
+// session creation.
+func parseSessionInfo(sres []byte) sessionInfo {
+	var si sessionInfo
+	var raw struct {
+		SessionID     string `json:"sessionId"`
+		ConfigOptions []struct {
+			ID           string `json:"id"`
+			CurrentValue string `json:"currentValue"`
+		} `json:"configOptions"`
+	}
+	if json.Unmarshal(sres, &raw) != nil {
+		return si
+	}
+	si.sessionID = raw.SessionID
+	for _, co := range raw.ConfigOptions {
+		switch co.ID {
+		case "model":
+			si.model = co.CurrentValue
+		case "thinking_effort":
+			si.effort = co.CurrentValue
+		}
+	}
+	return si
 }
 
 // Events receives incremental session updates while a prompt is in flight.
@@ -41,14 +85,12 @@ func NewSession(ctx context.Context, gooseBin, cwd string) (*Session, error) {
 		c.Close()
 		return nil, fmt.Errorf("session/new: %w", err)
 	}
-	var sn struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.Unmarshal(sres, &sn); err != nil || sn.SessionID == "" {
+	si := parseSessionInfo(sres)
+	if si.sessionID == "" {
 		c.Close()
 		return nil, fmt.Errorf("session/new parse: %v", sres)
 	}
-	return &Session{client: c, sessionID: sn.SessionID}, nil
+	return &Session{client: c, sessionID: si.sessionID, model: si.model, effort: si.effort}, nil
 }
 
 // update mirrors the session/update payload. ACP puts tool metadata directly

@@ -48,6 +48,23 @@ func TestPromptBoxStableWhileRunning(t *testing.T) {
 	}
 }
 
+// TestInfoMsgUpdatesLabels: the backend's model/effort announcement (ACP
+// configOptions) replaces the flag defaults in the bottom border.
+func TestInfoMsgUpdatesLabels(t *testing.T) {
+	r := newRig(t)
+	r.do(infoMsg{model: "glm-5.3", effort: "max"})
+	r.contains("glm-5.3 · max")
+}
+
+// TestInfoMsgKeepsFlagOverrides: empty parts of the announcement keep the
+// current labels, so a pinned -model/-effort survives.
+func TestInfoMsgKeepsFlagOverrides(t *testing.T) {
+	r := newRig(t)
+	r.m.modelLabel = "pinned-model"
+	r.do(infoMsg{effort: "high"})
+	r.contains("pinned-model · high")
+}
+
 // TestPlaceholderCarriesTheHints: the static key hints live in the
 // placeholder so the borders stay free for live information.
 func TestPlaceholderCarriesTheHints(t *testing.T) {

@@ -56,6 +56,15 @@ func (s *Stream) Tool(name string, done bool) {
 	s.publish(toolMsg{name: name, done: done})
 }
 
+// Info publishes the model/effort the backend announced (ACP configOptions)
+// once the session exists.
+func (s *Stream) Info(model, effort string) {
+	s.publish(infoMsg{model: model, effort: effort})
+}
+
+// infoMsg carries the session's real model/effort labels.
+type infoMsg struct{ model, effort string }
+
 // chunkMsg carries one piece of the in-flight answer.
 type chunkMsg struct{ text string }
 

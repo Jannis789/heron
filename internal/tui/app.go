@@ -218,6 +218,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toolStatus = msg.name
 		}
 		return m, nil
+	case infoMsg:
+		// The backend announced the real model/effort (ACP configOptions);
+		// empty parts keep the current labels (flag overrides).
+		if msg.model != "" {
+			m.modelLabel = msg.model
+		}
+		if msg.effort != "" {
+			m.effort = msg.effort
+		}
+		return m, nil
 	case plantumlDoneMsg:
 		m.chat, _ = m.chat.applyPlantUML(msg.results)
 		return m, nil
