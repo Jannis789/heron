@@ -54,7 +54,8 @@ func main() {
 
 	// stream is the bridge the backend uses to push live updates into the UI
 	// from the ACP reader goroutine (FR-2). The program attaches itself when
-	// it starts; publishing before that is a no-op.
+	// it starts; messages published before that are buffered and flushed on
+	// attach.
 	stream := &tui.Stream{}
 
 	// sess is touched by the prompt goroutine and by Ctrl+C in the event
@@ -114,8 +115,21 @@ func main() {
 		publishModelInfo(s)
 		return s.PromptStream(context.Background(), prompt, events)
 	}
+	// prewarmDone closes once the startup session attempt settled; main
+	// waits (bounded) for it before the final Close.
+	prewarmDone := make(chan struct{})
 	if *demo {
 		sender = demoStreamingSender(stream)
+	} else {
+		// Prewarm the session right after launch: the prompt box then shows
+		// the real model/effort without waiting for the first prompt.
+		// Failure is silent — the fallback labels stay.
+		go func() {
+			defer close(prewarmDone)
+			if s, err := ensureSession(); err == nil {
+				publishModelInfo(s)
+			}
+		}()
 	}
 
 	// Ctrl+C during a turn aborts it asynchronously (FR-7): we notify the
@@ -145,6 +159,12 @@ func main() {
 
 	if err := tui.RunModel(model); err != nil {
 		log.Fatal(err)
+	}
+	// If the prewarm is still mid-handshake, give it a moment so the session
+	// is closed properly instead of leaking the subprocess.
+	select {
+	case <-prewarmDone:
+	case <-time.After(2 * time.Second):
 	}
 	if s := session(); s != nil {
 		s.Close()

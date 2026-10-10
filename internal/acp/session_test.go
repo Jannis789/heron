@@ -30,6 +30,27 @@ func TestSessionPromptRealGoose(t *testing.T) {
 	t.Logf("raw answer: %q", got)
 }
 
+// TestSessionInfoRealGoose: goose must announce model and thinking effort in
+// session/new (ACP configOptions) — this is what the prompt box displays.
+func TestSessionInfoRealGoose(t *testing.T) {
+	if os.Getenv("HERON_E2E_GOOSE") != "1" {
+		t.Skip("set HERON_E2E_GOOSE=1 for a direct goose test")
+	}
+	wd, _ := os.Getwd()
+	sess, err := NewSession(context.Background(), "goose", wd)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	t.Logf("model=%q effort=%q", sess.Model(), sess.Effort())
+	if sess.Model() == "" {
+		t.Fatal("goose did not announce a model in session/new")
+	}
+	if sess.Effort() == "" {
+		t.Fatal("goose did not announce a thinking effort in session/new")
+	}
+}
+
 // TestSessionStreamRealGoose proves FR-2 end to end: chunks must reach the
 // callback while the prompt request is still in flight, not only at the end.
 func TestSessionStreamRealGoose(t *testing.T) {

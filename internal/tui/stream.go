@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"sync"
 	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,26 +16,50 @@ const StreamBlockID = 999999
 // (FR-2). The tea runtime is attached once the program starts; publishing
 // before that (or after it exited) is a no-op, never a panic.
 type Stream struct {
-	prog atomic.Pointer[tea.Program]
+	prog    atomic.Pointer[tea.Program]
+	mu      sync.Mutex
+	pending []tea.Msg // published before attach; flushed by attach
 }
 
-// attach binds the running program; called by RunModel.
+// attach binds the running program; called by RunModel. Messages published
+// before this point are flushed now, so early senders (session prewarm)
+// cannot lose their message.
 func (s *Stream) attach(p *tea.Program) {
 	if s == nil {
 		return
 	}
 	s.prog.Store(p)
+	if p == nil {
+		return
+	}
+	for _, msg := range s.takePending() {
+		p.Send(msg)
+	}
+}
+
+// takePending drains the pre-attach buffer.
+func (s *Stream) takePending() []tea.Msg {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.pending
+	s.pending = nil
+	return p
 }
 
 // publish injects a message into the runtime. Safe from any goroutine: the
-// ACP reader and the prompt cmd both call into this.
+// ACP reader and the prompt cmd both call into this. Before the program is
+// attached the message is buffered.
 func (s *Stream) publish(msg tea.Msg) {
 	if s == nil {
 		return
 	}
 	if p := s.prog.Load(); p != nil {
 		p.Send(msg)
+		return
 	}
+	s.mu.Lock()
+	s.pending = append(s.pending, msg)
+	s.mu.Unlock()
 }
 
 // Chunk publishes a piece of the streamed answer (FR-2).
