@@ -21,6 +21,8 @@ func main() {
 	gooseBin := flag.String("goose", "goose", "goose binary (launched with 'acp' as ACP agent)")
 	themeFile := flag.String("theme", "", "path to a theme JSON (default: embedded default.json)")
 	demo := flag.Bool("demo", false, "canned reply instead of a goose session (TUI testing)")
+	modelFlag := flag.String("model", "goose", "model label shown in the prompt box")
+	effortFlag := flag.String("effort", "medium", "effort label shown in the prompt box")
 	seedFile := flag.String("seed", "", "markdown file to seed into the chat on startup")
 	flag.Parse()
 	wd, _ := os.Getwd()
@@ -105,7 +107,15 @@ func main() {
 		}
 	}
 
-	model := tui.New(sender, th, copyFn).WithStream(stream).WithCancel(cancel)
+	// Shorten the home prefix for display only — the session keeps the real
+	// absolute working directory.
+	cwd := wd
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(cwd, home) {
+		cwd = "~" + strings.TrimPrefix(cwd, home)
+	}
+
+	model := tui.New(sender, th, copyFn).WithStream(stream).WithCancel(cancel).
+		WithWorkspace(cwd).WithModel(*modelFlag).WithEffort(*effortFlag)
 	if *seedFile != "" {
 		b, err := os.ReadFile(*seedFile)
 		if err != nil {

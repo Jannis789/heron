@@ -20,12 +20,38 @@ func TestInputBoxIsFramedOnAllSides(t *testing.T) {
 		t.Fatalf("top border missing: %q", lines[0])
 	}
 	bottom := stripANSI(lines[len(lines)-1])
-	if !strings.HasPrefix(bottom, "└") || !strings.HasSuffix(bottom, "┘") {
+	if !strings.HasPrefix(bottom, "└") || !(strings.HasSuffix(bottom, "┘") || strings.HasSuffix(bottom, "╯")) {
 		t.Fatalf("bottom border missing: %q", bottom)
 	}
-	if !strings.Contains(bottom, "enter sendet") {
-		t.Fatalf("send hint missing: %q", bottom)
+	if !strings.Contains(bottom, "goose * medium") {
+		t.Fatalf("model/effort missing: %q", bottom)
 	}
+}
+
+// TestPromptBoxShowsWorkspaceTop: the top border names the workspace, the
+// app name stays in the title row.
+func TestPromptBoxShowsWorkspaceTop(t *testing.T) {
+	r := newRig(t)
+	r.m.cwd = "~/projekte/heron"
+	r.contains("~/projekte/heron")
+}
+
+// TestPromptBoxRunningShowsModelAndAbort: while a turn runs, the bottom shows
+// model * effort, the elapsed state and the abort hint (FR-23/FR-7).
+func TestPromptBoxRunningShowsModelAndAbort(t *testing.T) {
+	r := newRig(t)
+	r.m.startTurn()
+	r.contains("goose * medium")
+	r.contains("antwortet …")
+	r.contains("ctrl+c bricht ab")
+}
+
+// TestPlaceholderCarriesTheHints: the static key hints live in the
+// placeholder so the borders stay free for live information.
+func TestPlaceholderCarriesTheHints(t *testing.T) {
+	r := newRig(t)
+	r.contains("enter sendet")
+	r.contains("ctrl+j")
 }
 
 // TestPromptBoxGrowsWithText: a multi-line prompt widens the box and the chat

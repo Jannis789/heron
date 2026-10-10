@@ -206,9 +206,13 @@ def main():
     ap.add_argument("--settle", type=float, default=1.0)
     ap.add_argument("--after", type=float, default=0.6)
     ap.add_argument("--raw", action="store_true")
-    a = ap.parse_args()
+    # Unknown arguments are forwarded to heron itself (e.g. -model, -effort).
+    # argparse keeps the "--" separator in the leftovers, but Go's flag
+    # package stops parsing at it — drop it.
+    a, extra = ap.parse_known_args()
+    a.extra = [x for x in extra if x != "--"]
 
-    argv = [a.bin]
+    argv = [a.bin] + a.extra
     if not a.live:
         argv.append("-demo")
     if a.seed:

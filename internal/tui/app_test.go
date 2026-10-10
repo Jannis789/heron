@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -20,7 +21,35 @@ func TestSendRunsInCommand(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a command on enter")
 	}
-	reply := cmd().(replyMsg)
+	// Enter returns a batch (send + tick); shrink the tick and collect the
+	// reply from wherever it sits in the batch.
+	tickInterval = time.Millisecond
+	var reply replyMsg
+	var have bool
+	var walk func(c tea.Cmd)
+	walk = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		msg := c()
+		if msg == nil {
+			return
+		}
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, sub := range batch {
+				walk(sub)
+			}
+			return
+		}
+		if rm, isReply := msg.(replyMsg); isReply {
+			reply = rm
+			have = true
+		}
+	}
+	walk(cmd)
+	if !have {
+		t.Fatal("expected a reply from the command")
+	}
 	if reply.err != nil {
 		t.Fatalf("reply err: %v", reply.err)
 	}

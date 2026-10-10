@@ -3,6 +3,7 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -40,11 +41,19 @@ type Model struct {
 	thinking   string  // thinking received so far
 	toolStatus string  // last tool label while the turn runs
 	showThink  bool    // thinking visible in the status line (FR-2 toggle)
+
+	// Prompt box chrome (FR-23, minimal).
+	cwd        string    // workspace shown in the top border
+	modelLabel string    // model shown in the bottom border
+	effort     string    // effort level shown next to the model
+	startedAt  time.Time // when the running turn started
 }
 
 func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Nachricht an goose …"
+	// Hints live in the placeholder: they are only useful before the first
+	// keystroke, and the borders carry the live session info instead.
+	ta.Placeholder = "Nachricht an goose …  (enter sendet · ctrl+j = neue Zeile)"
 	// The frame already marks the prompt area, so the textarea itself stays
 	// free of a line prefix — one prompt character per row reads as noise
 	// once the box grows.
@@ -67,8 +76,18 @@ func (m Model) WithStream(s *Stream) Model { m.stream = s; return m }
 // WithCancel wires the turn abort invoked by Ctrl+C while a turn runs (FR-7).
 func (m Model) WithCancel(fn func()) Model { m.cancel = fn; return m }
 
+// WithWorkspace sets the directory shown in the prompt box top border.
+func (m Model) WithWorkspace(dir string) Model { m.cwd = dir; return m }
+
+// WithModel sets the model label shown in the bottom border.
+func (m Model) WithModel(name string) Model { m.modelLabel = name; return m }
+
+// WithEffort sets the effort level shown next to the model.
+func (m Model) WithEffort(e string) Model { m.effort = e; return m }
+
 // startTurn resets the live state for a fresh prompt.
 func (m *Model) startTurn() {
+	m.startedAt = time.Now()
 	m.running = true
 	m.cancelling = false
 	m.streaming = ""
@@ -165,10 +184,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.startTurn()
 			send := m.send
-			return m, func() tea.Msg {
+			sendCmd := func() tea.Msg {
 				text, err := send(prompt)
 				return replyMsg{text: text, err: err}
 			}
+			// The tick keeps the elapsed seconds in the prompt box live.
+			return m, tea.Batch(sendCmd, m.tickWhileRunning())
 		case "up", "down", "pgup", "pgdown", "tab":
 			var cmd tea.Cmd
 			var handled bool
@@ -201,6 +222,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toolStatus = msg.name
 		}
 		return m, nil
+	case tickMsg:
+		// Re-render once per second so the elapsed time stays live.
+		return m, m.tickWhileRunning()
 	case plantumlDoneMsg:
 		m.chat, _ = m.chat.applyPlantUML(msg.results)
 		return m, nil

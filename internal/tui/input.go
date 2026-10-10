@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -63,6 +65,33 @@ func rewritePromptRow(ln string, th *render.Theme) string {
 	return strings.ReplaceAll(ln, "\x1b[40m", th.BackgroundSeq())
 }
 
+// topLabel is the workspace the session runs in — nothing else. The app name
+// already lives in the title row.
+func (m Model) topLabel() string {
+	return m.cwd
+}
+
+// stateLabel is the bottom-left footer: model and effort, plus what the
+// session is doing right now (FR-23, minimal — no token/price dump).
+func (m Model) stateLabel() string {
+	model := m.modelLabel
+	if model == "" {
+		model = "goose"
+	}
+	effort := m.effort
+	if effort == "" {
+		effort = "medium"
+	}
+	label := model + " * " + effort
+	if m.running {
+		label += " · antwortet …"
+		if !m.startedAt.IsZero() {
+			label += fmt.Sprintf(" %ds", int(time.Since(m.startedAt).Seconds()))
+		}
+	}
+	return label
+}
+
 func (m Model) inputView() string {
 	w := m.width
 	if w < 24 {
@@ -79,17 +108,17 @@ func (m Model) inputView() string {
 	fill := th.TableFill()
 	inner := w - 4
 
-	label := "nachricht"
-	if m.running {
-		label = "antwortet …"
-	}
-	labelW := runewidth.StringWidth(label)
-	dashes := w - 5 - labelW
-	if dashes < 0 {
-		dashes = 0
-	}
+	label := m.topLabel()
 	lines := make([]string, 0, 8)
-	lines = append(lines, bs.Render("┌─ "+label+" "+strings.Repeat("─", dashes)+"┐"))
+	if label == "" {
+		lines = append(lines, bs.Render("┌"+strings.Repeat("─", w-2)+"┐"))
+	} else {
+		dashes := w - 5 - runewidth.StringWidth(label)
+		if dashes < 0 {
+			dashes = 0
+		}
+		lines = append(lines, bs.Render("┌─ "+label+" "+strings.Repeat("─", dashes)+"┐"))
+	}
 
 	for _, raw := range strings.Split(m.input.View(), "\n") {
 		ln := rewritePromptRow(raw, th)
@@ -103,8 +132,22 @@ func (m Model) inputView() string {
 			fill.Render(ln+strings.Repeat(" ", gap))+" "+bs.Render("│"))
 	}
 
-	action := "ctrl+j zeile"
-	lines = append(lines, render.FooterLine(w, "enter sendet", action, lt.Render(action),
+	// The abort hint appears only while it is actually possible.
+	action := ""
+	if m.running {
+		action = "ctrl+c bricht ab"
+	}
+	if action == "" {
+		// Without an action there is no point in an empty action box.
+		labelBox := "[ " + m.stateLabel() + " ]"
+		n := w - 2 - runewidth.StringWidth(labelBox) - 1
+		if n < 0 {
+			n = 0
+		}
+		lines = append(lines, bs.Render("└─"+labelBox+strings.Repeat("─", n)+"╯"))
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines, render.FooterLine(w, m.stateLabel(), action, lt.Render(action),
 		runewidth.StringWidth(action), bs, lt, nil))
 	return strings.Join(lines, "\n")
 }

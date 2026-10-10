@@ -43,8 +43,10 @@ func newRig(t *testing.T) *rig {
 	r.m = New(func(prompt string) (string, error) { return "", nil }, th, func(s string) tea.Cmd {
 		return func() tea.Msg { r.copied = append(r.copied, s); return nil }
 	})
-	// The cursor blink timer otherwise waits a real 530ms per input action.
+	// The cursor blink timer otherwise waits a real 530ms per input action,
+	// and the turn tick would sleep a full second per re-render.
 	r.m.input.Cursor.BlinkSpeed = time.Nanosecond
+	tickInterval = time.Nanosecond
 	r.size(100, 30)
 	return r
 }
@@ -91,12 +93,24 @@ func (r *rig) exec(cmd tea.Cmd) {
 		case tea.QuitMsg:
 			r.quit = true
 			return
+		case tea.BatchMsg:
+			// A batch (send + tick) must not be fed to Update as one
+			// message; its sub-commands are the real payloads.
+			for _, sub := range m {
+				if sub != nil {
+					r.exec(sub)
+				}
+			}
+			return
 		default:
-			// The cursor blink timer (textinput -> cursor.BlinkMsg /
-			// initialBlinkMsg) reschedules itself every 530ms. Feeding it
-			// back would cascade forever, so stop before the next sleep.
-			if n := reflect.TypeOf(m); n != nil && strings.Contains(n.Name(), "Blink") {
-				return
+			// UI timers (cursor blink, turn tick) reschedule themselves.
+			// Feeding them back would cascade forever, so stop before the
+			// next sleep.
+			if n := reflect.TypeOf(m); n != nil {
+				name := strings.ToLower(n.Name())
+				if strings.Contains(name, "blink") || strings.Contains(name, "tick") {
+					return
+				}
 			}
 		}
 		r.depth++
