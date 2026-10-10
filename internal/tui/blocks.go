@@ -27,6 +27,11 @@ type Widget interface {
 	Focusable() bool
 	SetFocused(bool) Widget
 	SetHover(bool) Widget
+	SetMarked(bool) Widget
+	Marked() bool
+	// Markdown returns the raw markdown source of the block — the copy
+	// payload for selections (FR-29), never the ANSI-rendered view.
+	Markdown() string
 	Resize(width int) Widget
 	HitAction(width, x, y int) bool
 	Copy() (Widget, tea.Cmd)
@@ -64,10 +69,14 @@ func NewHeadingBlock(text string) TextBlock {
 	return b
 }
 
-// copyAction returns the plain action label and a styled variant: reversed
+// copyAction returns the plain action label and a styled variant: MARKED
+// while the block is in the selection (FR-29), COPIED after a copy, reversed
 // when focused, underlined+bold when hovered.
-func copyAction(copied, focused, hover bool) (string, string) {
+func copyAction(copied, marked, focused, hover bool) (string, string) {
 	label := "COPY"
+	if marked {
+		label = "MARKED"
+	}
 	if copied {
 		label = "COPIED"
 	}
@@ -81,9 +90,12 @@ func copyAction(copied, focused, hover bool) (string, string) {
 }
 
 // actionWidth is the display width of the current action label.
-func actionWidth(copied bool) int {
+func actionWidth(copied, marked bool) int {
 	if copied {
 		return runewidth.StringWidth("COPIED")
+	}
+	if marked {
+		return runewidth.StringWidth("MARKED")
 	}
 	return runewidth.StringWidth("COPY")
 }
@@ -92,9 +104,10 @@ func actionWidth(copied bool) int {
 
 // TextBlock is a plain, non-interactive chat message.
 type TextBlock struct {
-	id    int
-	text  string
-	style lipgloss.Style
+	id     int
+	text   string
+	style  lipgloss.Style
+	marked bool
 }
 
 func NewTextBlock(text, color string) TextBlock {
@@ -113,12 +126,29 @@ func NewUserBlock(text string) TextBlock {
 func (b TextBlock) Height(width int) int { return len(textWrapped(b.text, width)) }
 func (b TextBlock) View(width int) string {
 	lines := textWrapped(b.text, width)
+	st := b.style
+	if b.marked {
+		// Marked prose inverts instead of growing a frame, so the wrap
+		// width stays untouched (FR-29).
+		st = st.Reverse(true)
+	}
 	out := make([]string, len(lines))
 	for i, l := range lines {
-		out[i] = b.style.Render(l)
+		out[i] = st.Render(l)
 	}
 	return strings.Join(out, "\n")
 }
+
+func (b TextBlock) SetMarked(m bool) Widget {
+	nb := b
+	nb.marked = m
+	return nb
+}
+
+func (b TextBlock) Marked() bool { return b.marked }
+
+// Markdown returns the stored text — plain, without ANSI (FR-29).
+func (b TextBlock) Markdown() string { return b.text }
 func (b TextBlock) Update(msg tea.Msg) (Widget, tea.Cmd) { return b, nil }
 func (b TextBlock) Focused() bool                        { return false }
 func (b TextBlock) Focusable() bool                      { return false }
@@ -139,6 +169,7 @@ type CodeBlock struct {
 	copyFn     CopyFunc
 	focused    bool
 	copied     bool
+	marked     bool
 	hover      bool
 	// converted marks a plantuml block whose ASCII conversion was attempted:
 	// the ASCII replaced the source on success, the raw source stays on error
@@ -224,7 +255,7 @@ func (b CodeBlock) View(width int) string {
 			bs.Render("│"))
 	}
 
-	action, styled := copyAction(b.copied, b.focused, b.hover)
+	action, styled := copyAction(b.copied, b.marked, b.focused, b.hover)
 	styled = b.th.ActionStyle().Render(styled)
 	lines = append(lines, render.FooterLine(width, labelAt(len(body)), action, styled,
 		runewidth.StringWidth(action), lipgloss.NewStyle(), b.th.LabelStyle(), nil))
@@ -254,13 +285,24 @@ func (b CodeBlock) SetHover(h bool) Widget {
 	nb.hover = h
 	return nb
 }
+func (b CodeBlock) SetMarked(m bool) Widget {
+	nb := b
+	nb.marked = m
+	return nb
+}
+func (b CodeBlock) Marked() bool { return b.marked }
+
+// Markdown returns the block as a fenced markdown snippet (FR-29).
+func (b CodeBlock) Markdown() string {
+	return "```" + b.lang + "\n" + b.code + "\n```"
+}
 func (b CodeBlock) Resize(width int) Widget { return b } // lays out per View anyway
 func (b CodeBlock) HitAction(width, x, y int) bool {
 	n := b.linesAt(width)
 	if y != 1+n {
 		return false
 	}
-	start, end := render.ActionRange(width, labelAt(n), actionWidth(b.copied))
+	start, end := render.ActionRange(width, labelAt(n), actionWidth(b.copied, b.marked))
 	return x >= start && x < end
 }
 func (b CodeBlock) Copy() (Widget, tea.Cmd) {
@@ -293,6 +335,7 @@ type TableBlock struct {
 	copyFn  CopyFunc
 	focused bool
 	copied  bool
+	marked  bool
 	hover   bool
 
 	cacheW int      // width the cache was built for (0 = none)
@@ -328,7 +371,7 @@ func (b TableBlock) View(width int) string {
 	if rows < 0 {
 		rows = 0
 	}
-	action, styled := copyAction(b.copied, b.focused, b.hover)
+	action, styled := copyAction(b.copied, b.marked, b.focused, b.hover)
 	lines := append(append([]string{}, body...),
 		render.TableFooterLine(widths, rows, len(widths), b.th, action, styled, runewidth.StringWidth(action)))
 	return strings.Join(lines, "\n")
@@ -377,7 +420,7 @@ func (b TableBlock) HitAction(width, x, y int) bool {
 	if rows < 0 {
 		rows = 0
 	}
-	start, end := render.ActionRange(render.BoxWidth(widths), render.DimsLabel(rows, len(widths)), actionWidth(b.copied))
+	start, end := render.ActionRange(render.BoxWidth(widths), render.DimsLabel(rows, len(widths)), actionWidth(b.copied, b.marked))
 	return x >= start && x < end
 }
 
@@ -390,6 +433,15 @@ func (b TableBlock) Copy() (Widget, tea.Cmd) {
 	nb.copied = true
 	return nb, b.copyFn(render.TableMarkdown(b.cells))
 }
+func (b TableBlock) SetMarked(m bool) Widget {
+	nb := b
+	nb.marked = m
+	return nb
+}
+func (b TableBlock) Marked() bool { return b.marked }
+
+// Markdown returns the table as markdown source (FR-29).
+func (b TableBlock) Markdown() string { return render.TableMarkdown(b.cells) }
 
 func (b TableBlock) ID() int { return b.id }
 

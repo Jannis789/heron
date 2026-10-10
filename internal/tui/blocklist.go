@@ -20,11 +20,17 @@ type BlockList struct {
 	focus    int
 	hoverIdx int
 	follow   bool
+	// marks selects blocks for the range copy (FR-29); copyFn executes it.
+	marks  map[int]bool
+	copyFn CopyFunc
 }
 
 func NewBlockList() BlockList {
-	return BlockList{focus: -1, hoverIdx: -1, width: 100, follow: true}
+	return BlockList{focus: -1, hoverIdx: -1, width: 100, follow: true, marks: map[int]bool{}}
 }
+
+// SetCopy wires the clipboard command used by the selection copy (FR-29).
+func (l BlockList) SetCopy(fn CopyFunc) BlockList { l.copyFn = fn; return l }
 
 func (l BlockList) Empty() bool   { return len(l.items) == 0 }
 func (l BlockList) Focused() bool { return l.focus >= 0 && l.focus < len(l.items) }
@@ -221,7 +227,25 @@ func (l BlockList) handleKey(k tea.KeyMsg) (BlockList, tea.Cmd, bool) {
 			return l, cmd, true
 		}
 		return l, nil, false
+	case " ":
+		// Space marks the focused block for the selection copy (FR-29).
+		if l.Focused() {
+			return l.toggleMarkFocused(), nil, true
+		}
+		return l, nil, false
+	case "y":
+		// Yank: copy the marked selection as plain markdown (FR-29).
+		if n := l.markedCount(); n > 0 && l.copyFn != nil {
+			md := l.markedMarkdown()
+			l = l.clearMarks()
+			return l, l.copyFn(md), true
+		}
+		return l, nil, false
 	case "esc":
+		// Esc first clears the selection, then the focus.
+		if l.markedCount() > 0 {
+			return l.clearMarks(), nil, true
+		}
 		if l.Focused() {
 			return l.clearFocus(), nil, true
 		}
@@ -230,22 +254,99 @@ func (l BlockList) handleKey(k tea.KeyMsg) (BlockList, tea.Cmd, bool) {
 	return l, nil, false
 }
 
-// hitAction returns the index of the widget whose COPY action lies at (x, y);
-// y is relative to the top of the block list.
-func (l BlockList) hitAction(x, y int) (int, bool) {
+// blockAt returns the index of the widget whose rows contain (x, y) plus the
+// y coordinate relative to the block top; y is list-relative.
+func (l BlockList) blockAt(x, y int) (int, int, bool) {
 	w := l.Width()
 	y0 := 0
 	for i, it := range l.items {
 		h := it.Height(w)
 		if y >= y0 && y < y0+h {
-			if it.HitAction(w, x, y-y0) {
-				return i, true
-			}
-			return 0, false
+			return i, y - y0, true
 		}
 		y0 += h
 	}
+	return 0, 0, false
+}
+
+// hitAction returns the index of the widget whose COPY action lies at (x, y);
+// y is relative to the top of the block list.
+func (l BlockList) hitAction(x, y int) (int, bool) {
+	idx, relY, ok := l.blockAt(x, y)
+	if !ok {
+		return 0, false
+	}
+	if l.items[idx].HitAction(l.Width(), x, relY) {
+		return idx, true
+	}
 	return 0, false
+}
+
+// toggleMarkFocused flips the selection mark of the focused block (FR-29).
+func (l BlockList) toggleMarkFocused() BlockList {
+	if !l.Focused() {
+		return l
+	}
+	return l.toggleMarkIdx(l.focus)
+}
+
+// toggleMarkAt flips the selection mark of the block under (x, y) — the
+// mouse path of FR-29. The bool reports whether a mark was toggled.
+func (l BlockList) toggleMarkAt(x, y int) (BlockList, bool) {
+	idx, _, ok := l.blockAt(x, y)
+	if !ok {
+		return l, false
+	}
+	if !l.items[idx].Focusable() || l.items[idx].ID() < 1 {
+		return l, false
+	}
+	return l.toggleMarkIdx(idx), true
+}
+
+func (l BlockList) toggleMarkIdx(idx int) BlockList {
+	if l.marks == nil {
+		l.marks = map[int]bool{}
+	}
+	id := l.items[idx].ID()
+	if l.marks[id] {
+		delete(l.marks, id)
+	} else {
+		l.marks[id] = true
+	}
+	l.items[idx] = l.items[idx].SetMarked(l.marks[id])
+	return l
+}
+
+// markedCount counts the marked blocks that are still in the list.
+func (l BlockList) markedCount() int {
+	n := 0
+	for _, it := range l.items {
+		if l.marks[it.ID()] {
+			n++
+		}
+	}
+	return n
+}
+
+// markedMarkdown joins the raw markdown of the marked blocks in chat order —
+// plain markdown, never the ANSI-rendered view (FR-29).
+func (l BlockList) markedMarkdown() string {
+	parts := make([]string, 0, len(l.marks))
+	for _, it := range l.items {
+		if l.marks[it.ID()] {
+			parts = append(parts, it.Markdown())
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// clearMarks unmarks every block (FR-29).
+func (l BlockList) clearMarks() BlockList {
+	l.marks = map[int]bool{}
+	for i, it := range l.items {
+		l.items[i] = it.SetMarked(false)
+	}
+	return l
 }
 
 // setHoverAt updates the hover highlight for a mouse position.
@@ -282,6 +383,10 @@ func (l BlockList) handleMouse(msg tea.MouseMsg) (BlockList, tea.Cmd, bool) {
 			w, cmd := l.items[idx].Copy()
 			l.items[idx] = w
 			return l, cmd, true
+		}
+		// Click on a block body toggles its selection mark (FR-29).
+		if nl, toggled := l.toggleMarkAt(msg.X, l.offset+msg.Y); toggled {
+			return nl, nil, true
 		}
 	case tea.MouseButtonWheelUp:
 		l.offset--

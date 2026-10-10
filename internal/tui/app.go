@@ -64,7 +64,7 @@ func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
 	// newline signal bubbletea v1 can tell apart from Enter (keyCR).
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	ta.Focus()
-	return Model{input: ta, chat: NewBlockList(), send: send, theme: th, copyFn: copyFn}
+	return Model{input: ta, chat: NewBlockList().SetCopy(copyFn), send: send, theme: th, copyFn: copyFn}
 }
 
 // WithStream wires the live-update bridge used by the backend to push chunk,
@@ -187,6 +187,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, sendCmd
 		case "up", "down", "pgup", "pgdown", "tab":
+			var cmd tea.Cmd
+			var handled bool
+			m.chat, cmd, handled = m.chat.Update(msg)
+			if handled {
+				return m, cmd
+			}
+		case " ", "y":
+			// Selection keys (FR-29): space marks the focused block, y yanks
+			// the marked range as plain markdown. Unhandled they fall
+			// through to the input as normal typing.
 			var cmd tea.Cmd
 			var handled bool
 			m.chat, cmd, handled = m.chat.Update(msg)
