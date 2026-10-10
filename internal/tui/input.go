@@ -51,6 +51,18 @@ func (m *Model) relayout() {
 // inputView renders the prompt area: a framed box that hugs the typed text,
 // with the send hint embedded in the bottom border — the same chrome the
 // tables and code blocks use.
+// rewritePromptRow swaps the one background code the focused textarea style
+// paints its cursor line with. bubbles v1 keeps that style unexported, so it
+// cannot be themed directly — and plain ANSI black glares against the theme
+// background. Everything else (grey placeholder, lavender frame) is left as
+// the textarea produced it.
+func rewritePromptRow(ln string, th *render.Theme) string {
+	if th == nil {
+		return ln
+	}
+	return strings.ReplaceAll(ln, "\x1b[40m", th.BackgroundSeq())
+}
+
 func (m Model) inputView() string {
 	w := m.width
 	if w < 24 {
@@ -62,6 +74,9 @@ func (m Model) inputView() string {
 	// two colours and left a visible patch around the placeholder.
 	bs := th.BorderStyle()
 	lt := th.LabelStyle()
+	// The prompt row itself gets the theme background, so the box interior is
+	// filled and does not show the terminal's default background.
+	fill := th.TableFill()
 	inner := w - 4
 
 	label := "nachricht"
@@ -76,14 +91,16 @@ func (m Model) inputView() string {
 	lines := make([]string, 0, 8)
 	lines = append(lines, bs.Render("┌─ "+label+" "+strings.Repeat("─", dashes)+"┐"))
 
-	for _, ln := range strings.Split(m.input.View(), "\n") {
+	for _, raw := range strings.Split(m.input.View(), "\n") {
+		ln := rewritePromptRow(raw, th)
 		gap := inner - lipgloss.Width(ln)
 		if gap < 0 {
 			gap = 0
 		}
-		// No inner background fill: the placeholder would otherwise sit on a
-		// differently tinted patch than the rest of the screen.
-		lines = append(lines, bs.Render("│")+" "+ln+strings.Repeat(" ", gap)+" "+bs.Render("│"))
+		// One fill across content + padding keeps the background continuous
+		// instead of a seam between the text and the empty cells.
+		lines = append(lines, bs.Render("│")+" "+
+			fill.Render(ln+strings.Repeat(" ", gap))+" "+bs.Render("│"))
 	}
 
 	action := "ctrl+j zeile"
