@@ -2,3 +2,4 @@ bin/
 result
 *.test
 *.out
+.pi/

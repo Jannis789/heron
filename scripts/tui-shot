@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""tui-shot — run heron in a pty, feed keys, capture the rendered screen.
+
+Usage:
+  bin/tui-shot [--seed FILE] [--demo] [--keys "text\r"] [--out FILE]
+               [--cols N] [--rows N] [--settle S] [--raw]
+
+It boots the real binary in a pseudo-terminal (so bubbletea goes into raw
+mode and paints for real), types the key sequence, then writes the
+ANSI-stripped final screen to --out (default: stdout). This is the manual
+visual check complement to the model-level tests in internal/tui.
+"""
+import argparse, fcntl, os, pty, re, select, struct, subprocess, sys, termios, time
+
+KEYMAP = {
+    "\\r": b"\r", "\r": b"\r", "\n": b"\n", "\t": b"\t",
+    "^C": b"\x03", "esc": b"\x1b", "up": b"\x1b[A", "down": b"\x1b[B",
+    "tab": b"\t",
+}
+
+ESC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+                 r"|\x1b\[[0-9;:?]*[ -/]*[@-~]"
+                 r"|\x1b[@-Z\\-_]")
+
+def emit(keys):
+    """Translate a key script into a byte stream, expanding named keys."""
+    out = bytearray()
+    i = 0
+    names = sorted(KEYMAP, key=len, reverse=True)
+    while i < len(keys):
+        hit = None
+        for n in names:
+            if keys.startswith(n, i):
+                hit = n
+                break
+        if hit:
+            out += KEYMAP[hit]
+            i += len(hit)
+        else:
+            out += keys[i].encode()
+            i += 1
+    return bytes(out)
+
+# Capability queries a TUI sends on startup. A bare pty never answers them,
+# so the app would block on its first frame — we play the terminal here.
+REPLIES = [
+    (b"\x1b]11;?", b"\x1b]11;rgb:0000/0000/0000\x1b\\"),
+    (b"\x1b]10;?", b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\"),
+    (b"\x1b[6n",   b"\x1b[1;1R"),
+    (b"\x1b[>q",   b"\x1bP>|heron-shot/xterm-256color\x1b\\"),
+    (b"\x1b[?u",   b"\x1b[?0u"),
+    (b"\x1b[c",    b"\x1b[?1;2c"),
+]
+
+def respond(fd, data):
+    for query, answer in REPLIES:
+        if query in data:
+            try:
+                os.write(fd, answer)
+            except OSError:
+                pass
+
+def drain(fd, seconds, buf):
+    end = time.time() + seconds
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if not r:
+            continue
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            break
+        if not data:
+            break
+        buf.append(data)
+        respond(fd, data)
+    return buf
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", default="bin/heron")
+    ap.add_argument("--seed")
+    ap.add_argument("--demo", action="store_true", default=True)
+    ap.add_argument("--live", action="store_true", help="use goose instead of -demo")
+    ap.add_argument("--keys", default="")
+    ap.add_argument("--out")
+    ap.add_argument("--cols", type=int, default=100)
+    ap.add_argument("--rows", type=int, default=30)
+    ap.add_argument("--settle", type=float, default=1.0)
+    ap.add_argument("--after", type=float, default=0.6)
+    ap.add_argument("--raw", action="store_true")
+    a = ap.parse_args()
+
+    argv = [a.bin]
+    if not a.live:
+        argv.append("-demo")
+    if a.seed:
+        argv += ["-seed", a.seed]
+
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ.setdefault("TERM", "xterm-256color")
+        os.environ["COLUMNS"] = str(a.cols)
+        os.environ["LINES"] = str(a.rows)
+        try:
+            os.execvp(argv[0], argv)
+        except Exception as e:
+            sys.stderr.write(str(e))
+            os._exit(127)
+
+    fcntl.ioctl(fd, termios.TIOCSWINSZ,
+                struct.pack("HHHH", a.rows, a.cols, 0, 0))
+
+    buf = []
+    try:
+        drain(fd, a.settle, buf)
+        if a.keys:
+            os.write(fd, emit(a.keys))
+            drain(fd, a.after, buf)
+    finally:
+        try:
+            os.write(fd, b"\x03")          # Ctrl+C: clean quit
+        except OSError:
+            pass
+        drain(fd, 0.5, buf)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+
+    raw = b"".join(buf).decode("utf-8", "replace")
+    if a.raw:
+        text = raw
+    else:
+        # Alt-screen: keep the last painted frame only.
+        cut = raw.rfind("\x1b[?1049l")
+        if cut != -1:
+            raw = raw[:cut]
+        home = max(raw.rfind("\x1b[H"), raw.rfind("\x1b[2J"))
+        if home != -1:
+            raw = raw[home:]
+        text = ESC.sub("", raw)
+        text = text.replace("\x1b[0m", "")
+        # Re-flow: drop cursor-right padding sequences' leftovers
+        lines = [ln.rstrip() for ln in text.split("\n")]
+        text = "\n".join(lines).strip("\n")
+
+    if a.out:
+        with open(a.out, "w") as f:
+            f.write(text + "\n")
+        print(f"wrote {a.out} ({len(text)} bytes)")
+    else:
+        print(text)
+
+if __name__ == "__main__":
+    main()
