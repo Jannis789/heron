@@ -11,6 +11,8 @@ import (
 // a value type in the Elm sense: Update returns the next state instead of
 // mutating in place — the caller must adopt the returned BlockList.
 type BlockList struct {
+	// nextID is the last stable block number handed out (FR-3).
+	nextID   int
 	items    []Widget
 	offset   int
 	width    int
@@ -34,11 +36,60 @@ func (l BlockList) Width() int {
 }
 
 func (l BlockList) Append(items ...Widget) BlockList {
-	l.items = append(l.items, items...)
+	for _, it := range items {
+		// Copyable blocks receive a stable 1-based number (FR-3), assigned
+		// once and never changed, so keyboard copy (alt+<n>) and in-place
+		// updates (PlantUML result) can address the block.
+		if it.Focusable() && it.ID() < 1 {
+			l.nextID++
+			it = it.SetID(l.nextID)
+		}
+		l.items = append(l.items, it)
+	}
 	if l.follow {
 		l = l.ScrollEnd()
 	}
 	return l
+}
+
+// UpdateBlock replaces the widget with the given stable id and keeps its
+// focus — the in-place update path (FR-3), e.g. a PlantUML conversion result.
+func (l BlockList) UpdateBlock(id int, w Widget) (BlockList, bool) {
+	if id < 1 {
+		return l, false
+	}
+	for i, it := range l.items {
+		if it.ID() != id {
+			continue
+		}
+		w = w.SetID(id)
+		if it.Focused() {
+			w = w.SetFocused(true)
+		}
+		l.items[i] = w
+		return l, true
+	}
+	return l, false
+}
+
+// copyByID copies the block carrying the stable number n — the keyboard
+// fallback of the copy box (FR-5). Reports whether a copy was triggered.
+func (l BlockList) copyByID(n int) (BlockList, tea.Cmd, bool) {
+	if n < 1 {
+		return l, nil, false
+	}
+	for i, it := range l.items {
+		if it.ID() != n {
+			continue
+		}
+		nw, cmd := it.Copy()
+		if cmd == nil {
+			return l, nil, false
+		}
+		l.items[i] = nw
+		return l, cmd, true
+	}
+	return l, nil, false
 }
 
 // SetSize stores the viewport size and lets every widget rebuild its layout

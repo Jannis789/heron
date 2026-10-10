@@ -51,10 +51,10 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 |---|---|---|---|---|---|---|---|
 | FR-1 | F | CLI-Start + Statuszeile | M | M0 | ✅ | `goose acp` als Subprozess (stdio, JSON-RPC 2.0, ACP v2): initialize, session/new, session/prompt, session/cancel, session/close; Agent-Anfragen (permission, fs) beantworten | Handshake + session/new + session/prompt gegen echtes goose 1.53.0 verifiziert (acp-probe) |
 | FR-2 | F | Chat-Stream + Statuszeile | M | M1 | 🟡 | `agent_message_chunk` live inkrementell; `agent_thought_chunk` als Thinking; `tool_call(_update)` als Karten; plan/usage_update/session_update auswerten | interaktiver Stream ohne UI-Blockierung, Autoscroll mit einrastendem Follow |
-| FR-3 | F | Chat-Blöcke | M | M1 | 🟡 | Markdown in Blöcke zerlegen; Fenced-Code als CodeBlock (Kopfzeile + Copy-Aktion) statt glamour-Rohstrom; Rest über glamour; stabile Block-IDs | Codeblock mit Kopfzeile und COPY; neue ID pro Block |
+| FR-3 | F | Chat-Blöcke | M | M1 | ✅ | Markdown in Blöcke zerlegen; Fenced-Code als CodeBlock (Kopfzeile + Copy-Aktion); Text/Tabellen über den eigenen Renderer; stabile Block-IDs | Codeblock mit Kopfzeile und COPY; neue ID pro Block |
 | FR-4 | F | Konfig / Registrierung | M | M1 | ⬜ | erweiterbare Map `[lang] → Renderer` (copy/render-ascii/image/raw); eigene Text-Visualisierungen per Konfig ohne Kerncode-Eingriff | zusätzlicher Renderer wirkt nur über Registrierung, kein Kerncode nötig |
-| FR-5 | F | Copy je Block (Maus + `ctrl+<i>`) | M | M1 | 🟡 | OSC52 primär, Fallback wl-copy → xclip → pbcopy; Mausklick und Keyboard `ctrl+<i>`; Feedback „kopiert ✓“ | Copy lokal wie über SSH geprüft per Einfügen; kein Secret-Leak |
-| FR-6 | F | Chat-Block (PlantUML) | C | M1 | 🟡 | Sprach-Tag `plantuml` via `plantuml -ttxt` → ASCII; bei fehlendem plantuml/Fehler Roh-Text-Fallback | ASCII-Ausgabe bei vorhandenem plantuml; sauberer Fallback ohne |
+| FR-5 | F | Copy je Block (Maus + `alt+<i>`) | M | M1 | 🟡 | OSC52 primär, Fallback wl-copy → xclip → pbcopy (nicht blockierend); Mausklick und Keyboard `alt+<i>`/`ctrl+<i>`; Feedback „COPIED“ | Copy lokal wie über SSH geprüft per Einfügen; kein Secret-Leak |
+| FR-6 | F | Chat-Block (PlantUML) | C | M1 | ✅ | Sprach-Tag `plantuml` via `plantuml -ttxt` → ASCII; bei fehlendem plantuml/Fehler Roh-Text-Fallback | ASCII-Ausgabe bei vorhandenem plantuml; sauberer Fallback ohne |
 | FR-7 | F | Eingabefeld, `Ctrl+C` | M | M1 | 🟡 | textarea: Enter sendet, Shift+Enter Zeilenumbruch; einzelnes `Ctrl+C` bricht den Turn ab (session/cancel), App-Beenden separat | Senden, Umbruch, Abbruch und Beenden funktionieren; stop asynchron |
 | FR-8 | F | Chat-Fläche, Kopf-/Fusszeile | M | M1 | 🟡 | Nachrichtenliste mit Autoscroll + einrastendem Follow (Scroll/Selection pausiert), Scrollback, stabile Block-IDs, Kopf-/Fusszeile | langer Turn wird nicht abgeschnitten; Scroll bezieht sich auf stabile Blöcke |
 | FR-9 | F | Policy-Konfig (später Dialog) | S | M2 | ⬜ | Policy `allow/deny/ask` beantwortet `session/request_permission`; Tool-Aktivität live, nicht blockierend | jede Policy über Konfig wählbar; Antworten korrekt über OnRequest |
@@ -64,7 +64,7 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | FR-13 | F | Tabs / Session-Umschaltung | S | M3 | ⬜ | Zuordnung chat → sessionId, nur Delta senden; bei History-Mismatch stateless-Replay; Capability-Check `loadSession` | Fortsetzen ohne token-überdimensionierten Replay; >10 % Sonderfälle → stateless |
 | FR-14 | T | kein UI (Build) | M | M0 | ✅ | flake.nix (Overlay `pkgs.heron`, packages, devShells), nix/heron.nix buildGoModule, Makefile run/build/test/lint/tidy | `go test ./...` + `nix develop -c go build` grün; `nix build .#default` nach vendorHash |
 | FR-15 | T | kein UI (Tests/Doku) | M | M0 | ✅ | Unit-Tests je Paket, Re-Exec-Fake-Goose, Bubble-Tea-Model-Tests; Doku tech-stack/reference-book/Katalog/README | Suite grün in devShell ohne goose/Netzwerk (verifiziert) |
-| FR-16 | UX | Chat-Fläche (Fließtext) | M | M1 | 🟡 | lesbarer Absatz mit Umbruch an Terminal-Breite; Standard = System-/Terminal-Font, truecolor, Unicode korrekt (Umlaute, Box-Drawing, Emoji) | Antwort erscheint als lesbarer Absatz, keine Überläufe, System-Font ohne Konfig |
+| FR-16 | UX | Chat-Fläche (Fließtext) | M | M1 | ✅ | lesbarer Absatz mit Umbruch an Terminal-Breite; Standard = System-/Terminal-Font, truecolor, Unicode korrekt (Umlaute, Box-Drawing, Emoji) | Antwort erscheint als lesbarer Absatz, keine Überläufe, System-Font ohne Konfig |
 | FR-17 | UX | Theme / Konfig | C | später | ⬜ | Schriftart/-größe über Thema/Theme anpassbar; Default bleibt System-Font (FR-16) | Konfig wirkt auf die Textdarstellung; Default unverändert |
 | FR-18 | UX | Chat-Fläche (leer) | C | M1 | ⬜ | ASCII-Art-Grüßung, solange nichts im Chat, statt des textuellen Platzhalters; passt in die Fläche, verschwindet mit erster Nachricht | ASCII-Art bei leerem Chat erscheint, danach normaler Chat; kein Layout-Bruch |
 | FR-19 | F | Eingabefeld: `@`-Dropdown | S | M2 | ⬜ | `@` öffnet ein Datei-Popup des Arbeitsverzeichnisses; weiteres Tippen filtert, Enter fügt den Pfad ein, Esc schließt | Dropdown öffnet/filtert/fügt ein; nichts wird versehentlich gesendet |
@@ -96,8 +96,14 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | NFR-9 | UX | überall (Barrierefreiheit) | C | M4 | ⬜ | Farbe nie als einziges Medium; hoher Kontrast; umschaltbare Themes | Review mit farblosem Terminal möglich |
 | NFR-10 | UX | UI-Texte zentral | C | M4 | ⬜ | UI-Texte zentral (deutsch als Ausgangssprache; Übersetzung nachrüstbar) | Texte nicht hart über Code verstreut |
 
-**Abnahme-Übersicht (Stand 2026-10-10):** ✅ FR-1, FR-14, FR-15, NFR-2, NFR-8 · 🟡 FR-2, FR-3, FR-5,
-FR-6, FR-7, FR-8, FR-10, FR-16, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (28 offen).
+**Abnahme-Übersicht (Stand 2026-10-10):** ✅ FR-1, FR-3, FR-6, FR-14, FR-15, FR-16, NFR-2, NFR-8 ·
+🟡 FR-2, FR-5, FR-7, FR-8, FR-10, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (29 offen).
+
+**Abnahme-Hinweise (wie verifiziert):** FR-14 `nix build .#default` · FR-15/NFR-8 Suite ohne goose ·
+FR-3 Modell-Test (Kopfzeile + COPY + stabile ID, per pty-Screenshot bestätigt) · FR-6 echter
+`plantuml`-Lauf **und** Fallback ohne Binary · FR-16 Width-/Unicode-Tests · NFR-2 Cmd läuft als Goroutine.
+**FR-5 bleibt 🟡:** OSC52 + Fallback-Kette und Maus/Tastatur sind getestet (inkl. Stub-Tools, ohne das
+echte Clipboard anzusprechen) — das tatsächliche Einfügen in die Zwischenablage ist hier nicht automatisierbar.
 
 ---
 
@@ -110,7 +116,7 @@ M0 → M1 → M2 → M3 → M4 → optional; 11 × 4 + Rest 2). Ein Batch wird g
 | Batch | Fokus | Anforderungen | Ms | Status je Item |
 |---|---|---|---|---|
 | B01 | M0-Basis: Build/Test/ACP verifiziert absichern | FR-14, FR-1, FR-15, NFR-8 | M0 | ✅ ✅ ✅ ✅ |
-| B02 | M1 Render-/Copy-Kern: Codeblock, Copy-Box, PlantUML, Fließtext | FR-3, FR-5, FR-6, FR-16 | M1 | 🟡 🟡 🟡 🟡 |
+| B02 | M1 Render-/Copy-Kern: Codeblock, Copy-Box, PlantUML, Fließtext | FR-3, FR-5, FR-6, FR-16 | M1 | ✅ 🟡 ✅ ✅ |
 | B03 | M1 Streaming & Turn: inkrementell, Follow, Abbruch | FR-2, FR-7, FR-8, NFR-2 | M1 | 🟡 🟡 🟡 ✅ |
 | B04 | M1 Kern-UX: Renderer-Routing, Selection-Copy, Think-Kürzung, LED | FR-4, FR-29, FR-30, FR-35 | M1 | ⬜ ⬜ ⬜ ⬜ |
 | B05 | M1 Abschluss & Qualität: ASCII-Art, Latenz, Seams, Doku | FR-18, NFR-1, NFR-4, NFR-5 | M1 | ⬜ ⬜ 🟡 🟡 |

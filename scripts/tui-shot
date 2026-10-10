@@ -76,6 +76,123 @@ def drain(fd, seconds, buf):
         respond(fd, data)
     return buf
 
+class Screen:
+    """Minimal terminal emulator — enough for what bubbletea emits."""
+
+    def __init__(self, rows, cols):
+        self.rows, self.cols = rows, cols
+        self.g = [[" "] * cols for _ in range(rows)]
+        self.r = self.c = 0
+        self.pending = False   # deferred autowrap, as in a real terminal
+
+    def clear(self):
+        for y in range(self.rows):
+            for x in range(self.cols):
+                self.g[y][x] = " "
+
+    def put(self, ch):
+        if self.pending:
+            # Deferred wrap: a real terminal stays on the last cell until the
+            # next character arrives. Wrapping eagerly shifts every following
+            # line, because bubbletea tracks its own cursor position.
+            self.pending = False
+            self.c = 0
+            self.r = min(self.r + 1, self.rows - 1)
+        if 0 <= self.r < self.rows and 0 <= self.c < self.cols:
+            self.g[self.r][self.c] = ch
+        if self.c >= self.cols - 1:
+            self.c = self.cols - 1
+            self.pending = True
+        else:
+            self.c += 1
+
+    def erase(self, start, end):
+        for x in range(max(0, start), min(self.cols, end)):
+            self.g[self.r][x] = " "
+
+    def render(self):
+        return "\n".join("".join(row).rstrip() for row in self.g)
+
+
+CSI_RE = re.compile(r"\x1b\[([0-9;:?]*)([@-~])")
+
+
+def handle_csi(scr, params, final):
+    if final in ("H", "f", "A", "B", "C", "D", "E", "F", "G"):
+        scr.pending = False     # an explicit move cancels a pending wrap
+    ps = [int(x) for x in params.split(";") if x.isdigit()]
+
+    def p(i, default=0):
+        return ps[i] if len(ps) > i else default
+
+    if final in ("H", "f"):
+        scr.r = min(max(p(0, 1) - 1, 0), scr.rows - 1)
+        scr.c = min(max(p(1, 1) - 1, 0), scr.cols - 1)
+    elif final == "J":
+        if p(0) in (2, 3):
+            scr.clear()
+        elif p(0) == 0:
+            scr.erase(scr.c, scr.cols)
+            for y in range(scr.r + 1, scr.rows):
+                for x in range(scr.cols):
+                    scr.g[y][x] = " "
+    elif final == "K":
+        mode = p(0)
+        if mode == 0:
+            scr.erase(scr.c, scr.cols)
+        elif mode == 1:
+            scr.erase(0, scr.c + 1)
+        else:
+            scr.erase(0, scr.cols)
+    elif final == "A":
+        scr.r = max(0, scr.r - p(0, 1))
+    elif final == "B":
+        scr.r = min(scr.rows - 1, scr.r + p(0, 1))
+    elif final == "C":
+        scr.c = min(scr.cols - 1, scr.c + p(0, 1))
+    elif final == "D":
+        scr.c = max(0, scr.c - p(0, 1))
+    elif final == "G":
+        scr.c = min(scr.cols - 1, max(0, p(0, 1) - 1))
+
+
+def feed(scr, data):
+    """Replay a captured byte stream onto the screen."""
+    i, n = 0, len(data)
+    while i < n:
+        ch = data[i]
+        if ch != "\x1b":
+            if ch == "\r":
+                scr.pending = False
+                scr.c = 0
+            elif ch == "\n":
+                scr.pending = False
+                scr.r = min(scr.r + 1, scr.rows - 1)
+            elif ch == "\b":
+                scr.pending = False
+                scr.c = max(0, scr.c - 1)
+            elif ch != "\x07":
+                scr.put(ch)
+            i += 1
+            continue
+        if i + 1 < n and data[i + 1] == "[":
+            m = CSI_RE.match(data, i)
+            if not m:
+                i += 1
+                continue
+            handle_csi(scr, m.group(1), m.group(2))
+            i = m.end()
+            continue
+        if i + 1 < n and data[i + 1] == "]":       # OSC: skip to BEL or ST
+            m = re.search(r"\x07|\x1b\\", data[i:])
+            i += m.end() if m else (n - i)
+            continue
+        if i + 1 < n and data[i + 1] in ("(", ")"):  # charset select
+            i += 3
+            continue
+        i += 2
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default="bin/heron")
@@ -136,18 +253,11 @@ def main():
     if a.raw:
         text = raw
     else:
-        # Alt-screen: keep the last painted frame only.
-        cut = raw.rfind("\x1b[?1049l")
-        if cut != -1:
-            raw = raw[:cut]
-        home = max(raw.rfind("\x1b[H"), raw.rfind("\x1b[2J"))
-        if home != -1:
-            raw = raw[home:]
-        text = ESC.sub("", raw)
-        text = text.replace("\x1b[0m", "")
-        # Re-flow: drop cursor-right padding sequences' leftovers
-        lines = [ln.rstrip() for ln in text.split("\n")]
-        text = "\n".join(lines).strip("\n")
+        # Replay the stream into the emulator instead of concatenating frames:
+        # that keeps borders, cursor moves and partial repaints intact.
+        scr = Screen(a.rows, a.cols)
+        feed(scr, raw)
+        text = scr.render()
 
     if a.out:
         with open(a.out, "w") as f:

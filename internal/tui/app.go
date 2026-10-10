@@ -53,7 +53,13 @@ func (m Model) SeedMarkdown(src string) Model {
 	return m
 }
 
-func (m Model) Init() tea.Cmd { return textinput.Blink }
+func (m Model) Init() tea.Cmd {
+	// Seeded chats (-seed / demo) can already contain plantuml blocks.
+	if cmd := m.pendingPlantUML(); cmd != nil {
+		return tea.Batch(textinput.Blink, cmd)
+	}
+	return textinput.Blink
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -73,6 +79,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	case tea.KeyMsg:
+		// Numbered copy fallback (FR-5): alt+<n> / ctrl+<n> copy block n.
+		if n := blockNumFromKey(msg.String()); n > 0 {
+			chat, cmd, ok := m.chat.copyByID(n)
+			if !ok {
+				return m, nil
+			}
+			m.chat = chat
+			return m, cmd
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -113,6 +128,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case plantumlDoneMsg:
+		m.chat, _ = m.chat.applyPlantUML(msg.results)
+		return m, nil
 	case replyMsg:
 		switch {
 		case msg.err != nil:
@@ -126,11 +144,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chat = m.chat.Append(BuildWidgets(nodes, m.theme, m.copyFn)...)
 			}
 		}
-		return m, nil
+		// PlantUML blocks in the fresh reply convert in the background (FR-6).
+		return m, m.pendingPlantUML()
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// blockNumFromKey maps a numbered copy shortcut to its block number:
+// "alt+3" -> 3, "ctrl+3" -> 3, anything else -> 0. Most terminals deliver
+// alt+<digit> reliably; ctrl+<digit> is honoured when the terminal emits it
+// (FR-5 keyboard fallback).
+func blockNumFromKey(s string) int {
+	for _, prefix := range []string{"alt+", "ctrl+"} {
+		if len(s) != len(prefix)+1 || !strings.HasPrefix(s, prefix) {
+			continue
+		}
+		d := s[len(prefix)]
+		if d >= '1' && d <= '9' {
+			return int(d - '0')
+		}
+	}
+	return 0
 }
 
 func (m Model) View() string {

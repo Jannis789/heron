@@ -30,6 +30,10 @@ type Widget interface {
 	Resize(width int) Widget
 	HitAction(width, x, y int) bool
 	Copy() (Widget, tea.Cmd)
+	// ID is the stable block number (1-based, assigned to copyable blocks) or
+	// -1 when the block is not addressable (FR-3).
+	ID() int
+	SetID(int) Widget
 }
 
 func textColorFor(th *render.Theme) string {
@@ -79,6 +83,7 @@ func actionWidth(copied bool) int {
 
 // TextBlock is a plain, non-interactive chat message.
 type TextBlock struct {
+	id    int
 	text  string
 	style lipgloss.Style
 }
@@ -88,12 +93,12 @@ func NewTextBlock(text, color string) TextBlock {
 	if color != "" {
 		s = s.Foreground(lipgloss.Color(color))
 	}
-	return TextBlock{text: text, style: s}
+	return TextBlock{id: -1, text: text, style: s}
 }
 
 // NewUserBlock renders the user's own typed prompt (highlighted).
 func NewUserBlock(text string) TextBlock {
-	return TextBlock{text: text, style: lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)}
+	return TextBlock{id: -1, text: text, style: lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)}
 }
 
 func (b TextBlock) Height(width int) int { return len(textWrapped(b.text, width)) }
@@ -113,21 +118,28 @@ func (b TextBlock) SetHover(bool) Widget                 { return b }
 func (b TextBlock) Resize(width int) Widget              { return b }
 func (b TextBlock) HitAction(width, x, y int) bool       { return false }
 func (b TextBlock) Copy() (Widget, tea.Cmd)              { return b, nil }
+func (b TextBlock) ID() int                             { return b.id }
+func (b TextBlock) SetID(i int) Widget                  { nb := b; nb.id = i; return nb }
 
 // ---- CodeBlock -------------------------------------------------------------
 
 type CodeBlock struct {
+	id         int
 	lang, code string
 	th         *render.Theme
 	copyFn     CopyFunc
 	focused    bool
 	copied     bool
 	hover      bool
+	// converted marks a plantuml block whose ASCII conversion was attempted:
+	// the ASCII replaced the source on success, the raw source stays on error
+	// (FR-6 fallback). It prevents the block from being queued again.
+	converted bool
 }
 
 func NewCodeBlock(lang, code string, copyFn CopyFunc) CodeBlock {
 	// Tabs measure as width 0, which would break the box padding — expand them.
-	return CodeBlock{lang: lang, code: strings.ReplaceAll(strings.TrimSuffix(code, "\n"), "\t", "    "), copyFn: copyFn}
+	return CodeBlock{id: -1, lang: lang, code: strings.ReplaceAll(strings.TrimSuffix(code, "\n"), "\t", "    "), copyFn: copyFn}
 }
 
 // linesAt returns the wrapped body line count for width.
@@ -156,6 +168,11 @@ func (b CodeBlock) View(width int) string {
 	lang := b.lang
 	if lang == "" {
 		lang = "code"
+	}
+	// Stable block number in the header: the keyboard copy fallback (alt+<n>)
+	// and the mouse both address this id (FR-3/FR-5).
+	if b.id > 0 {
+		lang = fmt.Sprintf("%s #%d", lang, b.id)
 	}
 	dashes := innerW - 4 - runewidth.StringWidth(lang)
 	if dashes < 0 {
@@ -217,12 +234,21 @@ func (b CodeBlock) Copy() (Widget, tea.Cmd) {
 	return nb, b.copyFn(b.code)
 }
 
+func (b CodeBlock) ID() int { return b.id }
+
+func (b CodeBlock) SetID(i int) Widget {
+	nb := b
+	nb.id = i
+	return nb
+}
+
 // ---- TableBlock ------------------------------------------------------------
 
 // TableBlock renders a markdown table, laid out dynamically against the width
 // it is given (re-flows on terminal resize). Chrome (borders, row separators)
 // renders via the theme; cells stay plain.
 type TableBlock struct {
+	id      int
 	cells   [][]string
 	aligns  []render.Align
 	th      *render.Theme
@@ -237,7 +263,7 @@ type TableBlock struct {
 }
 
 func NewTableBlock(cells [][]string, aligns []render.Align, copyFn CopyFunc) TableBlock {
-	return TableBlock{cells: cells, aligns: aligns, copyFn: copyFn}
+	return TableBlock{id: -1, cells: cells, aligns: aligns, copyFn: copyFn}
 }
 
 // layout returns the body lines and column widths for width.
@@ -325,6 +351,14 @@ func (b TableBlock) Copy() (Widget, tea.Cmd) {
 	nb := b
 	nb.copied = true
 	return nb, b.copyFn(render.TableMarkdown(b.cells))
+}
+
+func (b TableBlock) ID() int { return b.id }
+
+func (b TableBlock) SetID(i int) Widget {
+	nb := b
+	nb.id = i
+	return nb
 }
 
 // ---- build -----------------------------------------------------------------
