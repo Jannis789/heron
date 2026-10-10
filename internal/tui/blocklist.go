@@ -72,6 +72,19 @@ func (l BlockList) UpdateBlock(id int, w Widget) (BlockList, bool) {
 	return l, false
 }
 
+// removeBlock drops the widget with the given id. It retires the transient
+// streaming block once the final, parsed answer arrives (FR-2).
+func (l BlockList) removeBlock(id int) BlockList {
+	for i, it := range l.items {
+		if it.ID() != id {
+			continue
+		}
+		l.items = append(l.items[:i], l.items[i+1:]...)
+		return l
+	}
+	return l
+}
+
 // copyByID copies the block carrying the stable number n — the keyboard
 // fallback of the copy box (FR-5). Reports whether a copy was triggered.
 func (l BlockList) copyByID(n int) (BlockList, tea.Cmd, bool) {

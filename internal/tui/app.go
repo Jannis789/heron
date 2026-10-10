@@ -4,7 +4,8 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -22,24 +23,70 @@ type replyMsg struct {
 // Model is the heron TUI state: a chat block list plus a prompt input.
 // Everything flows through Update — state is never mutated in place.
 type Model struct {
-	input  textinput.Model
+	input  textarea.Model
 	chat   BlockList
 	send   Sender
 	theme  *render.Theme
 	copyFn CopyFunc
 	width  int
 	height int
+
+	// Live turn state (FR-2, FR-7).
+	stream     *Stream // may be nil: no live updates
+	cancel     func()  // aborts the running turn, may be nil
+	running    bool    // a turn is in flight
+	cancelling bool    // cancel already requested
+	streaming  string  // raw answer received so far
+	thinking   string  // thinking received so far
+	toolStatus string  // last tool label while the turn runs
+	showThink  bool    // thinking visible in the status line (FR-2 toggle)
 }
+
+// inputHeight is how many rows the prompt box occupies; the chat viewport is
+// sized to the rest of the screen.
+const inputHeight = 2
 
 func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
-	ti := textinput.New()
-	ti.Placeholder = "Message to goose … (Enter send · Tab focus · c copy · Esc back)"
-	ti.Prompt = "❯ "
-	ti.Focus()
-	return Model{input: ti, chat: NewBlockList(), send: send, theme: th, copyFn: copyFn}
+	ta := textarea.New()
+	ta.Placeholder = "Message to goose … (Enter send · Ctrl+J newline · Tab focus)"
+	ta.Prompt = "❯ "
+	ta.ShowLineNumbers = false
+	ta.SetWidth(80)
+	ta.SetHeight(inputHeight)
+	// Enter is captured by the model to send the prompt, so the newline needs
+	// a distinct key. Terminals deliver Ctrl+J (LF) for Shift+Enter — the only
+	// newline signal bubbletea v1 can tell apart from Enter (keyCR).
+	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
+	ta.Focus()
+	return Model{input: ta, chat: NewBlockList(), send: send, theme: th, copyFn: copyFn}
 }
 
-// chatTop is the screen row where the chat area starts (title + blank line).
+// WithStream wires the live-update bridge used by the backend to push chunk,
+// thought and tool events into the runtime (FR-2). A nil stream is allowed.
+func (m Model) WithStream(s *Stream) Model { m.stream = s; return m }
+
+// WithCancel wires the turn abort invoked by Ctrl+C while a turn runs (FR-7).
+func (m Model) WithCancel(fn func()) Model { m.cancel = fn; return m }
+
+// startTurn resets the live state for a fresh prompt.
+func (m *Model) startTurn() {
+	m.running = true
+	m.cancelling = false
+	m.streaming = ""
+	m.thinking = ""
+	m.toolStatus = ""
+}
+
+// endTurn clears the live state once the turn settles.
+func (m *Model) endTurn() {
+	m.running = false
+	m.cancelling = false
+	m.streaming = ""
+	m.thinking = ""
+	m.toolStatus = ""
+}
+
+// chatTop is the screen row where the chat area starts (title + status line).
 const chatTop = 2
 
 // SeedMarkdown appends the blocks of a markdown document to the chat — demo
@@ -56,16 +103,17 @@ func (m Model) SeedMarkdown(src string) Model {
 func (m Model) Init() tea.Cmd {
 	// Seeded chats (-seed / demo) can already contain plantuml blocks.
 	if cmd := m.pendingPlantUML(); cmd != nil {
-		return tea.Batch(textinput.Blink, cmd)
+		return tea.Batch(textarea.Blink, cmd)
 	}
-	return textinput.Blink
+	return textarea.Blink
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.chat = m.chat.SetSize(msg.Width, msg.Height-4)
+		m.chat = m.chat.SetSize(msg.Width, msg.Height-(inputHeight+3))
+		m.input.SetWidth(msg.Width - 2)
 		return m, nil
 	case tea.MouseMsg:
 		// Translate the screen row into chat-area coordinates, then let the
@@ -90,7 +138,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "ctrl+c":
+			// FR-7: during a turn Ctrl+C aborts the turn (session/cancel)
+			// instead of killing the app; a second Ctrl+C force-quits.
+			if m.running && m.cancel != nil && !m.cancelling {
+				m.cancelling = true
+				cancel := m.cancel
+				return m, func() tea.Msg { cancel(); return nil }
+			}
 			return m, tea.Quit
+		case "ctrl+t":
+			m.showThink = !m.showThink
+			return m, nil
 		case "enter":
 			if m.chat.Focused() {
 				var cmd tea.Cmd
@@ -106,6 +164,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.send == nil {
 				return m, nil
 			}
+			m.startTurn()
 			send := m.send
 			return m, func() tea.Msg {
 				text, err := send(prompt)
@@ -128,10 +187,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+	case chunkMsg:
+		// The answer grows in place under the chat while it streams (FR-2).
+		m.streaming += msg.text
+		m.chat = m.chat.upsertStreamBlock(m.streaming, textColorFor(m.theme))
+		return m, nil
+	case thoughtMsg:
+		m.thinking += msg.text
+		return m, nil
+	case toolMsg:
+		if msg.done {
+			m.toolStatus = ""
+		} else {
+			m.toolStatus = msg.name
+		}
+		return m, nil
 	case plantumlDoneMsg:
 		m.chat, _ = m.chat.applyPlantUML(msg.results)
 		return m, nil
 	case replyMsg:
+		// The final text supersedes the live preview (FR-2).
+		m.endTurn()
+		m.chat = m.chat.removeBlock(StreamBlockID)
 		switch {
 		case msg.err != nil:
 			m.chat = m.chat.Append(NewTextBlock("Fehler: "+msg.err.Error(), "1"))
@@ -169,10 +246,41 @@ func blockNumFromKey(s string) int {
 	return 0
 }
 
+// statusLine is the fixed line under the title: tool activity and the current
+// thinking line (FR-2). Keeping it to exactly one row keeps chatTop at 2, so
+// mouse hit-testing against the chat area stays correct.
+func (m Model) statusLine() string {
+	if m.toolStatus == "" && !(m.showThink && m.thinking != "") {
+		return ""
+	}
+	var parts []string
+	if m.toolStatus != "" {
+		parts = append(parts, "🔧 "+m.toolStatus)
+	}
+	if m.showThink && m.thinking != "" {
+		parts = append(parts, "💭 "+lastLine(m.thinking))
+	}
+	line := strings.Join(parts, "  ")
+	if m.width > 0 {
+		if w := render.WrapDisplay(line, m.width); len(w) > 0 {
+			line = w[0]
+		}
+	}
+	return lipgloss.NewStyle().Faint(true).Render(line)
+}
+
+// lastLine returns the final line of a possibly multi-line stream.
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	return lines[len(lines)-1]
+}
+
 func (m Model) View() string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render("heron · goose acp"))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	b.WriteString(m.statusLine())
+	b.WriteString("\n")
 	if m.chat.Empty() {
 		b.WriteString("(no message yet — type below)\n")
 	}
@@ -205,6 +313,9 @@ func (m Model) fillScreen(s string) string {
 // RunModel starts the TUI with a prepared model (all-motion mouse: hover).
 func RunModel(m Model) error {
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
+	// Hand the runtime to the stream so the backend can publish live updates
+	// from its own goroutine (FR-2). A nil stream is a no-op.
+	m.stream.attach(p)
 	_, err := p.Run()
 	return err
 }

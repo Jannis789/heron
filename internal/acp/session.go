@@ -8,10 +8,22 @@ import (
 )
 
 // Session wraps initialize + session/new for one goose subprocess and answers
-// prompts with the raw (unprocessed) agent_message_chunk text.
+// prompts with the assembled agent_message_chunk text.
 type Session struct {
 	client    *Client
 	sessionID string
+}
+
+// Events receives incremental session updates while a prompt is in flight.
+// Callbacks run on the ACP reader goroutine: they must not block and must not
+// touch UI state directly — publish into the tea runtime instead.
+type Events struct {
+	// OnChunk receives agent_message_chunk text (the answer being streamed).
+	OnChunk func(string)
+	// OnThought receives agent_thought_chunk text (thinking stream).
+	OnThought func(string)
+	// OnTool reports tool activity: the tool label and whether it finished.
+	OnTool func(name string, done bool)
 }
 
 // NewSession connects a fresh `goose acp` subprocess and creates a session.
@@ -39,29 +51,73 @@ func NewSession(ctx context.Context, gooseBin, cwd string) (*Session, error) {
 	return &Session{client: c, sessionID: sn.SessionID}, nil
 }
 
-// Prompt sends a prompt and returns the raw agent_message_chunk text.
-func (s *Session) Prompt(ctx context.Context, text string) (string, error) {
+// update mirrors the session/update payload. ACP puts tool metadata directly
+// under "update"; unknown fields are ignored so schema drift cannot break the
+// stream.
+type update struct {
+	Update struct {
+		SessionUpdate string `json:"sessionUpdate"`
+		Content       struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Title  string `json:"title"`
+		Name   string `json:"name"`
+		Kind   string `json:"kind"`
+		Status string `json:"status"`
+	} `json:"update"`
+}
+
+// toolLabel picks the most human-readable name available for a tool call.
+func toolLabel(u update) string {
+	switch {
+	case u.Update.Title != "":
+		return u.Update.Title
+	case u.Update.Name != "":
+		return u.Update.Name
+	case u.Update.Kind != "":
+		return u.Update.Kind
+	}
+	return "tool"
+}
+
+// PromptStream sends a prompt, forwards every session/update to ev while the
+// request runs (live streaming), and returns the assembled message text.
+func (s *Session) PromptStream(ctx context.Context, text string, ev *Events) (string, error) {
 	var sb strings.Builder
 	s.client.onNotify = func(method string, params json.RawMessage) {
 		if method != "session/update" {
 			return
 		}
-		var up struct {
-			Update struct {
-				SessionUpdate string `json:"sessionUpdate"`
-				Content       struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-			} `json:"update"`
-		}
+		var up update
 		if err := json.Unmarshal(params, &up); err != nil {
 			return
 		}
-		if up.Update.SessionUpdate == "agent_message_chunk" && up.Update.Content.Type == "text" {
+		switch up.Update.SessionUpdate {
+		case "agent_message_chunk":
+			if up.Update.Content.Type != "text" {
+				return
+			}
 			sb.WriteString(up.Update.Content.Text)
+			if ev != nil && ev.OnChunk != nil {
+				ev.OnChunk(up.Update.Content.Text)
+			}
+		case "agent_thought_chunk":
+			if up.Update.Content.Type != "text" {
+				return
+			}
+			if ev != nil && ev.OnThought != nil {
+				ev.OnThought(up.Update.Content.Text)
+			}
+		case "tool_call", "tool_call_update":
+			if ev != nil && ev.OnTool != nil {
+				done := up.Update.SessionUpdate == "tool_call_update" ||
+					up.Update.Status == "completed" || up.Update.Status == "done"
+				ev.OnTool(toolLabel(up), done)
+			}
 		}
 	}
+	defer func() { s.client.onNotify = nil }()
 	if _, err := s.client.Request(ctx, "session/prompt", map[string]any{
 		"sessionId": s.sessionID,
 		"prompt":    []map[string]any{{"type": "text", "text": text}},
@@ -69,6 +125,19 @@ func (s *Session) Prompt(ctx context.Context, text string) (string, error) {
 		return sb.String(), fmt.Errorf("prompt: %w", err)
 	}
 	return sb.String(), nil
+}
+
+// Prompt sends a prompt and returns the assembled agent message text.
+func (s *Session) Prompt(ctx context.Context, text string) (string, error) {
+	return s.PromptStream(ctx, text, nil)
+}
+
+// Cancel asks the agent to abort the running turn (session/cancel). The
+// prompt request stays in flight until the agent honours it — stop() is
+// asynchronous by design, we never kill the turn mid-write.
+func (s *Session) Cancel(ctx context.Context) error {
+	_ = ctx
+	return s.client.Notify("session/cancel", map[string]any{"sessionId": s.sessionID})
 }
 
 // Close shuts down the goose subprocess.
