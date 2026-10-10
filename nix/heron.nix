@@ -9,10 +9,9 @@ buildGoModule {
   # Ignoriere Test-/Doku-Dateien, nur Go-Quellen bauen.
   buildInputs = [ plantuml wl-clipboard ];
 
-  # TODO: einmal ermitteln und eintragen:
-  #   nix build --no-sandbox .#default   (druckt den erwarteten Hash)
-  # bzw. `nix flake metadata` / in die nix eine feste sha256 schreiben.
-  vendorHash = null;
+  # Vendor-Hash der Go-Abhängigkeiten (go.sum). Update: lib.fakeHash
+  # eintragen, `nix build .#default` druckt den "got:"-Hash.
+  vendorHash = "sha256-tYAFOyAb4jtYXzLi1AOPcNyfExdshs0cJdQPTPpXLhM=";
 
   meta = with lib; {
     description = "ACP-TUI (goose-Backend) mit übersteuerbarem Markdown-Rendering";

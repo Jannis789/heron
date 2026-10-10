@@ -62,7 +62,7 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | FR-11 | T | Fehlermeldungen im Chat | S | M2 | ⬜ | JSONL-Journal (Zustand nach Neustart), goose-Neustart bei Crash, `session/close` + SIGINT/SIGTERM-Handler, Request-/Stream-Timeouts | heron meldet und restartet bei goose-Crash; kein Hängen nach SIGINT |
 | FR-12 | T | kein UI (Env/CI) | S | M2 | ⬜ | `GOOSE_DISABLE_KEYRING=1` + Provider-Credentials via ENV für unbeaufsichtigte/CI-Umgebungen | startet ohne Keyring-Abfrage bei gesetzten ENV-Credentials |
 | FR-13 | F | Tabs / Session-Umschaltung | S | M3 | ⬜ | Zuordnung chat → sessionId, nur Delta senden; bei History-Mismatch stateless-Replay; Capability-Check `loadSession` | Fortsetzen ohne token-überdimensionierten Replay; >10 % Sonderfälle → stateless |
-| FR-14 | T | kein UI (Build) | M | M0 | 🟡 | flake.nix (Overlay `pkgs.heron`, packages, devShells), nix/heron.nix buildGoModule, Makefile run/build/test/lint/tidy | `go test ./...` + `nix develop -c go build` grün; `nix build .#default` nach vendorHash |
+| FR-14 | T | kein UI (Build) | M | M0 | ✅ | flake.nix (Overlay `pkgs.heron`, packages, devShells), nix/heron.nix buildGoModule, Makefile run/build/test/lint/tidy | `go test ./...` + `nix develop -c go build` grün; `nix build .#default` nach vendorHash |
 | FR-15 | T | kein UI (Tests/Doku) | M | M0 | ✅ | Unit-Tests je Paket, Re-Exec-Fake-Goose, Bubble-Tea-Model-Tests; Doku tech-stack/reference-book/Katalog/README | Suite grün in devShell ohne goose/Netzwerk (verifiziert) |
 | FR-16 | UX | Chat-Fläche (Fließtext) | M | M1 | 🟡 | lesbarer Absatz mit Umbruch an Terminal-Breite; Standard = System-/Terminal-Font, truecolor, Unicode korrekt (Umlaute, Box-Drawing, Emoji) | Antwort erscheint als lesbarer Absatz, keine Überläufe, System-Font ohne Konfig |
 | FR-17 | UX | Theme / Konfig | C | später | ⬜ | Schriftart/-größe über Thema/Theme anpassbar; Default bleibt System-Font (FR-16) | Konfig wirkt auf die Textdarstellung; Default unverändert |
@@ -96,8 +96,8 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | NFR-9 | UX | überall (Barrierefreiheit) | C | M4 | ⬜ | Farbe nie als einziges Medium; hoher Kontrast; umschaltbare Themes | Review mit farblosem Terminal möglich |
 | NFR-10 | UX | UI-Texte zentral | C | M4 | ⬜ | UI-Texte zentral (deutsch als Ausgangssprache; Übersetzung nachrüstbar) | Texte nicht hart über Code verstreut |
 
-**Abnahme-Übersicht (Stand 2026-10-10):** ✅ FR-1, FR-15, NFR-2, NFR-8 · 🟡 FR-2, FR-3, FR-5, FR-6,
-FR-7, FR-8, FR-10, FR-14, FR-16, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (29 offen).
+**Abnahme-Übersicht (Stand 2026-10-10):** ✅ FR-1, FR-14, FR-15, NFR-2, NFR-8 · 🟡 FR-2, FR-3, FR-5,
+FR-6, FR-7, FR-8, FR-10, FR-16, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (28 offen).
 
 ---
 
@@ -109,7 +109,7 @@ M0 → M1 → M2 → M3 → M4 → optional; 11 × 4 + Rest 2). Ein Batch wird g
 
 | Batch | Fokus | Anforderungen | Ms | Status je Item |
 |---|---|---|---|---|
-| B01 | M0-Basis: Build/Test/ACP verifiziert absichern | FR-14, FR-1, FR-15, NFR-8 | M0 | 🟡 ✅ ✅ ✅ |
+| B01 | M0-Basis: Build/Test/ACP verifiziert absichern | FR-14, FR-1, FR-15, NFR-8 | M0 | ✅ ✅ ✅ ✅ |
 | B02 | M1 Render-/Copy-Kern: Codeblock, Copy-Box, PlantUML, Fließtext | FR-3, FR-5, FR-6, FR-16 | M1 | 🟡 🟡 🟡 🟡 |
 | B03 | M1 Streaming & Turn: inkrementell, Follow, Abbruch | FR-2, FR-7, FR-8, NFR-2 | M1 | 🟡 🟡 🟡 ✅ |
 | B04 | M1 Kern-UX: Renderer-Routing, Selection-Copy, Think-Kürzung, LED | FR-4, FR-29, FR-30, FR-35 | M1 | ⬜ ⬜ ⬜ ⬜ |
