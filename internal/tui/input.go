@@ -57,8 +57,11 @@ func (m Model) inputView() string {
 		w = 80
 	}
 	th := m.theme
+	// Monochrome lavender chrome: one hue for frame, label and hints. The
+	// former accent colour and the inner background fill made the box read as
+	// two colours and left a visible patch around the placeholder.
 	bs := th.BorderStyle()
-	fill := th.TableFill()
+	lt := th.LabelStyle()
 	inner := w - 4
 
 	label := "nachricht"
@@ -71,23 +74,20 @@ func (m Model) inputView() string {
 		dashes = 0
 	}
 	lines := make([]string, 0, 8)
-	lines = append(lines, bs.Render("┌─ ")+th.ActionStyle().Render(label)+
-		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
+	lines = append(lines, bs.Render("┌─ "+label+" "+strings.Repeat("─", dashes)+"┐"))
 
 	for _, ln := range strings.Split(m.input.View(), "\n") {
 		gap := inner - lipgloss.Width(ln)
 		if gap < 0 {
 			gap = 0
 		}
-		lines = append(lines, bs.Render("│")+" "+
-			fill.Render(ln)+fill.Render(strings.Repeat(" ", gap))+" "+
-			bs.Render("│"))
+		// No inner background fill: the placeholder would otherwise sit on a
+		// differently tinted patch than the rest of the screen.
+		lines = append(lines, bs.Render("│")+" "+ln+strings.Repeat(" ", gap)+" "+bs.Render("│"))
 	}
 
-	hint := "enter sendet"
 	action := "ctrl+j zeile"
-	styled := th.ActionStyle().Render(action)
-	lines = append(lines, render.FooterLine(w, hint, action, styled,
-		runewidth.StringWidth(action), lipgloss.NewStyle(), th.LabelStyle(), nil))
+	lines = append(lines, render.FooterLine(w, "enter sendet", action, lt.Render(action),
+		runewidth.StringWidth(action), bs, lt, nil))
 	return strings.Join(lines, "\n")
 }

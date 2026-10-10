@@ -277,18 +277,39 @@ func lastLine(s string) string {
 }
 
 func (m Model) View() string {
-	var b strings.Builder
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render("heron · goose acp"))
-	b.WriteString("\n")
-	b.WriteString(m.statusLine())
-	b.WriteString("\n")
+	var top strings.Builder
+	top.WriteString(lipgloss.NewStyle().Bold(true).Render("heron · goose acp"))
+	top.WriteString("\n")
+	top.WriteString(m.statusLine())
+	top.WriteString("\n")
 	if m.chat.Empty() {
-		b.WriteString("(noch keine Nachricht — tippe unten)\n")
+		top.WriteString("(noch keine Nachricht — tippe unten)\n")
 	}
-	b.WriteString(m.chat.View())
-	b.WriteString("\n\n")
-	b.WriteString(m.inputView())
-	return m.fillScreen(b.String())
+	top.WriteString(m.chat.View())
+
+	// The prompt box belongs to the bottom of the screen. Padding the gap
+	// after it — what a plain full-screen fill does — left the box floating
+	// near the top whenever the chat was short, i.e. always on an empty chat.
+	// So the spare rows go between chat and prompt, never below it.
+	prompt := m.inputView()
+	if m.height <= 0 {
+		// No terminal size known yet (tests, first paint): render as-is
+		// instead of squeezing the frame into an unknown height, which cut
+		// the header and the newest chat rows.
+		return m.fillScreen(top.String() + "\n\n" + prompt)
+	}
+	avail := m.height - len(strings.Split(prompt, "\n"))
+	if avail < 1 {
+		avail = 1
+	}
+	topLines := strings.Split(top.String(), "\n")
+	if len(topLines) > avail {
+		topLines = topLines[len(topLines)-avail:]
+	}
+	for len(topLines) < avail {
+		topLines = append(topLines, "")
+	}
+	return m.fillScreen(strings.Join(append(topLines, prompt), "\n"))
 }
 
 // fillScreen pads every line to the terminal width and paints the theme

@@ -216,7 +216,12 @@ def main():
 
     pid, fd = pty.fork()
     if pid == 0:
-        os.environ.setdefault("TERM", "xterm-256color")
+        # Force a colour-capable terminal: inheriting TERM (often "dumb" in a
+        # non-interactive shell) makes lipgloss fall back to plain text, so the
+        # screenshot would hide every colour the user actually sees.
+        os.environ["TERM"] = "xterm-256color"
+        os.environ["COLORTERM"] = "truecolor"
+        os.environ.pop("NO_COLOR", None)
         os.environ["COLUMNS"] = str(a.cols)
         os.environ["LINES"] = str(a.rows)
         try:
