@@ -235,6 +235,10 @@ def main():
             os.write(fd, emit(a.keys))
             drain(fd, a.after, buf)
     finally:
+        # Snapshot the frame as the user last saw it. On shutdown bubbletea
+        # erases the cursor row (ESC[r;H ESC[2K), which would otherwise wipe
+        # the prompt box's bottom border out of the replay.
+        live = b"".join(buf)
         try:
             os.write(fd, b"\x03")          # Ctrl+C: clean quit
         except OSError:
@@ -250,13 +254,15 @@ def main():
             pass
 
     raw = b"".join(buf).decode("utf-8", "replace")
+
     if a.raw:
         text = raw
     else:
-        # Replay the stream into the emulator instead of concatenating frames:
-        # that keeps borders, cursor moves and partial repaints intact.
+        # Replay the pre-shutdown stream into the emulator instead of
+        # concatenating frames: that keeps borders, cursor moves and partial
+        # repaints intact.
         scr = Screen(a.rows, a.cols)
-        feed(scr, raw)
+        feed(scr, live.decode("utf-8", "replace"))
         text = scr.render()
 
     if a.out:

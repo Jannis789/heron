@@ -43,16 +43,25 @@ func textColorFor(th *render.Theme) string {
 	return th.Text.Color
 }
 
-// textWrapped wraps s to w display cells, preserving line structure.
+// textWrapped wraps prose to w display cells at word boundaries, preserving
+// line structure. Hard-wrapping would split words mid-syllable.
 func textWrapped(s string, w int) []string {
 	var lines []string
 	if w <= 0 {
 		w = 80
 	}
 	for _, l := range strings.Split(s, "\n") {
-		lines = append(lines, render.WrapDisplay(l, w)...)
+		lines = append(lines, render.WrapWords(l, w)...)
 	}
 	return lines
+}
+
+// NewHeadingBlock renders a markdown section title on its own row, bold so it
+// separates from the body text around it.
+func NewHeadingBlock(text string) TextBlock {
+	b := NewTextBlock(text, "")
+	b.style = lipgloss.NewStyle().Bold(true)
+	return b
 }
 
 // copyAction returns the plain action label and a styled variant: reversed
@@ -142,9 +151,27 @@ func NewCodeBlock(lang, code string, copyFn CopyFunc) CodeBlock {
 	return CodeBlock{id: -1, lang: lang, code: strings.ReplaceAll(strings.TrimSuffix(code, "\n"), "\t", "    "), copyFn: copyFn}
 }
 
+// codeInnerWidth is the room for code inside the frame: two border cells plus
+// one padding cell on each side.
+func codeInnerWidth(width int) int {
+	w := width - 4
+	if w < 8 {
+		w = 8
+	}
+	return w
+}
+
+// bodyLines renders the code for a width: syntax highlighted, wrapped to the
+// inner width, one entry per row. Height and View both use it, so the footer
+// row and the mouse hit area can never disagree — they used to wrap at
+// different widths, which drew the frame too short for long code.
+func (b CodeBlock) bodyLines(width int) []string {
+	return render.HighlightLines(b.lang, b.code, codeInnerWidth(width))
+}
+
 // linesAt returns the wrapped body line count for width.
 func (b CodeBlock) linesAt(width int) int {
-	return len(textWrapped(b.code, width-4))
+	return len(b.bodyLines(width))
 }
 
 // labelAt builds the footer label for a body line count.
@@ -159,12 +186,14 @@ func (b CodeBlock) Height(width int) int {
 	return 1 + b.linesAt(width) + 1
 }
 func (b CodeBlock) View(width int) string {
-	innerW := width - 2
-	if innerW < 4 {
-		innerW = 4
+	if width < 16 {
+		width = 16
 	}
-	body := textWrapped(b.code, innerW-4)
-	lines := make([]string, 0, len(body)+2)
+	body := b.bodyLines(width)
+	inner := codeInnerWidth(width)
+	bs := b.th.BorderStyle()
+	fill := b.th.TableFill()
+
 	lang := b.lang
 	if lang == "" {
 		lang = "code"
@@ -174,22 +203,31 @@ func (b CodeBlock) View(width int) string {
 	if b.id > 0 {
 		lang = fmt.Sprintf("%s #%d", lang, b.id)
 	}
-	dashes := innerW - 4 - runewidth.StringWidth(lang)
+	// Frame in the theme border colour, with the label padded away from the
+	// corners and tinted with the action colour so it stays legible.
+	labelW := runewidth.StringWidth(lang)
+	dashes := width - 5 - labelW
 	if dashes < 0 {
-		lang = ""
-		dashes = innerW - 4
+		dashes = 0
 	}
-	lines = append(lines, "┌─"+lang+strings.Repeat("─", dashes)+"─┐")
+	lines := make([]string, 0, len(body)+2)
+	lines = append(lines, bs.Render("┌─ ")+b.th.ActionStyle().Render(lang)+
+		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
+
 	for _, ln := range body {
-		pad := innerW - 4 - runewidth.StringWidth(ln)
-		if pad < 0 {
-			pad = 0
+		gap := inner - lipgloss.Width(ln)
+		if gap < 0 {
+			gap = 0
 		}
-		lines = append(lines, "│ "+ln+strings.Repeat(" ", pad)+" │")
+		lines = append(lines, bs.Render("│")+" "+
+			fill.Render(ln)+fill.Render(strings.Repeat(" ", gap))+" "+
+			bs.Render("│"))
 	}
+
 	action, styled := copyAction(b.copied, b.focused, b.hover)
 	styled = b.th.ActionStyle().Render(styled)
-	lines = append(lines, render.FooterLine(width, labelAt(len(body)), action, styled, runewidth.StringWidth(action), lipgloss.NewStyle(), b.th.LabelStyle(), nil))
+	lines = append(lines, render.FooterLine(width, labelAt(len(body)), action, styled,
+		runewidth.StringWidth(action), lipgloss.NewStyle(), b.th.LabelStyle(), nil))
 	return strings.Join(lines, "\n")
 }
 func (b CodeBlock) Update(msg tea.Msg) (Widget, tea.Cmd) {
@@ -371,6 +409,13 @@ func BuildWidgets(nodes []render.Node, th *render.Theme, copyFn CopyFunc) []Widg
 		switch n.Kind {
 		case render.NodeText:
 			out = append(out, NewTextBlock(n.Text, tc))
+		case render.NodeHeading:
+			hb := NewHeadingBlock(n.Text)
+			if th != nil && th.Action.Color != "" {
+				hb.style = lipgloss.NewStyle().Bold(true).
+					Foreground(lipgloss.Color(th.Action.Color))
+			}
+			out = append(out, hb)
 		case render.NodeCode:
 			cb := NewCodeBlock(n.Lang, n.Code, copyFn)
 			cb.th = th

@@ -25,7 +25,7 @@ func TestParseSplitsBlocks(t *testing.T) {
 	}
 }
 
-func TestParseFlushesAdjoiningText(t *testing.T) {
+func TestParseKeepsParagraphsApart(t *testing.T) {
 	nodes, err := Parse("a\n\n**b**\n\n|c|\n|-|\n|1|\n")
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -34,12 +34,31 @@ func TestParseFlushesAdjoiningText(t *testing.T) {
 	for _, n := range nodes {
 		got = append(got, n.Kind)
 	}
-	// text merges the two paragraphs, then a table.
-	if len(got) != 2 || got[0] != NodeText || got[1] != NodeTable {
+	// Paragraphs stay separate blocks; merging them is what glued a heading
+	// to its body when rendering. The table still follows.
+	if len(got) != 3 || got[0] != NodeText || got[1] != NodeText || got[2] != NodeTable {
 		t.Fatalf("kinds: %v", got)
 	}
-	if !strings.Contains(nodes[0].Text, "b") {
-		t.Fatalf("text should merge paragraphs: %q", nodes[0].Text)
+	if !strings.Contains(nodes[0].Text, "a") || !strings.Contains(nodes[1].Text, "b") {
+		t.Fatalf("paragraphs not separated: %q / %q", nodes[0].Text, nodes[1].Text)
+	}
+}
+
+// TestParseSplitsHeadingsOut: a section title becomes its own block so it
+// never gets glued to the paragraph below it.
+func TestParseSplitsHeadingsOut(t *testing.T) {
+	nodes, err := Parse("# Titel\n\nFließtext danach.\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("expected heading + paragraph, got %d nodes: %+v", len(nodes), nodes)
+	}
+	if nodes[0].Kind != NodeHeading || nodes[0].Text != "Titel" {
+		t.Fatalf("node0: %+v", nodes[0])
+	}
+	if nodes[1].Kind != NodeText || !strings.Contains(nodes[1].Text, "Fließtext") {
+		t.Fatalf("node1: %+v", nodes[1])
 	}
 }
 

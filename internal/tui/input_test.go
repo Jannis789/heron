@@ -1,0 +1,58 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// TestInputBoxIsFramedOnAllSides: the prompt area must render a closed box —
+// top border, one row per text line, and a bottom border carrying the hint.
+func TestInputBoxIsFramedOnAllSides(t *testing.T) {
+	r := newRig(t)
+	view := r.m.inputView()
+	lines := strings.Split(view, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("prompt box has %d rows, want >=3 (top/body/bottom): %q", len(lines), view)
+	}
+	if !strings.HasPrefix(stripANSI(lines[0]), "┌") {
+		t.Fatalf("top border missing: %q", lines[0])
+	}
+	bottom := stripANSI(lines[len(lines)-1])
+	if !strings.HasPrefix(bottom, "└") || !strings.HasSuffix(bottom, "┘") {
+		t.Fatalf("bottom border missing: %q", bottom)
+	}
+	if !strings.Contains(bottom, "enter sendet") {
+		t.Fatalf("send hint missing: %q", bottom)
+	}
+}
+
+// TestPromptBoxGrowsWithText: a multi-line prompt widens the box and the chat
+// viewport gives the rows back, so the screen still fits.
+func TestPromptBoxGrowsWithText(t *testing.T) {
+	r := newRig(t)
+	before := len(strings.Split(r.m.inputView(), "\n"))
+
+	r.typeLine("eine")
+	r.do(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	r.typeLine("zweite")
+
+	after := strings.Split(r.m.inputView(), "\n")
+	if len(after) <= before {
+		t.Fatalf("prompt box did not grow: %d rows before, %d after", before, len(after))
+	}
+	if !strings.HasPrefix(stripANSI(after[len(after)-1]), "└") {
+		t.Fatalf("bottom border lost while growing: %q", after[len(after)-1])
+	}
+}
+
+// TestScreenFitsWithPromptBox: the composed frame never exceeds the terminal
+// height — the chat viewport has to give back the rows the box occupies.
+func TestScreenFitsWithPromptBox(t *testing.T) {
+	const rows = 20
+	r := newRig(t).size(80, rows).seed("kurze antwort")
+	if got := len(r.lines()); got > rows {
+		t.Fatalf("frame is %d rows, terminal has %d — box would be clipped", got, rows)
+	}
+}

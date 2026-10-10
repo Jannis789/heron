@@ -1,6 +1,7 @@
 package render
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/yuin/goldmark"
@@ -16,6 +17,9 @@ const (
 	NodeText NodeKind = iota
 	NodeCode
 	NodeTable
+	// NodeHeading is a markdown section title; it renders on its own row so
+	// titles never run into the paragraph that follows.
+	NodeHeading
 )
 
 // Align mirrors table cell alignment for the widget layer.
@@ -56,6 +60,20 @@ func Parse(src string) ([]Node, error) {
 			return ast.WalkContinue, nil
 		}
 		switch t := n.(type) {
+		case *ast.Heading:
+			flush()
+			out = append(out, Node{Kind: NodeHeading, Text: strings.TrimSpace(nodeText(t, srcB))})
+			return ast.WalkSkipChildren, nil
+		case *ast.Paragraph:
+			// End the current text block so paragraphs keep their gap.
+			flush()
+			return ast.WalkContinue, nil
+		case *ast.List:
+			// Lists become one row per item with the marker kept — without
+			// this every bullet collapsed into a single run-on line.
+			flush()
+			appendList(&out, t, srcB, 0)
+			return ast.WalkSkipChildren, nil
 		case *extast.Table:
 			flush()
 			cells, aligns := tableData(t, srcB)
@@ -82,6 +100,43 @@ func Parse(src string) ([]Node, error) {
 	}
 	flush()
 	return out, nil
+}
+
+// appendList flattens a markdown list into one text row per item, keeping the
+// marker, numbering ordered lists and indenting nested lists by two spaces per
+// level.
+func appendList(out *[]Node, list *ast.List, src []byte, depth int) {
+	indent := strings.Repeat("  ", depth)
+	for i, c := 0, list.FirstChild(); c != nil; i, c = i+1, c.NextSibling() {
+		item, ok := c.(*ast.ListItem)
+		if !ok {
+			continue
+		}
+		// Start is 0 for a bullet list; an ordered list carries its first number.
+		mark := "- "
+		if list.Start != 0 {
+			mark = strconv.Itoa(list.Start+i) + ". "
+		}
+		var (
+			texts  []string
+			nested []*ast.List
+		)
+		for sc := item.FirstChild(); sc != nil; sc = sc.NextSibling() {
+			if nl, isList := sc.(*ast.List); isList {
+				nested = append(nested, nl)
+				continue
+			}
+			if t := strings.TrimSpace(nodeText(sc, src)); t != "" {
+				texts = append(texts, t)
+			}
+		}
+		if len(texts) > 0 {
+			*out = append(*out, Node{Kind: NodeText, Text: indent + mark + strings.Join(texts, " ")})
+		}
+		for _, nl := range nested {
+			appendList(out, nl, src, depth+1)
+		}
+	}
 }
 
 // tableData extracts header+rows (cells) and per-column alignment from a table.

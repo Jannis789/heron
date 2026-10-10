@@ -72,9 +72,9 @@ func WrapDisplay(s string, w int) []string {
 	return lines
 }
 
-// wrapWords wraps s to w display cells at word boundaries (pi-style); a
-// single token wider than w falls back to a hard break.
-func wrapWords(s string, w int) []string {
+// WrapWords wraps s to w display cells at word boundaries; a single token
+// wider than w falls back to a hard break. Prose must never split mid-word.
+func WrapWords(s string, w int) []string {
 	if w <= 0 || s == "" {
 		return []string{s}
 	}
@@ -141,7 +141,7 @@ func wrapCells(row []string, budgets []int) [][]string {
 		if c < len(row) {
 			s = row[c]
 		}
-		out[c] = wrapWords(s, budgets[c])
+		out[c] = WrapWords(s, budgets[c])
 	}
 	return out
 }

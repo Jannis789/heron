@@ -42,17 +42,16 @@ type Model struct {
 	showThink  bool    // thinking visible in the status line (FR-2 toggle)
 }
 
-// inputHeight is how many rows the prompt box occupies; the chat viewport is
-// sized to the rest of the screen.
-const inputHeight = 2
-
 func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Message to goose … (Enter send · Ctrl+J newline · Tab focus)"
-	ta.Prompt = "❯ "
+	ta.Placeholder = "Nachricht an goose …"
+	// The frame already marks the prompt area, so the textarea itself stays
+	// free of a line prefix — one prompt character per row reads as noise
+	// once the box grows.
+	ta.Prompt = ""
 	ta.ShowLineNumbers = false
 	ta.SetWidth(80)
-	ta.SetHeight(inputHeight)
+	ta.SetHeight(inputMinHeight)
 	// Enter is captured by the model to send the prompt, so the newline needs
 	// a distinct key. Terminals deliver Ctrl+J (LF) for Shift+Enter — the only
 	// newline signal bubbletea v1 can tell apart from Enter (keyCR).
@@ -112,8 +111,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.chat = m.chat.SetSize(msg.Width, msg.Height-(inputHeight+3))
-		m.input.SetWidth(msg.Width - 2)
+		m.input.SetWidth(msg.Width - 4)
+		m.syncInputSize()
 		return m, nil
 	case tea.MouseMsg:
 		// Translate the screen row into chat-area coordinates, then let the
@@ -226,6 +225,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	// The prompt box grows with the text, so the chat gives the rows back.
+	m.syncInputSize()
 	return m, cmd
 }
 
@@ -282,11 +283,11 @@ func (m Model) View() string {
 	b.WriteString(m.statusLine())
 	b.WriteString("\n")
 	if m.chat.Empty() {
-		b.WriteString("(no message yet — type below)\n")
+		b.WriteString("(noch keine Nachricht — tippe unten)\n")
 	}
 	b.WriteString(m.chat.View())
 	b.WriteString("\n\n")
-	b.WriteString(m.input.View())
+	b.WriteString(m.inputView())
 	return m.fillScreen(b.String())
 }
 

@@ -55,7 +55,7 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | FR-4 | F | Konfig / Registrierung | M | M1 | ⬜ | erweiterbare Map `[lang] → Renderer` (copy/render-ascii/image/raw); eigene Text-Visualisierungen per Konfig ohne Kerncode-Eingriff | zusätzlicher Renderer wirkt nur über Registrierung, kein Kerncode nötig |
 | FR-5 | F | Copy je Block (Maus + `alt+<i>`) | M | M1 | 🟡 | OSC52 primär, Fallback wl-copy → xclip → pbcopy (nicht blockierend); Mausklick und Keyboard `alt+<i>`/`ctrl+<i>`; Feedback „COPIED“ | Copy lokal wie über SSH geprüft per Einfügen; kein Secret-Leak |
 | FR-6 | F | Chat-Block (PlantUML) | C | M1 | ✅ | Sprach-Tag `plantuml` via `plantuml -ttxt` → ASCII; bei fehlendem plantuml/Fehler Roh-Text-Fallback | ASCII-Ausgabe bei vorhandenem plantuml; sauberer Fallback ohne |
-| FR-7 | F | Eingabefeld, `Ctrl+C` | M | M1 | ✅ | textarea: Enter sendet, Ctrl+J (Shift+Enter) Zeilenumbruch; einzelnes `Ctrl+C` bricht den Turn ab (session/cancel), zweites `Ctrl+C` beendet die App | Senden, Umbruch, Abbruch und Beenden funktionieren; stop asynchron |
+| FR-7 | F | Eingabefeld, `Ctrl+C` | M | M1 | ✅ | gerahmtes Eingabefeld (Label oben, Hinweis unten), das mit der Eingabe mitwächst; Enter sendet, Ctrl+J Zeilenumbruch; `Ctrl+C` bricht den Turn ab, zweites beendet die App | Senden, Umbruch, Abbruch und Beenden funktionieren; stop asynchron |
 | FR-8 | F | Chat-Fläche, Kopf-/Fusszeile | M | M1 | ✅ | Nachrichtenliste mit Autoscroll + einrastendem Follow (Scroll/Selection pausiert), Scrollback, stabile Block-IDs, Kopf-/Fusszeile | langer Turn wird nicht abgeschnitten; Scroll bezieht sich auf stabile Blöcke |
 | FR-9 | F | Policy-Konfig (später Dialog) | S | M2 | ⬜ | Policy `allow/deny/ask` beantwortet `session/request_permission`; Tool-Aktivität live, nicht blockierend | jede Policy über Konfig wählbar; Antworten korrekt über OnRequest |
 | FR-10 | F | Flags / Env / TOML | S | M2 | 🟡 | v0 Flags+Env (`--goose`, `--theme`, `--cwd`, `--permission`), v1 TOML (goose_bin, cwd, permission_policy, show_thinking, plantuml_bin, renderer-Routing) | Konfig wirkt ohne Codeänderung; unbekannte Schlüssel ignoriert/gemeldet |
@@ -85,6 +85,7 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | FR-34 | UX | überall (Status/Aktionen) | S | M4 | ⬜ | konsistente Icons (🔧 💭 ⚠ ✓ 📋 🔄 📊 🖼 ⌨ …), nie nur Farbe (NFR-9) | jede Statusgruppe hat ein Icon; in farblosem Terminal erkennbar |
 | FR-35 | UX | Kopfzeile: LED-Kreis | S | M1 | ⬜ | Arbeitsindikator: LED-Kreis hell/animiert während eines Turns, dunkel im Ruhezustand; Symbolwechsel für farblose Terminals | LED folgt dem Turn-Zustand; ohne Farbe erkennbar; Event-Loop unblockiert |
 | FR-36 | UX | überall (Übergänge) | C | M4 | ⬜ | dezente Animationen (Block-Einblenden, LED-Puls, Tab-Wechsel, „COPIED“-Feedback), per `--no-anim` abschaltbar | sichtbare, abschaltbare Übergänge; UI flüssig (NFR-1/NFR-2) |
+| FR-37 | UX | Chat-Blöcke (Code) | M | M1 | ✅ | Syntax-Highlighting in Codeblöcken über chroma (Lexer pro Sprach-Tag, Catppuccin-Mocha passend zum Theme); unbekannte Tags fallen auf Klartext zurück | Code in Go/Python/Shell/JSON farbig; falscher Tag rendert ohne Fehler |
 | NFR-1 | T | — | M | M1 | ⬜ | Streaming-Start < ~100 ms; kein sichtbares Ruckeln bei langen Turns | Messung im E2E; Follow bleibt flüssig |
 | NFR-2 | T | — | M | M1 | ✅ | Event-Loop nie durch I/O blockiert; goose-Reader als Goroutine, Ergebnisse als tea.Msg | UI reagiert während des Turns (send läuft als tea.Cmd) |
 | NFR-3 | T | — | S | M2 | ⬜ | Terminal-Tiers erkennen (truecolor/256, OSC52 ja/nein, Kitty/Sixel) | korrektes Verhalten in ghostty, kitty, xterm |
@@ -97,7 +98,7 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | NFR-10 | UX | UI-Texte zentral | C | M4 | ⬜ | UI-Texte zentral (deutsch als Ausgangssprache; Übersetzung nachrüstbar) | Texte nicht hart über Code verstreut |
 
 **Abnahme-Übersicht (Stand 2026-10-10):** ✅ FR-1, FR-2, FR-3, FR-6, FR-7, FR-8, FR-14, FR-15, FR-16,
-NFR-2, NFR-8 · 🟡 FR-5, FR-10, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (29 offen).
+FR-37, NFR-2, NFR-8 · 🟡 FR-5, FR-10, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (29 offen).
 
 **Abnahme-Hinweise (wie verifiziert):** FR-14 `nix build .#default` · FR-15/NFR-8 Suite ohne goose ·
 FR-3 Modell-Test (Kopfzeile + COPY + stabile ID, per pty-Screenshot bestätigt) · FR-6 echter

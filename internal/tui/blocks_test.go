@@ -4,8 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"heron/internal/render"
 )
@@ -42,7 +44,8 @@ func TestCodeBlockExpandsTabsForAlignment(t *testing.T) {
 		if !strings.HasSuffix(ln, "│") && !strings.HasSuffix(ln, "┐") && !strings.HasSuffix(ln, "┘") {
 			t.Fatalf("line %d not box-aligned: %q", i, ln)
 		}
-		if w := runewidth.StringWidth(ln); w > 46 {
+		// lipgloss.Width ignores ANSI; runewidth would count escape bytes.
+		if w := lipgloss.Width(ln); w > 46 {
 			t.Fatalf("line %d too wide (%d): %q", i, w, ln)
 		}
 	}
