@@ -123,9 +123,29 @@ func NewUserBlock(text string) TextBlock {
 	return TextBlock{id: -1, text: text, style: lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)}
 }
 
-func (b TextBlock) Height(width int) int { return len(textWrapped(b.text, width)) }
+// textGutter indents prose blocks so answers breathe next to the framed
+// code/table blocks — the text starts flush with the code content inside
+// the frames (border plus one padding cell), like an editor's margin.
+const textGutter = 2
+
+// wrapWidth is the prose wrap width for a terminal width: the gutter comes
+// out of the wrap budget, except on very narrow terminals where it would
+// squeeze the text below usability.
+func (b TextBlock) wrapWidth(width int) int {
+	if w := width - textGutter; w >= 8 {
+		return w
+	}
+	return width
+}
+
+func (b TextBlock) Height(width int) int { return len(textWrapped(b.text, b.wrapWidth(width))) }
 func (b TextBlock) View(width int) string {
-	lines := textWrapped(b.text, width)
+	wrapW := b.wrapWidth(width)
+	pad := strings.Repeat(" ", textGutter)
+	if wrapW == width {
+		pad = "" // too narrow for a gutter
+	}
+	lines := textWrapped(b.text, wrapW)
 	st := b.style
 	if b.marked {
 		// Marked prose inverts instead of growing a frame, so the wrap
@@ -134,7 +154,7 @@ func (b TextBlock) View(width int) string {
 	}
 	out := make([]string, len(lines))
 	for i, l := range lines {
-		out[i] = st.Render(l)
+		out[i] = pad + st.Render(l)
 	}
 	return strings.Join(out, "\n")
 }
