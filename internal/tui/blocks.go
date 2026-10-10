@@ -1,0 +1,351 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
+
+	"heron/internal/render"
+)
+
+// CopyFunc builds a tea.Cmd that copies text when the runtime executes it.
+// The write must not happen at call time — effects live in Cmds (Elm).
+type CopyFunc func(text string) tea.Cmd
+
+// Widget is a single chat block as a nested Elm component: state, an Update
+// returning the next state, and a pure View. SetFocused/SetHover return
+// copies instead of mutating. HitAction reports whether a cell lies on the
+// COPY action; Copy triggers it (mouse path).
+type Widget interface {
+	Height(width int) int
+	View(width int) string
+	Update(msg tea.Msg) (Widget, tea.Cmd)
+	Focused() bool
+	Focusable() bool
+	SetFocused(bool) Widget
+	SetHover(bool) Widget
+	Resize(width int) Widget
+	HitAction(width, x, y int) bool
+	Copy() (Widget, tea.Cmd)
+}
+
+func textColorFor(th *render.Theme) string {
+	if th == nil {
+		return ""
+	}
+	return th.Text.Color
+}
+
+// textWrapped wraps s to w display cells, preserving line structure.
+func textWrapped(s string, w int) []string {
+	var lines []string
+	if w <= 0 {
+		w = 80
+	}
+	for _, l := range strings.Split(s, "\n") {
+		lines = append(lines, render.WrapDisplay(l, w)...)
+	}
+	return lines
+}
+
+// copyAction returns the plain action label and a styled variant: reversed
+// when focused, underlined+bold when hovered.
+func copyAction(copied, focused, hover bool) (string, string) {
+	label := "COPY"
+	if copied {
+		label = "COPIED"
+	}
+	st := lipgloss.NewStyle()
+	if focused {
+		st = st.Reverse(true)
+	} else if hover {
+		st = st.Underline(true)
+	}
+	return label, st.Render(label)
+}
+
+// actionWidth is the display width of the current action label.
+func actionWidth(copied bool) int {
+	if copied {
+		return runewidth.StringWidth("COPIED")
+	}
+	return runewidth.StringWidth("COPY")
+}
+
+// ---- TextBlock -------------------------------------------------------------
+
+// TextBlock is a plain, non-interactive chat message.
+type TextBlock struct {
+	text  string
+	style lipgloss.Style
+}
+
+func NewTextBlock(text, color string) TextBlock {
+	s := lipgloss.NewStyle()
+	if color != "" {
+		s = s.Foreground(lipgloss.Color(color))
+	}
+	return TextBlock{text: text, style: s}
+}
+
+// NewUserBlock renders the user's own typed prompt (highlighted).
+func NewUserBlock(text string) TextBlock {
+	return TextBlock{text: text, style: lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)}
+}
+
+func (b TextBlock) Height(width int) int { return len(textWrapped(b.text, width)) }
+func (b TextBlock) View(width int) string {
+	lines := textWrapped(b.text, width)
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = b.style.Render(l)
+	}
+	return strings.Join(out, "\n")
+}
+func (b TextBlock) Update(msg tea.Msg) (Widget, tea.Cmd) { return b, nil }
+func (b TextBlock) Focused() bool                        { return false }
+func (b TextBlock) Focusable() bool                      { return false }
+func (b TextBlock) SetFocused(bool) Widget               { return b }
+func (b TextBlock) SetHover(bool) Widget                 { return b }
+func (b TextBlock) Resize(width int) Widget              { return b }
+func (b TextBlock) HitAction(width, x, y int) bool       { return false }
+func (b TextBlock) Copy() (Widget, tea.Cmd)              { return b, nil }
+
+// ---- CodeBlock -------------------------------------------------------------
+
+type CodeBlock struct {
+	lang, code string
+	th         *render.Theme
+	copyFn     CopyFunc
+	focused    bool
+	copied     bool
+	hover      bool
+}
+
+func NewCodeBlock(lang, code string, copyFn CopyFunc) CodeBlock {
+	// Tabs measure as width 0, which would break the box padding — expand them.
+	return CodeBlock{lang: lang, code: strings.ReplaceAll(strings.TrimSuffix(code, "\n"), "\t", "    "), copyFn: copyFn}
+}
+
+// linesAt returns the wrapped body line count for width.
+func (b CodeBlock) linesAt(width int) int {
+	return len(textWrapped(b.code, width-4))
+}
+
+// labelAt builds the footer label for a body line count.
+func labelAt(n int) string {
+	if n == 1 {
+		return "1 line"
+	}
+	return fmt.Sprintf("%d lines", n)
+}
+
+func (b CodeBlock) Height(width int) int {
+	return 1 + b.linesAt(width) + 1
+}
+func (b CodeBlock) View(width int) string {
+	innerW := width - 2
+	if innerW < 4 {
+		innerW = 4
+	}
+	body := textWrapped(b.code, innerW-4)
+	lines := make([]string, 0, len(body)+2)
+	lang := b.lang
+	if lang == "" {
+		lang = "code"
+	}
+	dashes := innerW - 4 - runewidth.StringWidth(lang)
+	if dashes < 0 {
+		lang = ""
+		dashes = innerW - 4
+	}
+	lines = append(lines, "┌─"+lang+strings.Repeat("─", dashes)+"─┐")
+	for _, ln := range body {
+		pad := innerW - 4 - runewidth.StringWidth(ln)
+		if pad < 0 {
+			pad = 0
+		}
+		lines = append(lines, "│ "+ln+strings.Repeat(" ", pad)+" │")
+	}
+	action, styled := copyAction(b.copied, b.focused, b.hover)
+	styled = b.th.ActionStyle().Render(styled)
+	lines = append(lines, render.FooterLine(width, labelAt(len(body)), action, styled, runewidth.StringWidth(action), lipgloss.NewStyle(), b.th.LabelStyle(), nil))
+	return strings.Join(lines, "\n")
+}
+func (b CodeBlock) Update(msg tea.Msg) (Widget, tea.Cmd) {
+	if km, ok := msg.(tea.KeyMsg); ok {
+		key := km.String()
+		if (key == "enter" || key == "c") && b.focused {
+			return b.Copy()
+		}
+	}
+	return b, nil
+}
+func (b CodeBlock) Focused() bool   { return b.focused }
+func (b CodeBlock) Focusable() bool { return true }
+func (b CodeBlock) SetFocused(f bool) Widget {
+	nb := b
+	nb.focused = f
+	if !f {
+		nb.copied = false
+	}
+	return nb
+}
+func (b CodeBlock) SetHover(h bool) Widget {
+	nb := b
+	nb.hover = h
+	return nb
+}
+func (b CodeBlock) Resize(width int) Widget { return b } // lays out per View anyway
+func (b CodeBlock) HitAction(width, x, y int) bool {
+	n := b.linesAt(width)
+	if y != 1+n {
+		return false
+	}
+	start, end := render.ActionRange(width, labelAt(n), actionWidth(b.copied))
+	return x >= start && x < end
+}
+func (b CodeBlock) Copy() (Widget, tea.Cmd) {
+	if b.copied || b.copyFn == nil {
+		return b, nil
+	}
+	nb := b
+	nb.copied = true
+	return nb, b.copyFn(b.code)
+}
+
+// ---- TableBlock ------------------------------------------------------------
+
+// TableBlock renders a markdown table, laid out dynamically against the width
+// it is given (re-flows on terminal resize). Chrome (borders, row separators)
+// renders via the theme; cells stay plain.
+type TableBlock struct {
+	cells   [][]string
+	aligns  []render.Align
+	th      *render.Theme
+	copyFn  CopyFunc
+	focused bool
+	copied  bool
+	hover   bool
+
+	cacheW int      // width the cache was built for (0 = none)
+	body   []string // cached body lines (no footer)
+	widths []int    // cached per-column widths
+}
+
+func NewTableBlock(cells [][]string, aligns []render.Align, copyFn CopyFunc) TableBlock {
+	return TableBlock{cells: cells, aligns: aligns, copyFn: copyFn}
+}
+
+// layout returns the body lines and column widths for width.
+func (b TableBlock) layout(width int) ([]string, []int) {
+	if b.body != nil && b.cacheW == width {
+		return b.body, b.widths
+	}
+	return render.TableBodyLines(b.cells, b.aligns, b.th, width)
+}
+
+func (b TableBlock) Height(width int) int {
+	body, _ := b.layout(width)
+	if len(body) == 0 {
+		return 0
+	}
+	return len(body) + 1
+}
+func (b TableBlock) View(width int) string {
+	body, widths := b.layout(width)
+	if len(body) == 0 {
+		return ""
+	}
+	rows := len(b.cells) - 1
+	if rows < 0 {
+		rows = 0
+	}
+	action, styled := copyAction(b.copied, b.focused, b.hover)
+	lines := append(append([]string{}, body...),
+		render.TableFooterLine(widths, rows, len(widths), b.th, action, styled, runewidth.StringWidth(action)))
+	return strings.Join(lines, "\n")
+}
+func (b TableBlock) Update(msg tea.Msg) (Widget, tea.Cmd) {
+	if km, ok := msg.(tea.KeyMsg); ok {
+		key := km.String()
+		if (key == "enter" || key == "c") && b.focused {
+			return b.Copy()
+		}
+	}
+	return b, nil
+}
+func (b TableBlock) Focused() bool   { return b.focused }
+func (b TableBlock) Focusable() bool { return true }
+func (b TableBlock) SetFocused(f bool) Widget {
+	nb := b
+	nb.focused = f
+	if !f {
+		nb.copied = false
+	}
+	return nb
+}
+func (b TableBlock) SetHover(h bool) Widget {
+	nb := b
+	nb.hover = h
+	return nb
+}
+
+// Resize rebuilds the layout cache for width (called on WindowSizeMsg).
+func (b TableBlock) Resize(width int) Widget {
+	if b.body != nil && b.cacheW == width {
+		return b
+	}
+	nb := b
+	nb.body, nb.widths = render.TableBodyLines(b.cells, b.aligns, b.th, width)
+	nb.cacheW = width
+	return nb
+}
+func (b TableBlock) HitAction(width, x, y int) bool {
+	body, widths := b.layout(width)
+	if len(body) == 0 || y != len(body) {
+		return false
+	}
+	rows := len(b.cells) - 1
+	if rows < 0 {
+		rows = 0
+	}
+	start, end := render.ActionRange(render.BoxWidth(widths), render.DimsLabel(rows, len(widths)), actionWidth(b.copied))
+	return x >= start && x < end
+}
+
+// Copy copies the table as markdown source.
+func (b TableBlock) Copy() (Widget, tea.Cmd) {
+	if b.copied || b.copyFn == nil {
+		return b, nil
+	}
+	nb := b
+	nb.copied = true
+	return nb, b.copyFn(render.TableMarkdown(b.cells))
+}
+
+// ---- build -----------------------------------------------------------------
+
+// BuildWidgets turns a structured block tree into interactive widgets.
+func BuildWidgets(nodes []render.Node, th *render.Theme, copyFn CopyFunc) []Widget {
+	tc := textColorFor(th)
+	out := make([]Widget, 0, len(nodes))
+	for _, n := range nodes {
+		switch n.Kind {
+		case render.NodeText:
+			out = append(out, NewTextBlock(n.Text, tc))
+		case render.NodeCode:
+			cb := NewCodeBlock(n.Lang, n.Code, copyFn)
+			cb.th = th
+			out = append(out, cb)
+		case render.NodeTable:
+			tb := NewTableBlock(n.Cells, n.Aligns, copyFn)
+			tb.th = th
+			out = append(out, tb)
+		}
+	}
+	return out
+}

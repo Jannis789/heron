@@ -1,0 +1,119 @@
+{
+  "format": 1,
+  "revisionFormat": 2,
+  "entries": {
+    "topology/peer-seq": {
+      "key": "topology/peer-seq",
+      "value": {
+        "format": 1,
+        "next": 1
+      },
+      "version": 1,
+      "updatedAt": 1791633271021,
+      "updatedBy": {
+        "id": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "name": "main",
+        "kind": "main",
+        "sessionId": "01a125a9-9a18-7117-b96a-95312b4d9c44"
+      }
+    },
+    "sessions/01a125a9-9a18-7117-b96a-95312b4d9c44": {
+      "key": "sessions/01a125a9-9a18-7117-b96a-95312b4d9c44",
+      "value": {
+        "id": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "name": "HER-1",
+        "label": "HER-1",
+        "kind": "peer",
+        "status": "running",
+        "runner": "pi",
+        "transport": "host",
+        "cwd": "/home/jannis/workspace/heron",
+        "sessionId": "01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "model": "nous/xiaomi/mimo-v2.6-flash",
+        "thinking": "off",
+        "startedAt": 1791633271007,
+        "updatedAt": 1791649050956,
+        "pendingMessages": false,
+        "local": false
+      },
+      "version": 3212,
+      "updatedAt": 1791649050956,
+      "updatedBy": {
+        "id": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "name": "main",
+        "kind": "main",
+        "sessionId": "01a125a9-9a18-7117-b96a-95312b4d9c44"
+      }
+    },
+    "topology/participants/970e01b81f81c5432fe5218b23a17b0da704448694a2e1591225e5d20bc6b6e3": {
+      "key": "topology/participants/970e01b81f81c5432fe5218b23a17b0da704448694a2e1591225e5d20bc6b6e3",
+      "value": {
+        "format": 1,
+        "id": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "kind": "root",
+        "rootId": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "ownerHostId": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "ownerIdentityId": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "name": "main",
+        "status": "running",
+        "runner": "pi",
+        "transport": "host",
+        "capabilities": [
+          "steer",
+          "followUp",
+          "fabric"
+        ],
+        "cwd": "/home/jannis/workspace/heron",
+        "sessionId": "01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "model": "nous/xiaomi/mimo-v2.6-flash",
+        "thinking": "off",
+        "startedAt": 1791633271007,
+        "updatedAt": 1791649050956,
+        "pendingMessages": false,
+        "controlProtocol": "v1",
+        "label": "HER-1"
+      },
+      "version": 3213,
+      "updatedAt": 1791649050957,
+      "updatedBy": {
+        "id": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "name": "main",
+        "kind": "main",
+        "sessionId": "01a125a9-9a18-7117-b96a-95312b4d9c44"
+      }
+    },
+    "topology/hosts/970e01b81f81c5432fe5218b23a17b0da704448694a2e1591225e5d20bc6b6e3": {
+      "key": "topology/hosts/970e01b81f81c5432fe5218b23a17b0da704448694a2e1591225e5d20bc6b6e3",
+      "value": {
+        "format": 1,
+        "id": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "rootId": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "identity": {
+          "id": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+          "name": "main",
+          "kind": "main",
+          "sessionId": "01a125a9-9a18-7117-b96a-95312b4d9c44"
+        },
+        "startedAt": 1791633271008,
+        "updatedAt": 1791649050957,
+        "expiresAt": 1791649065957
+      },
+      "version": 3214,
+      "updatedAt": 1791649050958,
+      "updatedBy": {
+        "id": "session:01a125a9-9a18-7117-b96a-95312b4d9c44",
+        "name": "main",
+        "kind": "main",
+        "sessionId": "01a125a9-9a18-7117-b96a-95312b4d9c44"
+      }
+    }
+  },
+  "highWater": 9634,
+  "versions": {
+    "topology/peer-seq": 1,
+    "sessions/01a125a9-9a18-7117-b96a-95312b4d9c44": 3212,
+    "topology/participants/970e01b81f81c5432fe5218b23a17b0da704448694a2e1591225e5d20bc6b6e3": 3213,
+    "topology/hosts/970e01b81f81c5432fe5218b23a17b0da704448694a2e1591225e5d20bc6b6e3": 3214
+  },
+  "tombstoneOrder": []
+}
