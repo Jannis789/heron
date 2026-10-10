@@ -71,14 +71,14 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | FR-20 | F | Eingabefeld: `/`-Popup | S | M2 | ⬜ | `/` öffnet eingabegefiltertes Command-Popup; `/model` listet Modelle, markiert das aktive, setzt Effort-Stufe (high/medium/low, je nach Backend) | `/model` wirkt ab dem nächsten Turn; unbekannter Befehl meldet Fehler |
 | FR-21 | F | Chat-Block (Shell-Ausgabe) | S | M2 | ⬜ | `!` führt das Kommando im Arbeitsverzeichnis der Session aus, Ausgabe als Block mit Copy; respektiert FR-9 | `!pwd` zeigt korrektes Verzeichnis; `ask` fragt, `deny` blockiert |
 | FR-22 | UX | `/model`-Liste (Reihenfolge) | C | M2 | ⬜ | häufig/zuletzt genutzte Modelle oben, Rest in Katalog-Reihenfolge | nach Nutzung erscheint das Modell beim nächsten `/model` oben |
-| FR-23 | UX | Status-Fusszeile unter dem Eingabefeld | S | M4 | ⬜ | Modell, Effort, In-/Out-Tokens, Reasoning-Tokens (k), Preis-Schätzung und Dauer der letzten Anfrage sowie Tool-Call-Anzahl (FR-31) | Werte pro Turn aktuell; „–“ ohne Daten, kein Layout-Bruch |
+| FR-23 | UX | Status-Fusszeile unter dem Eingabefeld | S | M4 | 🟡 | Modell und Effort live in der Box (`modell · effort`, aus ACP configOptions bzw. Flags); In-/Out-Tokens, Reasoning-Tokens, Preis und Dauer bewusst weggelassen — goose liefert sie in `stopReason.usage`, Anzeige später auf Abruf | Werte pro Turn aktuell; „–“ ohne Daten, kein Layout-Bruch |
 | FR-24 | F | Tab-Leiste über dem Chat | S | M3 | ⬜ | alle Chats chronologisch als Tabs (älteste links); beim Start ist die Session aktiv, die im jeweiligen Ordner zuerst gestartet wurde | Tabs in Start-Reihenfolge; Klick/Keys laden Chat, Status und Fusszeile |
 | FR-25 | F | CLI: `heron` / `heron -c` | S | M3 | ⬜ | `heron` legt beim Start eine neue Session im Ordner an, `heron -c` übernimmt die letzte Session desselben Ordners | zweiter Start ohne `-c` = zweite Session; `-c` stellt Verlauf her |
 | FR-26 | UX | Button oben links (Such-Popup) | C | M3 | ⬜ | Session-Suche (Zeit + Volltext) über alle Sessions; Treffer aktivieren die zugehörige Tab | Popup öffnet, Suchbegriff filtert, Auswahl springt in die Session |
 | FR-27 | F | Chat (Bild) | C | M4 | ⬜ | PlantUML-PNG über Kitty-/Sixel-Image-Protokoll (ghostty: Kitty), Erkennung nach NFR-3; ASCII-Fallback (FR-6) | PNG im Kitty-Terminal, sonst ASCII; kein Fehler/Absturz |
 | FR-28 | F | Chat (mermaid-Block) | C | M5 | ⬜ | mermaid-Fence über Tag-Routing (FR-4): v1 ASCII-/Text-Renderer, v2 Bild (FR-27), sonst Roh-Text | wirkt nur per Registrierung/Konfig, kein Kerncode-Eingriff |
-| FR-29 | UX | Maus-/Tastatur-Selection | S | M1 | ⬜ | markierte Auswahl kopiert die initiale Response als Plain Markdown, nicht die gerenderte ANSI-Darstellung | eingefügte Auswahl = unverändertes Markdown ohne Stil-Codes; FR-5 bleibt |
-| FR-30 | UX | Think-Block im Chat | S | M1 | ⬜ | Thinking bei langen Antworten gekürzt und ausklappbar; Sichtbarkeits-Toggle weiterhin FR-2 | langer Think-Text gekürzt + aufklappbar; kein Layout-Bruch |
+| FR-29 | UX | Maus-/Tastatur-Selection | S | M1 | ✅ | Space markiert den fokussierten Block, Mausklick auf den Blockkörper toggelt die Markierung (MARKED-Chip, invertierte Prosa); `y` kopiert die Auswahl als rohes Markdown ohne ANSI; Esc löscht zuerst die Selektion | eingefügte Auswahl = unverändertes Markdown ohne Stil-Codes; FR-5 bleibt |
+| FR-30 | UX | Think-Block im Chat | S | M1 | ✅ | Thinking (bei eingeschaltetem `ctrl+t`) als klappbarer Block: zusammengeklappt 3 Zeilen + „… n weitere“, enter oder Klick auf AUFKLAPPEN klappt um, Fold-State überlebt Stream-Refreshes; `ctrl+t` blendet weiter komplett aus | langer Think-Text gekürzt + aufklappbar; kein Layout-Bruch |
 | FR-31 | F | Status-/Fusszeile + Tool-Karten | S | M4 | ⬜ | Anzahl der Tool-Calls des letzten Turns anzeigen; Tool-Karten weiterhin kollabierbar (FR-2) | Turn mit n Tool-Calls zeigt „n tool calls“; Zähler pro Turn korrekt |
 | FR-32 | F | Tool-Block (apply/reset) | S | M4 | ⬜ | Diff-Statistik `+n`/`−n` Zeilen je Turn; apply wendet den Patch an, reset nimmt zurück; danach Zähler auf 0 | Statistik korrekt; apply/reset nullt die Anzeige; `deny` verhindert apply |
 | FR-33 | F | Fehler-Block + Retry im Chat | S | M2 | 🟡 | Fehler (Abbruch/Timeout/Crash) als markierter Block mit Icon und Retry-Aktion (letzten Prompt erneut) statt Fließtext | fehlgeschlagener Turn zeigt Block + Retry; Retry ersetzt den Block; ohne Fehler kein Block |
@@ -98,7 +98,7 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | NFR-10 | UX | UI-Texte zentral | C | M4 | ⬜ | UI-Texte zentral (deutsch als Ausgangssprache; Übersetzung nachrüstbar) | Texte nicht hart über Code verstreut |
 
 **Abnahme-Übersicht (Stand 2026-10-10):** ✅ FR-1, FR-2, FR-3, FR-6, FR-7, FR-8, FR-14, FR-15, FR-16,
-FR-37, NFR-2, NFR-8 · 🟡 FR-5, FR-10, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (29 offen).
+FR-29, FR-30, FR-37, NFR-2, NFR-8 · 🟡 FR-5, FR-10, FR-23, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (26 offen).
 
 **Abnahme-Hinweise (wie verifiziert):** FR-14 `nix build .#default` · FR-15/NFR-8 Suite ohne goose ·
 FR-3 Modell-Test (Kopfzeile + COPY + stabile ID, per pty-Screenshot bestätigt) · FR-6 echter

@@ -90,6 +90,8 @@ func (m *Model) startTurn() {
 	m.streaming = ""
 	m.thinking = ""
 	m.toolStatus = ""
+	// A fresh turn starts without the previous thinking block (FR-30).
+	m.chat = m.chat.removeBlock(ThinkBlockID)
 }
 
 // endTurn clears the live state once the turn settles.
@@ -162,7 +164,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "ctrl+t":
+			// FR-2 toggle stays; FR-30 renders the thinking as a collapsible
+			// block instead of dropping it after the turn.
 			m.showThink = !m.showThink
+			if m.showThink && m.thinking != "" {
+				m.chat = m.chat.upsertThinkBlock(m.thinking, m.theme)
+			}
+			if !m.showThink {
+				m.chat = m.chat.removeBlock(ThinkBlockID)
+			}
 			return m, nil
 		case "enter":
 			if m.chat.Focused() {
@@ -220,6 +230,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case thoughtMsg:
 		m.thinking += msg.text
+		if m.showThink {
+			m.chat = m.chat.upsertThinkBlock(m.thinking, m.theme)
+		}
 		return m, nil
 	case toolMsg:
 		if msg.done {
