@@ -252,8 +252,10 @@ func (m *Model) startTurn() {
 	m.streaming = ""
 	m.thinking = ""
 	m.toolStatus = ""
-	// A fresh turn starts without the previous thinking block (FR-30).
+	// A fresh turn starts without the previous thinking block (FR-30) and
+	// without stale streaming preview blocks.
 	m.chat = m.chat.removeBlock(ThinkBlockID)
+	m.chat = m.chat.removeStreamBlocks()
 }
 
 // endTurn clears the live state once the turn settles.
@@ -430,9 +432,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case chunkMsg:
-		// The answer grows in place under the chat while it streams (FR-2).
+		// The answer grows in place under the chat while it streams (FR-2):
+		// prose as raw preview, in-progress tables re-layout per row.
 		m.streaming += msg.text
-		m.chat = m.chat.upsertStreamBlock(m.streaming, textColorFor(m.theme))
+		m.chat = m.chat.upsertStreamWidgets(buildStreamWidgets(
+			m.streaming, textColorFor(m.theme), m.theme, m.copyFn))
 		return m, nil
 	case thoughtMsg:
 		m.thinking += msg.text
@@ -473,7 +477,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case replyMsg:
 		// The final text supersedes the live preview (FR-2).
 		m.endTurn()
-		m.chat = m.chat.removeBlock(StreamBlockID)
+		m.chat = m.chat.removeStreamBlocks()
 		switch {
 		case msg.err != nil:
 			m.chat = m.chat.Append(NewTextBlock("Fehler: "+msg.err.Error(), "1"))

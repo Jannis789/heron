@@ -111,22 +111,35 @@ type toolMsg struct {
 	done bool
 }
 
-// upsertStreamBlock creates or refreshes the streaming preview block and
-// keeps the pager pinned to the bottom while follow is active (FR-2/FR-8).
-func (l BlockList) upsertStreamBlock(text, color string) BlockList {
-	nb := NewTextBlock(text, color).SetID(StreamBlockID)
-	if _, ok := l.UpdateBlock(StreamBlockID, nb); ok {
-		if l.follow {
-			l = l.ScrollEnd()
+// removeStreamBlocks drops every transient streaming preview block (the
+// final parsed blocks replace them when the reply settles).
+func (l BlockList) removeStreamBlocks() BlockList {
+	for i := len(l.items) - 1; i >= 0; i-- {
+		id := l.items[i].ID()
+		if id <= StreamBlockID && id > StreamBlockID-streamIDRange {
+			l.items = append(l.items[:i], l.items[i+1:]...)
 		}
-		return l
 	}
-	return l.Append(nb)
+	return l
+}
+
+// upsertStreamWidgets replaces the transient streaming preview blocks with
+// the fresh set and keeps the pager pinned while follow is active (FR-2/FR-8).
+func (l BlockList) upsertStreamWidgets(widgets []Widget) BlockList {
+	l = l.removeStreamBlocks()
+	if len(widgets) > 0 {
+		l = l.Append(widgets...)
+	}
+	if l.follow {
+		l = l.ScrollEnd()
+	}
+	return l
 }
 
 // ThinkBlockID addresses the collapsible thinking block (FR-30). Like the
-// stream preview it lives outside the user-visible numbering.
-const ThinkBlockID = 999998
+// stream preview it lives outside the user-visible numbering — far enough
+// below the streaming range to never collide with it.
+const ThinkBlockID = 999900
 
 // upsertThinkBlock creates or refreshes the collapsible thinking block and
 // keeps the pager pinned while follow is active (FR-30). The fold state
