@@ -69,9 +69,22 @@ func NewHeadingBlock(text string) TextBlock {
 	return b
 }
 
+// actionStyle is the shared hover/focus treatment for footer actions —
+// reversed when focused, underlined when hovered. COPY and AUFKLAPPEN must
+// stay visually identical (FR-30).
+func actionStyle(focused, hover bool) lipgloss.Style {
+	st := lipgloss.NewStyle()
+	if focused {
+		st = st.Reverse(true)
+	} else if hover {
+		st = st.Underline(true)
+	}
+	return st
+}
+
 // copyAction returns the plain action label and a styled variant: MARKED
-// while the block is in the selection (FR-29), COPIED after a copy, reversed
-// when focused, underlined+bold when hovered.
+// while the block is in the selection (FR-29), COPIED after a copy, styled
+// by actionStyle (reversed when focused, underlined when hovered).
 func copyAction(copied, marked, focused, hover bool) (string, string) {
 	label := "COPY"
 	if marked {
@@ -80,13 +93,7 @@ func copyAction(copied, marked, focused, hover bool) (string, string) {
 	if copied {
 		label = "COPIED"
 	}
-	st := lipgloss.NewStyle()
-	if focused {
-		st = st.Reverse(true)
-	} else if hover {
-		st = st.Underline(true)
-	}
-	return label, st.Render(label)
+	return label, actionStyle(focused, hover).Render(label)
 }
 
 // actionWidth is the display width of the current action label.
@@ -547,17 +554,12 @@ func (b ThinkBlock) actionLabel() string {
 	return "AUFKLAPPEN"
 }
 
-// action returns the plain fold label and its styled variant — mirrors
-// copyAction: reversed when focused, underlined when hovered.
+// action returns the plain fold label and its styled variant — the same
+// actionStyle treatment as COPY (reversed when focused, underlined when
+// hovered), wrapped in the theme action colour.
 func (b ThinkBlock) action() (string, string) {
 	action := b.actionLabel()
-	st := lipgloss.NewStyle()
-	if b.focused {
-		st = st.Reverse(true)
-	} else if b.hover {
-		st = st.Underline(true)
-	}
-	return action, b.th.ActionStyle().Render(st.Render(action))
+	return action, b.th.ActionStyle().Render(actionStyle(b.focused, b.hover).Render(action))
 }
 
 // truncateCells cuts a line to w display cells, marking the cut with an

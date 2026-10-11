@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // TestThinkBlockCollapsesLongThinking (FR-30): a long thinking stream shows
@@ -47,6 +49,61 @@ func TestThinkBlockCollapsesLongThinking(t *testing.T) {
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
 	r.contains("fünf")
 	r.contains("ZUKLAPPEN")
+}
+
+// TestThinkActionHoverMatchesCopy (FR-30): hovering AUFKLAPPEN highlights it
+// — the hit area must match the rendered footer exactly like COPY, and the
+// hover treatment must be the same as the copy action's.
+func TestThinkActionHoverMatchesCopy(t *testing.T) {
+	r := newRig(t)
+	w := r.m.width
+	if w == 0 {
+		w = 80
+	}
+	b := NewThinkBlock("eins\nzwei", r.m.theme)
+	lines := strings.Split(stripANSI(b.View(w)), "\n")
+	footer := lines[len(lines)-1]
+	// Byte offsets are not cell offsets: box-drawing chars are 3 bytes but
+	// one cell — measure the prefix in cells.
+	cellX := len([]rune(footer[:strings.Index(footer, "AUFKLAPPEN")]))
+	if cellX < 0 {
+		t.Fatal("footer does not show AUFKLAPPEN")
+	}
+	y := len(lines) - 1 // footer row: header + body rows, 0-based
+	if !b.HitAction(w, cellX+2, y) {
+		t.Fatalf("HitAction misses AUFKLAPPEN at cell x=%d y=%d", cellX+2, y)
+	}
+	// ... and does not fire outside the action box.
+	if b.HitAction(w, 10, y) {
+		t.Fatal("HitAction hits outside the action box")
+	}
+	// Hover/focus restyle the fold action exactly like COPY (underline on
+	// hover, reverse on focus). go test runs with an Ascii color profile, so
+	// force TrueColor for this check and restore it afterwards.
+	rp := lipgloss.DefaultRenderer()
+	old := rp.ColorProfile()
+	rp.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { rp.SetColorProfile(old) })
+
+	hb := b.SetHover(true).(ThinkBlock)
+	hoverLabel, hoverStyled := hb.action()
+	if hoverLabel != "AUFKLAPPEN" || stripANSI(hoverStyled) != "AUFKLAPPEN" {
+		t.Fatal("hover styling changed the label")
+	}
+	// lipgloss v1.1 emits the attribute doubled ("\x1b[4;4m"), so match the
+	// attribute prefix, not an exact sequence.
+	if !strings.Contains(hoverStyled, "\x1b[4;") {
+		t.Fatalf("hover does not underline the fold action: %q", hoverStyled)
+	}
+	fb := b.SetFocused(true).(ThinkBlock)
+	focusLabel, focusedStyled := fb.action()
+	if focusLabel != "AUFKLAPPEN" || stripANSI(focusedStyled) != "AUFKLAPPEN" {
+		t.Fatal("focus styling changed the label")
+	}
+	// Reverse is emitted as a plain "\x1b[7m" (no doubled attribute).
+	if !strings.Contains(focusedStyled, "\x1b[7m") {
+		t.Fatalf("focus does not reverse the fold action: %q", focusedStyled)
+	}
 }
 
 // TestThinkBlockSurvivesStreaming (FR-30): refreshes keep the fold state.
