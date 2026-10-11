@@ -41,6 +41,14 @@ type Widget interface {
 	SetID(int) Widget
 }
 
+// actionWidget is a block whose footer action does something of its own:
+// COPY copies (CodeBlock/TableBlock), AUFKLAPPEN/ZUKLAPPEN folds the think
+// block (FR-30). Mouse clicks dispatch through Action — never through Copy,
+// which is the copy-only keyboard path (alt+<i>, y).
+type actionWidget interface {
+	Action() (Widget, tea.Cmd)
+}
+
 func textColorFor(th *render.Theme) string {
 	if th == nil {
 		return ""
@@ -332,6 +340,9 @@ func (b CodeBlock) HitAction(width, x, y int) bool {
 	start, end := render.ActionRange(width, labelAt(n), actionWidth(b.copied, b.marked))
 	return x >= start && x < end
 }
+// Action: clicking COPY copies, identical to the keyboard copy path (FR-5).
+func (b CodeBlock) Action() (Widget, tea.Cmd) { return b.Copy() }
+
 func (b CodeBlock) Copy() (Widget, tea.Cmd) {
 	if b.copied || b.copyFn == nil {
 		return b, nil
@@ -450,6 +461,9 @@ func (b TableBlock) HitAction(width, x, y int) bool {
 	start, end := render.ActionRange(render.BoxWidth(widths), render.DimsLabel(rows, len(widths)), actionWidth(b.copied, b.marked))
 	return x >= start && x < end
 }
+
+// Action: clicking COPY copies, identical to the keyboard copy path (FR-5).
+func (b TableBlock) Action() (Widget, tea.Cmd) { return b.Copy() }
 
 // Copy copies the table as markdown source.
 func (b TableBlock) Copy() (Widget, tea.Cmd) {
@@ -656,6 +670,14 @@ func (b ThinkBlock) HitAction(width, x, y int) bool {
 	return x >= start && x < end
 }
 func (b ThinkBlock) Copy() (Widget, tea.Cmd) { return b, nil }
+
+// Action: clicking the fold action toggles the block (FR-30) — no focus
+// needed, same semantics as pressing enter on the focused block.
+func (b ThinkBlock) Action() (Widget, tea.Cmd) {
+	nb := b
+	nb.expanded = !b.expanded
+	return nb, nil
+}
 func (b ThinkBlock) ID() int                 { return b.id }
 func (b ThinkBlock) SetID(i int) Widget {
 	nb := b

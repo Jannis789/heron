@@ -378,11 +378,19 @@ func (l BlockList) handleMouse(msg tea.MouseMsg) (BlockList, tea.Cmd, bool) {
 	}
 	switch msg.Button {
 	case tea.MouseButtonLeft:
-		// Click on COPY copies the block content (markdown/code).
+		// Click on a footer action triggers that action: COPY copies (FR-5),
+		// AUFKLAPPEN/ZUKLAPPEN folds the think block (FR-30).
 		if idx, ok := l.hitAction(msg.X, l.offset+msg.Y); ok {
-			w, cmd := l.items[idx].Copy()
-			l.items[idx] = w
-			return l, cmd, true
+			switch a := l.items[idx].(type) {
+			case actionWidget:
+				w, cmd := a.Action()
+				l.items[idx] = w
+				return l, cmd, true
+			default:
+				w, cmd := l.items[idx].Copy()
+				l.items[idx] = w
+				return l, cmd, true
+			}
 		}
 		// Click on a block body toggles its selection mark (FR-29).
 		if nl, toggled := l.toggleMarkAt(msg.X, l.offset+msg.Y); toggled {

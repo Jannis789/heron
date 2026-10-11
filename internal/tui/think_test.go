@@ -106,6 +106,52 @@ func TestThinkActionHoverMatchesCopy(t *testing.T) {
 	}
 }
 
+// TestThinkBlockUnfoldsOnClick (FR-30): clicking AUFKLAPPEN unfolds the
+// block — the mouse path dispatches the block's own action, never Copy.
+func TestThinkBlockUnfoldsOnClick(t *testing.T) {
+	r := newRig(t)
+	r.m.startTurn()
+	r.do(thoughtMsg{text: "eins\nzwei\ndrei\nvier\nfünf"})
+
+	l := r.m.chat
+	w := l.Width()
+	b, ok := l.items[0].(ThinkBlock)
+	if !ok {
+		t.Fatal("thought did not produce a think block")
+	}
+	h := b.Height(w)
+	footer := strings.Split(stripANSI(b.View(w)), "\n")[h-1]
+	i := strings.Index(footer, "AUFKLAPPEN")
+	if i < 0 {
+		t.Fatal("footer does not show AUFKLAPPEN")
+	}
+	x := len([]rune(footer[:i])) + 2 // cell offset, +2 lands inside the label
+	y := chatTop + h - 1             // only block → list top = chatTop
+
+	r.click(x, y)
+	nb, ok := r.m.chat.items[0].(ThinkBlock)
+	if !ok || !nb.expanded {
+		t.Fatal("clicking AUFKLAPPEN did not unfold the block")
+	}
+	r.contains("eins") // the beginning appears only when unfolded
+	r.contains("ZUKLAPPEN")
+
+	// Clicking ZUKLAPPEN folds it back. The expanded block is taller —
+	// recompute footer row and screen y, they moved with the height.
+	h2 := nb.Height(w)
+	footer2 := strings.Split(stripANSI(nb.View(w)), "\n")[h2-1]
+	i2 := strings.Index(footer2, "ZUKLAPPEN")
+	if i2 < 0 {
+		t.Fatal("footer does not show ZUKLAPPEN")
+	}
+	x2 := len([]rune(footer2[:i2])) + 2
+	r.click(x2, chatTop+h2-1)
+	if nb2, _ := r.m.chat.items[0].(ThinkBlock); nb2.expanded {
+		t.Fatal("clicking ZUKLAPPEN did not fold the block")
+	}
+	r.notContains("eins")
+}
+
 // TestThinkBlockSurvivesStreaming (FR-30): refreshes keep the fold state.
 func TestThinkBlockSurvivesStreaming(t *testing.T) {
 	r := newRig(t)
