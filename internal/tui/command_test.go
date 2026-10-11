@@ -15,21 +15,18 @@ func typeRunes(r *rig, s string) {
 	}
 }
 
-// TestSlashShowsSuggestions (FR-20): typing "/" opens the suggestion list
-// below the input inside the box.
-func TestSlashShowsSuggestions(t *testing.T) {
+// TestSlashInlineGhost (FR-20): typing a prefix completes the command inline
+// on the same line — dim ghost, no list below, no box growth.
+func TestSlashInlineGhost(t *testing.T) {
 	r := newRig(t)
-	typeRunes(r, "/")
+	typeRunes(r, "/mo")
 
 	view := stripANSI(r.m.View())
 	if !strings.Contains(view, "/model") {
-		t.Fatalf("suggestion missing in view: %q", view)
+		t.Fatalf("inline ghost missing in view: %q", view)
 	}
-	if !strings.Contains(view, "Modell und Effort wählen") {
-		t.Fatal("command help missing")
-	}
-	if !strings.Contains(view, "├") {
-		t.Fatal("separator between input and suggestions missing")
+	if strings.Contains(view, "├") {
+		t.Fatal("suggestion list below is gone — autocomplete is inline now")
 	}
 }
 
@@ -59,6 +56,18 @@ func TestSlashTabCompletes(t *testing.T) {
 	}
 }
 
+// TestSlashRightAcceptsGhost (FR-20): the right arrow accepts the ghost into
+// the input, like tab.
+func TestSlashRightAcceptsGhost(t *testing.T) {
+	r := newRig(t)
+	typeRunes(r, "/mo")
+	r.do(tea.KeyMsg{Type: tea.KeyRight})
+
+	if got := r.m.input.Value(); got != "/model " {
+		t.Fatalf("input = %q, want %q", got, "/model ")
+	}
+}
+
 // TestSlashUnknownCommandErrors (FR-20): an unknown command reports an error
 // instead of sending the prompt.
 func TestSlashUnknownCommandErrors(t *testing.T) {
@@ -76,11 +85,11 @@ func TestSlashEscDismissesUntilTyping(t *testing.T) {
 	typeRunes(r, "/")
 	r.do(tea.KeyMsg{Type: tea.KeyEsc})
 
-	if strings.Contains(stripANSI(r.m.View()), "Modell und Effort wählen") {
-		t.Fatal("esc did not dismiss the suggestions")
+	if strings.Contains(stripANSI(r.m.View()), "/model") {
+		t.Fatal("esc did not dismiss the ghost")
 	}
 	typeRunes(r, "m")
 	if !strings.Contains(stripANSI(r.m.View()), "/model") {
-		t.Fatal("typing did not bring the suggestions back")
+		t.Fatal("typing did not bring the ghost back")
 	}
 }

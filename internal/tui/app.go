@@ -452,9 +452,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "up":
 				m.cmdCursor = m.nextCmd(-1)
 				return m, nil
-			case "tab":
-				if matches := m.slashMatches(); m.cmdCursor < len(matches) {
-					m.input.SetValue("/" + matches[m.cmdCursor].name + " ")
+			case "tab", "right":
+				// Accept the ghost into the input (right does what tab does
+				// in shells).
+				if full := m.slashGhostFull(); full != "" {
+					m.input.SetValue(full + " ")
 					m.cmdCursor = 0
 					m.syncInputSize()
 				}

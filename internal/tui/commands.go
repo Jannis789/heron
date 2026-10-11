@@ -40,6 +40,31 @@ func (m Model) slashMatches() []command {
 	return out
 }
 
+// slashGhostRemainder returns the not-yet-typed rest of the currently
+// suggested command (inline autocomplete, FR-20); empty when there is no
+// match or the command is fully typed.
+func (m Model) slashGhostRemainder() string {
+	matches := m.slashMatches()
+	if m.cmdCursor >= len(matches) {
+		return ""
+	}
+	full := "/" + matches[m.cmdCursor].name
+	v := m.input.Value()
+	if full == v {
+		return ""
+	}
+	return strings.TrimPrefix(full, v)
+}
+
+// slashGhostFull returns the complete command of the current suggestion.
+func (m Model) slashGhostFull() string {
+	matches := m.slashMatches()
+	if m.cmdCursor >= len(matches) {
+		return ""
+	}
+	return "/" + matches[m.cmdCursor].name
+}
+
 // nextCmd moves the suggestion cursor by step and clamps to the list.
 func (m Model) nextCmd(step int) int {
 	n := len(m.slashMatches())
