@@ -66,6 +66,42 @@ func TestEffortEnterAppliesAndCloses(t *testing.T) {
 	}
 }
 
+// TestModelPickerSearchFilters (FR-20): /model zeigt die Suchzeile, Tippen
+// filtert (glm-5.3-flash ist in goose' Liste und wird auffindbar), enter
+// setzt das gefilterte Modell.
+func TestModelPickerSearchFilters(t *testing.T) {
+	r, calls := pickerRig(t)
+	r.m.modelOptions = []string{
+		"glm-4.5", "glm-4.5-air", "glm-4.6", "glm-5",
+		"glm-5.2", "glm-5.3", "glm-5.3-flash", "glm-5.3-flashx",
+	}
+	typeRunes(r, "/model")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
+	r.contains("Sucheingabe")
+
+	typeRunes(r, "flash")
+	r.contains("glm-5.3-flash")
+	r.contains("glm-5.3-flashx")
+	if strings.Contains(stripANSI(r.m.View()), "glm-4.6") {
+		t.Fatal("query did not filter the model list")
+	}
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
+	if len(*calls) != 1 || (*calls)[0] != "model=glm-5.3-flash" {
+		t.Fatalf("config calls = %v", *calls)
+	}
+}
+
+// TestEffortPickerHasNoSearch (FR-20): die kurze Stufenliste bleibt ohne
+// Suchzeile.
+func TestEffortPickerHasNoSearch(t *testing.T) {
+	r, _ := pickerRig(t)
+	typeRunes(r, "/effort")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
+	if strings.Contains(stripANSI(r.m.View()), "Sucheingabe") {
+		t.Fatal("effort picker shows a search line")
+	}
+}
+
 // TestPickerEscCloses (FR-20).
 func TestPickerEscCloses(t *testing.T) {
 	r, _ := pickerRig(t)

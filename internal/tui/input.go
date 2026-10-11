@@ -130,6 +130,15 @@ func (m Model) inputView() string {
 			}
 			return bs.Render("│") + " " + s + strings.Repeat(" ", gap) + " " + bs.Render("│")
 		}
+		// /model carries a search line above the list; /effort is short
+		// enough to browse without one (FR-20).
+		if m.pickerKind == "model" {
+			if m.pickerQuery == "" {
+				lines = append(lines, row("> "+ls.Render("Sucheingabe")))
+			} else {
+				lines = append(lines, row("> "+runewidth.Truncate(m.pickerQuery, inner-3, "…")))
+			}
+		}
 		options := m.pickerOptions()
 		if len(options) == 0 {
 			lines = append(lines, row("  " + ls.Render("keine Optionen")))

@@ -55,6 +55,7 @@ type Model struct {
 	pickerOpen    bool
 	pickerCursor  int
 	pickerScroll  int
+	pickerQuery   string // /model filters the list as you type (FR-20)
 
 	// Slash-command autocomplete (FR-20).
 	cmdCursor    int
@@ -110,11 +111,24 @@ type configResultMsg struct {
 
 // pickerOptions returns the announced options for the open picker kind —
 // the rows of the list.
+// pickerOptions returns the options of the open picker: effort levels or
+// models — models filtered by the search query while one is typed (FR-20).
 func (m Model) pickerOptions() []string {
 	if m.pickerKind == "effort" {
 		return m.effortOptions
 	}
-	return m.modelOptions
+	opts := m.modelOptions
+	if m.pickerQuery == "" {
+		return opts
+	}
+	q := strings.ToLower(m.pickerQuery)
+	var out []string
+	for _, o := range opts {
+		if strings.Contains(strings.ToLower(o), q) {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // openPicker expands the prompt box into the option list for the given kind
@@ -133,6 +147,7 @@ func (m *Model) openPicker(kind string) {
 	m.pickerOpen = true
 	m.pickerCursor = 0
 	m.pickerScroll = 0
+	m.pickerQuery = ""
 }
 
 // closePicker collapses the picker.
@@ -140,6 +155,7 @@ func (m *Model) closePicker() {
 	m.pickerOpen = false
 	m.pickerCursor = 0
 	m.pickerScroll = 0
+	m.pickerQuery = ""
 }
 
 // pickerRows caps the option rows visible in the expanded input box.
@@ -196,6 +212,29 @@ func (m Model) pickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.closePicker()
 		return m, nil
+	}
+	// The model list filters as you type; the effort list is short enough
+	// to browse without a query (FR-20). A changed query restarts at the top.
+	if m.pickerKind == "model" {
+		changed := false
+		switch msg.String() {
+		case "backspace":
+			if r := []rune(m.pickerQuery); len(r) > 0 {
+				m.pickerQuery = string(r[:len(r)-1])
+				changed = true
+			}
+		default:
+			if msg.Type == tea.KeySpace {
+				m.pickerQuery += " "
+				changed = true
+			} else if len(msg.Runes) > 0 {
+				m.pickerQuery += string(msg.Runes)
+				changed = true
+			}
+		}
+		if changed {
+			m.pickerCursor, m.pickerScroll = 0, 0
+		}
 	}
 	m.clampPickerScroll()
 	return m, nil
