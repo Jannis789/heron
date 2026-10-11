@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -31,7 +32,7 @@ func TestModelListOpensViaSlashCommand(t *testing.T) {
 	if !r.m.pickerOpen {
 		t.Fatal("/model did not open the model list")
 	}
-	r.contains("✓ glm-5.3")
+	r.contains("glm-5.3 ✓") // the active model is marked
 }
 
 // TestEffortListOpensViaSlashCommand (FR-20): /effort öffnet die Stufenliste,
@@ -44,7 +45,7 @@ func TestEffortListOpensViaSlashCommand(t *testing.T) {
 	if !r.m.pickerOpen {
 		t.Fatal("/effort did not open the effort list")
 	}
-	r.contains("✓ max")
+	r.contains("max ✓")
 }
 
 // TestEffortEnterAppliesAndCloses (FR-20): enter setzt die markierte Stufe
@@ -53,7 +54,10 @@ func TestEffortEnterAppliesAndCloses(t *testing.T) {
 	r, calls := pickerRig(t)
 	typeRunes(r, "/effort")
 	r.do(tea.KeyMsg{Type: tea.KeyEnter}) // executes /effort → opens the list
-	r.do(tea.KeyMsg{Type: tea.KeyEnter}) // applies the highlighted option ("low")
+	// The cursor starts on the active option ("max"); move up to "low".
+	r.do(tea.KeyMsg{Type: tea.KeyUp})
+	r.do(tea.KeyMsg{Type: tea.KeyUp})
+	r.do(tea.KeyMsg{Type: tea.KeyEnter}) // applies "low"
 
 	if len(*calls) != 1 || (*calls)[0] != "thinking_effort=low" {
 		t.Fatalf("config calls = %v", *calls)
@@ -100,6 +104,54 @@ func TestEffortPickerHasNoSearch(t *testing.T) {
 	if strings.Contains(stripANSI(r.m.View()), "Sucheingabe") {
 		t.Fatal("effort picker shows a search line")
 	}
+}
+
+// TestModelPickerSwitchesBackToActive (FR-20): die komplette goose-Liste
+// (11 Modelle) ist im Picker, der Cursor startet auf dem aktiven Modell —
+// glm-5.3 liegt an Position 9 und war früher unterhalb des 8-Zeilen-Fensters.
+// Ein enter schaltet direkt zurueck.
+func TestModelPickerSwitchesBackToActive(t *testing.T) {
+	r, calls := pickerRig(t)
+	r.m.modelOptions = []string{
+		"glm-4.5", "glm-4.5-air", "glm-4.6", "glm-4.7", "glm-5",
+		"glm-5-turbo", "glm-5.1", "glm-5.2", "glm-5.3",
+		"glm-5.3-flash", "glm-5.3-flashx",
+	}
+	r.m.modelLabel = "glm-5.3"
+
+	typeRunes(r, "/model")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
+	// The cursor starts on the active model — cursor arrow AND active ✓.
+	r.contains("▸ glm-5.3 ✓")
+	r.contains("glm-5.3-flash")   // the full list is in the window
+	r.contains("glm-5.3-flashx")
+
+	r.do(tea.KeyMsg{Type: tea.KeyEnter}) // applies the highlighted (active)
+	if len(*calls) != 1 || (*calls)[0] != "model=glm-5.3" {
+		t.Fatalf("config calls = %v", *calls)
+	}
+}
+
+// TestModelPickerScrollsLongLists (FR-20): listen laenger als das Fenster
+// scrollen mit dem Cursor mit.
+func TestModelPickerScrollsLongLists(t *testing.T) {
+	r, _ := pickerRig(t)
+	opts := []string{}
+	for i := 0; i < 15; i++ {
+		opts = append(opts, fmt.Sprintf("modell-%02d", i))
+	}
+	r.m.modelOptions = opts
+	r.m.modelLabel = "modell-00"
+
+	typeRunes(r, "/model")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
+	if strings.Contains(stripANSI(r.m.View()), "modell-14") {
+		t.Fatal("window shows rows beyond its size on open")
+	}
+	for i := 0; i < 14; i++ {
+		r.do(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	r.contains("modell-14") // the window followed the cursor to the end
 }
 
 // TestPickerEscCloses (FR-20).

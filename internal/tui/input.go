@@ -143,17 +143,21 @@ func (m Model) inputView() string {
 		if len(options) == 0 {
 			lines = append(lines, row("  " + ls.Render("keine Optionen")))
 		}
-		end := min(m.pickerScroll+pickerRows, len(options))
+		rows := m.pickerVisibleRows()
+		end := min(m.pickerScroll+rows, len(options))
 		for idx := m.pickerScroll; idx < end; idx++ {
 			name := options[idx]
 			prefix := "    "
-			if name == active {
-				prefix = "  ✓ "
-			}
 			if idx == m.pickerCursor {
 				prefix = "  ▸ "
 			}
-			lines = append(lines, row(prefix+name))
+			// The active option keeps its ✓ even while the cursor is
+			// somewhere else — scrolling must not hide what is live (FR-20).
+			suffix := ""
+			if name == active {
+				suffix = " ✓"
+			}
+			lines = append(lines, row(prefix+name+suffix))
 		}
 		lines = append(lines, bs.Render("└"+strings.Repeat("─", w-2)+"╯"))
 		return strings.Join(lines, "\n")

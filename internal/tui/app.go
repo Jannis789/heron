@@ -148,6 +148,20 @@ func (m *Model) openPicker(kind string) {
 	m.pickerCursor = 0
 	m.pickerScroll = 0
 	m.pickerQuery = ""
+	// Start with the cursor on the active option: switching back (e.g.
+	// glm-5.3) is one enter, and the selection is visible immediately
+	// instead of below the fold (FR-20).
+	active := m.modelLabel
+	if kind == "effort" {
+		active = m.effort
+	}
+	for i, o := range m.pickerOptions() {
+		if o == active {
+			m.pickerCursor = i
+			break
+		}
+	}
+	m.clampPickerScroll()
 }
 
 // closePicker collapses the picker.
@@ -158,8 +172,26 @@ func (m *Model) closePicker() {
 	m.pickerQuery = ""
 }
 
-// pickerRows caps the option rows visible in the expanded input box.
-const pickerRows = 8
+// pickerRows caps the option rows visible in the expanded input box — wide
+// enough for goose's full model list (11 announced), clamped by the terminal
+// height at render time.
+const pickerRows = 12
+
+// pickerVisibleRows is the list window: the whole list when it fits, never
+// more than the terminal affords, at least one row (FR-20).
+func (m Model) pickerVisibleRows() int {
+	rows := pickerRows
+	if n := len(m.pickerOptions()); n < rows {
+		rows = n
+	}
+	if room := m.height - 9; room < rows {
+		rows = room
+	}
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
 
 // clampPickerScroll keeps the cursor inside the visible list window.
 func (m *Model) clampPickerScroll() {
@@ -167,11 +199,12 @@ func (m *Model) clampPickerScroll() {
 	if m.pickerCursor >= n {
 		m.pickerCursor = max(n-1, 0)
 	}
+	rows := m.pickerVisibleRows()
 	if m.pickerCursor < m.pickerScroll {
 		m.pickerScroll = m.pickerCursor
 	}
-	if m.pickerCursor >= m.pickerScroll+pickerRows {
-		m.pickerScroll = m.pickerCursor - pickerRows + 1
+	if m.pickerCursor >= m.pickerScroll+rows {
+		m.pickerScroll = m.pickerCursor - rows + 1
 	}
 	if m.pickerScroll < 0 {
 		m.pickerScroll = 0
