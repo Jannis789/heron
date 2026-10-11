@@ -600,7 +600,9 @@ func (b ThinkBlock) View(width int) string {
 		dashes = 0
 	}
 	lines := make([]string, 0, b.Height(width))
-	lines = append(lines, bs.Render("┌─ ")+b.th.ActionStyle().Render(label)+
+	// The caption is a fold hit target (HitAction y==0) — same hover/focus
+	// treatment as the footer action.
+	lines = append(lines, bs.Render("┌─ ")+b.th.ActionStyle().Render(actionStyle(b.focused, b.hover).Render(label))+
 		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
 
 	rows := b.wrappedBody(inner)
@@ -662,6 +664,12 @@ func (b ThinkBlock) Resize(width int) Widget {
 	return b
 }
 func (b ThinkBlock) HitAction(width, x, y int) bool {
+	// The header caption ("denken ▸ n Zeilen") folds too — clicking the
+	// section title is the natural unfold, and it must NOT toggle the
+	// selection mark (FR-30).
+	if y == 0 {
+		return x >= 3 && x < 3+runewidth.StringWidth(b.label())
+	}
 	if y != 1+b.bodyRows(width) {
 		return false
 	}

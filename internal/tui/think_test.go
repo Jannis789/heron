@@ -150,6 +150,25 @@ func TestThinkBlockUnfoldsOnClick(t *testing.T) {
 		t.Fatal("clicking ZUKLAPPEN did not fold the block")
 	}
 	r.notContains("eins")
+
+	// Clicking the header caption folds/unfolds as well — and must NOT set
+	// the selection mark (the ✓ that did nothing).
+	r.click(5, chatTop)
+	nb3, ok := r.m.chat.items[0].(ThinkBlock)
+	if !ok || !nb3.expanded {
+		t.Fatal("clicking the header caption did not unfold the block")
+	}
+	if nb3.Marked() {
+		t.Fatal("clicking the header caption set the selection mark")
+	}
+	r.click(5, chatTop)
+	nb4, _ := r.m.chat.items[0].(ThinkBlock)
+	if nb4.expanded {
+		t.Fatal("second header click did not fold the block")
+	}
+	if nb4.Marked() {
+		t.Fatal("header clicks set the selection mark")
+	}
 }
 
 // TestThinkBlockSurvivesStreaming (FR-30): refreshes keep the fold state.
