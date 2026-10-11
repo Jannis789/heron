@@ -40,7 +40,7 @@ func (m *Model) syncInputSize() {
 // one — keeps the bottom border of the box from being clipped.
 func (m *Model) relayout() {
 	inputRows := len(strings.Split(m.inputView(), "\n"))
-	used := 2 + inputRows + 1 // title + status, box, gap
+	used := 2 + inputRows + 2 // title + status, box, gap, footer
 	h := m.height - used
 	if h < 1 {
 		h = 1
@@ -128,12 +128,8 @@ func (m Model) inputView() string {
 			fill.Render(ln+strings.Repeat(" ", gap))+" "+bs.Render("│"))
 	}
 
-	// The bottom border carries model and effort — the same in every state.
-	labelBox := "[ " + m.stateLabel() + " ]"
-	n := w - 2 - runewidth.StringWidth(labelBox) - 1
-	if n < 0 {
-		n = 0
-	}
-	lines = append(lines, bs.Render("└─"+labelBox+strings.Repeat("─", n)+"╯"))
+	// The model/effort label lives in the footer bar below (crush-style) —
+	// the box border stays clean.
+	lines = append(lines, bs.Render("└"+strings.Repeat("─", w-2)+"╯"))
 	return strings.Join(lines, "\n")
 }

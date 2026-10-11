@@ -71,7 +71,7 @@ func TestPopupEnterAppliesModelAndEscCloses(t *testing.T) {
 // chip opens the popup.
 func TestFooterChipClickOpensPopup(t *testing.T) {
 	r, _ := popupRig(t)
-	lo, _ := r.m.promptChipRange()
+	lo, _ := r.m.modelSegmentRange()
 	r.do(tea.MouseMsg{X: lo + 2, Y: 29, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	if !r.m.popupOpen {
 		t.Fatal("chip click did not open the popup")

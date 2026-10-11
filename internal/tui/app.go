@@ -213,23 +213,55 @@ func (m *Model) applyConfig(kind, value string) {
 	}
 }
 
-// promptChipRange returns the screen columns of the [ modell · effort ] chip
-// in the prompt box bottom border.
-func (m Model) promptChipRange() (int, int) {
-	labelBox := "[ " + m.stateLabel() + " ]"
-	return 2, 2 + runewidth.StringWidth(labelBox)
+// modelSegmentRange returns the screen columns of the model segment in the
+// footer bar (last row).
+func (m Model) modelSegmentRange() (int, int) {
+	return 1, 3 + runewidth.StringWidth(m.stateLabel())
 }
 
-// popupRowAt maps a click to a popup entry row; ok is false outside the box.
+// footerView is the status bar under the prompt box, crush-style: the model
+// segment on the left (click/ctrl+o opens the selection dialog), key hints on
+// the right.
+func (m Model) footerView() string {
+	left := m.stateLabel()
+	hints := "ctrl+o modell · ctrl+t denken"
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	gap := w - runewidth.StringWidth(left) - 2 - runewidth.StringWidth(hints) - 3
+	if gap < 1 {
+		gap = 1
+	}
+	if m.theme == nil {
+		return " " + left + strings.Repeat(" ", gap) + hints
+	}
+	fill := m.theme.TableFill()
+	return " " + fill.Render(" "+left+" ") + strings.Repeat(" ", gap) +
+		m.theme.LabelStyle().Render(hints) + " "
+}
+
+// dialogGeometry returns position and size of the centered selection dialog.
+func (m Model) dialogGeometry() (int, int, int, int) {
+	w := popupWidth(m.popupEntries) + 4
+	if w > m.width-2 {
+		w = m.width - 2
+	}
+	h := len(m.popupEntries) + 5 // borders, padding rows, hint row
+	x := max((m.width-w)/2, 0)
+	y := max((m.height-h)/2, 0)
+	return x, y, w, h
+}
+
+// popupRowAt maps a click to a dialog entry row; ok is false outside the
+// entry area of the centered dialog.
 func (m Model) popupRowAt(x, y int) (int, bool) {
-	if y < chatTop || x < 2 {
+	dx, dy, w, h := m.dialogGeometry()
+	if y < dy+2 || y >= dy+h-2 { // skip border and padding rows
 		return 0, false
 	}
-	row := y - chatTop - 1 // -1: box top border
-	if row < 0 || row >= len(m.popupEntries) {
-		return 0, false
-	}
-	if x > popupWidth(m.popupEntries)+1 {
+	row := y - dy - 2
+	if row < 0 || row >= len(m.popupEntries) || x < dx+2 || x > dx+w-2 {
 		return 0, false
 	}
 	return row, true
@@ -256,48 +288,58 @@ func popupWidth(entries []configEntry) int {
 	return w
 }
 
-// overlayPopup paints the open model/effort popup over the chat rows
-// (FR-20-lite).
-func (m Model) overlayPopup(frame string) string {
-	if !m.popupOpen || m.height <= 0 {
+// renderDialog paints the open model/effort dialog centered over the frame —
+// a solid panel with padding and a hint row, like crush's dialogs (FR-20-lite).
+func (m Model) renderDialog(frame string) string {
+	if !m.popupOpen || m.height <= 0 || m.width < 24 {
 		return frame
 	}
-	w := popupWidth(m.popupEntries)
+	dx, dy, w, h := m.dialogGeometry()
 	inner := w - 2
-	rows := make([]string, 0, len(m.popupEntries)+2)
+	ls := m.theme.LabelStyle()
+
+	rows := make([]string, 0, h)
 	rows = append(rows, "┌─ modell / effort "+strings.Repeat("─", max(w-20, 0))+"┐")
+	rows = append(rows, "│"+strings.Repeat(" ", inner)+"│")
 	for i, e := range m.popupEntries {
-		var txt string
-		switch {
-		case e.header:
-			txt = e.kind
-		default:
-			mark := "  "
-			if e.active {
-				mark = "✓ "
-			}
-			cursor := " "
-			if i == m.popupCursor {
-				cursor = ">"
-			}
-			txt = cursor + " " + mark + e.value
+		cursor := "  "
+		if i == m.popupCursor {
+			cursor = "▸ "
 		}
-		gap := inner - runewidth.StringWidth(txt)
+		check := "   "
+		if e.active {
+			check = " ✓ "
+		}
+		txt := cursor + check + e.value
+		if e.header {
+			txt = "  " + strings.ToUpper(e.kind)
+		}
+		gap := inner - 2 - runewidth.StringWidth(txt)
 		if gap < 0 {
 			gap = 0
 		}
-		rows = append(rows, "│"+txt+strings.Repeat(" ", gap)+"│")
+		if i == m.popupCursor && !e.header {
+			// The selected row inverts, like crush's dialog selection.
+			rows = append(rows, "│  "+ls.Reverse(true).Render(txt+strings.Repeat(" ", gap))+"  │")
+			continue
+		}
+		rows = append(rows, "│  "+ls.Render(txt)+strings.Repeat(" ", gap)+"  │")
 	}
+	rows = append(rows, "│"+strings.Repeat(" ", inner)+"│")
+	hint := "↑↓ · enter · esc"
+	hw := runewidth.StringWidth(hint)
+	lp := max((inner-hw)/2, 0)
+	rows = append(rows, "│"+strings.Repeat(" ", lp)+ls.Render(hint)+strings.Repeat(" ", max(inner-hw-lp, 0))+"│")
 	rows = append(rows, "└"+strings.Repeat("─", inner)+"┘")
 
 	lines := strings.Split(frame, "\n")
 	for r, row := range rows {
-		y := chatTop + r
-		if y >= len(lines) || y >= m.height-1 {
-			break
+		y := dy + r
+		if y < 0 || y >= len(lines) {
+			continue
 		}
-		pad := max(m.width-runewidth.StringWidth(row), 0)
-		lines[y] = row + strings.Repeat(" ", pad)
+		pad := max(m.width-dx-runewidth.StringWidth(row), 0)
+		lines[y] = strings.Repeat(" ", dx) + row + strings.Repeat(" ", pad)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -355,7 +397,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The [ modell · effort ] footer chip toggles the popup; clicks
 		// inside the open popup select, outside close it (FR-20-lite).
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			if lo, hi := m.promptChipRange(); msg.Y == m.height-1 && msg.X >= lo && msg.X < hi {
+			if lo, hi := m.modelSegmentRange(); msg.Y == m.height-1 && msg.X >= lo && msg.X < hi {
 				m.popupOpen = !m.popupOpen
 				if m.popupOpen {
 					m.openPopup()
@@ -606,9 +648,10 @@ func (m Model) View() string {
 		// No terminal size known yet (tests, first paint): render as-is
 		// instead of squeezing the frame into an unknown height, which cut
 		// the header and the newest chat rows.
-		return m.overlayPopup(m.fillScreen(top.String() + "\n\n" + prompt))
+		return m.renderDialog(m.fillScreen(top.String() + "\n\n" + prompt + "\n" + m.footerView()))
 	}
-	avail := m.height - len(strings.Split(prompt, "\n"))
+	promptRows := len(strings.Split(prompt, "\n"))
+	avail := m.height - promptRows - 1 // the footer row
 	if avail < 1 {
 		avail = 1
 	}
@@ -619,7 +662,7 @@ func (m Model) View() string {
 	for len(topLines) < avail {
 		topLines = append(topLines, "")
 	}
-	return m.overlayPopup(m.fillScreen(strings.Join(append(topLines, prompt), "\n")))
+	return m.renderDialog(m.fillScreen(strings.Join(append(append(topLines, prompt), m.footerView()), "\n")))
 }
 
 // fillScreen pads every line to the terminal width and paints the theme

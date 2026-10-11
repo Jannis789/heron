@@ -46,9 +46,10 @@ func TestThinkBlockSurvivesStreamingAndToggle(t *testing.T) {
 	}
 
 	r.key("ctrl+t")
-	r.notContains("denken")
+	// The footer hint mentions "denken" too — assert on the block header.
+	r.notContains("denken ▾")
 	r.key("ctrl+t")
-	r.contains("denken")
+	r.contains("denken ▸")
 }
 
 // TestStartTurnDropsThinkBlock (FR-30): a new turn starts clean.
@@ -60,5 +61,5 @@ func TestStartTurnDropsThinkBlock(t *testing.T) {
 	r.contains("denken")
 
 	r.m.startTurn()
-	r.notContains("denken")
+	r.notContains("denken ▸")
 }

@@ -23,8 +23,10 @@ func TestInputBoxIsFramedOnAllSides(t *testing.T) {
 	if !strings.HasPrefix(bottom, "└") || !(strings.HasSuffix(bottom, "┘") || strings.HasSuffix(bottom, "╯")) {
 		t.Fatalf("bottom border missing: %q", bottom)
 	}
-	if !strings.Contains(bottom, "goose · medium") {
-		t.Fatalf("model/effort missing: %q", bottom)
+	// The model/effort label lives in the footer bar below the box now
+	// (crush-style) — the border itself stays clean.
+	if !strings.Contains(stripANSI(r.m.View()), "goose · medium") {
+		t.Fatalf("model/effort missing in footer: %q", r.m.View())
 	}
 }
 
