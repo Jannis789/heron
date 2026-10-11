@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"heron/internal/render"
 )
@@ -45,6 +46,14 @@ type Model struct {
 	cwd        string    // workspace shown in the top border
 	modelLabel string    // model shown in the bottom border
 	effort     string    // effort level shown next to the model
+
+	// Model/effort popup (FR-20-lite).
+	modelOptions  []string
+	effortOptions []string
+	configSet     func(id, value string) error
+	popupOpen     bool
+	popupCursor   int
+	popupEntries  []configEntry
 }
 
 func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
@@ -82,6 +91,216 @@ func (m Model) WithModel(name string) Model { m.modelLabel = name; return m }
 
 // WithEffort sets the effort level shown next to the model.
 func (m Model) WithEffort(e string) Model { m.effort = e; return m }
+
+// WithConfigSet wires the backend call that changes a session config option
+// (modell / effort) for the popup (FR-20-lite).
+func (m Model) WithConfigSet(fn func(id, value string) error) Model { m.configSet = fn; return m }
+
+// configEntry is one row of the model/effort popup (FR-20-lite).
+type configEntry struct {
+	kind   string // "modell" or "effort"
+	value  string
+	active bool
+	header bool // section caption, not selectable
+}
+
+// configResultMsg reports a finished config option change.
+type configResultMsg struct {
+	kind  string
+	value string
+	err   error
+}
+
+// openPopup builds the model/effort selection rows from the announced config
+// options (FR-20-lite). No-op without announced options.
+func (m *Model) openPopup() {
+	var entries []configEntry
+	add := func(kind string, options []string, active string) {
+		if len(options) == 0 {
+			return
+		}
+		entries = append(entries, configEntry{kind: kind, header: true})
+		for _, o := range options {
+			entries = append(entries, configEntry{kind: kind, value: o, active: o == active})
+		}
+	}
+	add("modell", m.modelOptions, m.modelLabel)
+	add("effort", m.effortOptions, m.effort)
+	if len(entries) == 0 {
+		return
+	}
+	cursor := 0
+	for i, e := range entries {
+		if !e.header {
+			cursor = i
+			break
+		}
+	}
+	m.popupOpen = true
+	m.popupCursor = cursor
+	m.popupEntries = entries
+}
+
+// popupKey handles keys while the popup is open; the bool reports whether
+// the key was consumed.
+func (m Model) popupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "up":
+		m.popupCursor = m.prevSelectable()
+		return m, nil, true
+	case "down":
+		m.popupCursor = m.nextSelectable()
+		return m, nil, true
+	case "esc":
+		m.popupOpen = false
+		return m, nil, true
+	case "enter":
+		e := m.popupEntries[m.popupCursor]
+		if e.header {
+			return m, nil, true
+		}
+		return m.applyConfigCmd(e)
+	}
+	return m, nil, false
+}
+
+// nextSelectable/prevSelectable move the cursor across section captions.
+func (m Model) nextSelectable() int {
+	for i := m.popupCursor + 1; i < len(m.popupEntries); i++ {
+		if !m.popupEntries[i].header {
+			return i
+		}
+	}
+	return m.popupCursor
+}
+
+func (m Model) prevSelectable() int {
+	for i := m.popupCursor - 1; i >= 0; i-- {
+		if !m.popupEntries[i].header {
+			return i
+		}
+	}
+	return m.popupCursor
+}
+
+// applyConfigCmd applies the selection: without a backend (demo) locally,
+// otherwise as a command so the event loop never blocks on I/O (NFR-2).
+func (m Model) applyConfigCmd(e configEntry) (tea.Model, tea.Cmd, bool) {
+	if m.configSet == nil {
+		nm := m
+		nm.applyConfig(e.kind, e.value)
+		return nm, nil, true
+	}
+	kind, value, fn := e.kind, e.value, m.configSet
+	return m, func() tea.Msg {
+		return configResultMsg{kind: kind, value: value, err: fn(kind, value)}
+	}, true
+}
+
+// applyConfig updates the labels locally (demo path or confirmed result) and
+// keeps the open popup's active marks in sync.
+func (m *Model) applyConfig(kind, value string) {
+	switch kind {
+	case "modell":
+		m.modelLabel = value
+	case "effort":
+		m.effort = value
+	}
+	for i, e := range m.popupEntries {
+		if e.kind == kind {
+			m.popupEntries[i].active = e.value == value
+		}
+	}
+}
+
+// promptChipRange returns the screen columns of the [ modell · effort ] chip
+// in the prompt box bottom border.
+func (m Model) promptChipRange() (int, int) {
+	labelBox := "[ " + m.stateLabel() + " ]"
+	return 2, 2 + runewidth.StringWidth(labelBox)
+}
+
+// popupRowAt maps a click to a popup entry row; ok is false outside the box.
+func (m Model) popupRowAt(x, y int) (int, bool) {
+	if y < chatTop || x < 2 {
+		return 0, false
+	}
+	row := y - chatTop - 1 // -1: box top border
+	if row < 0 || row >= len(m.popupEntries) {
+		return 0, false
+	}
+	if x > popupWidth(m.popupEntries)+1 {
+		return 0, false
+	}
+	return row, true
+}
+
+// popupWidth is the box width for the current entries (capped).
+func popupWidth(entries []configEntry) int {
+	w := len("modell / effort")
+	for _, e := range entries {
+		n := len(e.kind)
+		if !e.header {
+			n = len(e.value)
+		}
+		if n+4 > w {
+			w = n + 4
+		}
+	}
+	if w < 20 {
+		w = 20
+	}
+	if w > 42 {
+		w = 42
+	}
+	return w
+}
+
+// overlayPopup paints the open model/effort popup over the chat rows
+// (FR-20-lite).
+func (m Model) overlayPopup(frame string) string {
+	if !m.popupOpen || m.height <= 0 {
+		return frame
+	}
+	w := popupWidth(m.popupEntries)
+	inner := w - 2
+	rows := make([]string, 0, len(m.popupEntries)+2)
+	rows = append(rows, "┌─ modell / effort "+strings.Repeat("─", max(w-20, 0))+"┐")
+	for i, e := range m.popupEntries {
+		var txt string
+		switch {
+		case e.header:
+			txt = e.kind
+		default:
+			mark := "  "
+			if e.active {
+				mark = "✓ "
+			}
+			cursor := " "
+			if i == m.popupCursor {
+				cursor = ">"
+			}
+			txt = cursor + " " + mark + e.value
+		}
+		gap := inner - runewidth.StringWidth(txt)
+		if gap < 0 {
+			gap = 0
+		}
+		rows = append(rows, "│"+txt+strings.Repeat(" ", gap)+"│")
+	}
+	rows = append(rows, "└"+strings.Repeat("─", inner)+"┘")
+
+	lines := strings.Split(frame, "\n")
+	for r, row := range rows {
+		y := chatTop + r
+		if y >= len(lines) || y >= m.height-1 {
+			break
+		}
+		pad := max(m.width-runewidth.StringWidth(row), 0)
+		lines[y] = row + strings.Repeat(" ", pad)
+	}
+	return strings.Join(lines, "\n")
+}
 
 // startTurn resets the live state for a fresh prompt.
 func (m *Model) startTurn() {
@@ -133,6 +352,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncInputSize()
 		return m, nil
 	case tea.MouseMsg:
+		// The [ modell · effort ] footer chip toggles the popup; clicks
+		// inside the open popup select, outside close it (FR-20-lite).
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if lo, hi := m.promptChipRange(); msg.Y == m.height-1 && msg.X >= lo && msg.X < hi {
+				m.popupOpen = !m.popupOpen
+				if m.popupOpen {
+					m.openPopup()
+				}
+				return m, nil
+			}
+			if m.popupOpen {
+				if idx, ok := m.popupRowAt(msg.X, msg.Y); ok && !m.popupEntries[idx].header {
+					nm, cmd, _ := m.applyConfigCmd(m.popupEntries[idx])
+					return nm, cmd
+				}
+				m.popupOpen = false
+				return m, nil
+			}
+		}
 		// Translate the screen row into chat-area coordinates, then let the
 		// pager handle hover/click on COPY actions.
 		mm := msg
@@ -144,6 +382,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	case tea.KeyMsg:
+		// The open popup swallows keys first (FR-20-lite).
+		if m.popupOpen {
+			nm, cmd, used := m.popupKey(msg)
+			if used {
+				return nm, cmd
+			}
+			return m, nil
+		}
 		// Numbered copy fallback (FR-5): alt+<n> / ctrl+<n> copy block n.
 		if n := blockNumFromKey(msg.String()); n > 0 {
 			chat, cmd, ok := m.chat.copyByID(n)
@@ -173,6 +419,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.showThink {
 				m.chat = m.chat.removeBlock(ThinkBlockID)
 			}
+			return m, nil
+		case "ctrl+o":
+			// Keyboard twin of the footer chip: open the popup (FR-20-lite).
+			m.openPopup()
 			return m, nil
 		case "enter":
 			if m.chat.Focused() {
@@ -250,6 +500,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.effort != "" {
 			m.effort = msg.effort
 		}
+		m.modelOptions = msg.modelOptions
+		m.effortOptions = msg.effortOptions
+		return m, nil
+	case configResultMsg:
+		// The backend confirmed (or failed) a model/effort change.
+		if msg.err != nil {
+			m.chat = m.chat.Append(NewTextBlock("Fehler: "+msg.err.Error(), "1"))
+			return m, nil
+		}
+		m.applyConfig(msg.kind, msg.value)
 		return m, nil
 	case plantumlDoneMsg:
 		m.chat, _ = m.chat.applyPlantUML(msg.results)
@@ -346,7 +606,7 @@ func (m Model) View() string {
 		// No terminal size known yet (tests, first paint): render as-is
 		// instead of squeezing the frame into an unknown height, which cut
 		// the header and the newest chat rows.
-		return m.fillScreen(top.String() + "\n\n" + prompt)
+		return m.overlayPopup(m.fillScreen(top.String() + "\n\n" + prompt))
 	}
 	avail := m.height - len(strings.Split(prompt, "\n"))
 	if avail < 1 {
@@ -359,7 +619,7 @@ func (m Model) View() string {
 	for len(topLines) < avail {
 		topLines = append(topLines, "")
 	}
-	return m.fillScreen(strings.Join(append(topLines, prompt), "\n"))
+	return m.overlayPopup(m.fillScreen(strings.Join(append(topLines, prompt), "\n")))
 }
 
 // fillScreen pads every line to the terminal width and paints the theme

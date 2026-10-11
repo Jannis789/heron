@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -104,7 +105,7 @@ func main() {
 		if mdl == "" && eff == "" {
 			return
 		}
-		stream.Info(mdl, eff)
+		stream.Info(mdl, eff, s.ModelOptions(), s.EffortOptions())
 	}
 
 	sender := func(prompt string) (string, error) {
@@ -140,6 +141,17 @@ func main() {
 		}
 	}
 
+	// The model/effort popup changes session config options through the live
+	// session — same mutex discipline as the sender (NFR-2).
+	configSet := func(id, value string) error {
+		s := session()
+		if s == nil {
+			return fmt.Errorf("keine goose-session")
+		}
+		_, err := s.SetConfigOption(context.Background(), id, value)
+		return err
+	}
+
 	// Shorten the home prefix for display only — the session keeps the real
 	// absolute working directory.
 	cwd := wd
@@ -148,6 +160,7 @@ func main() {
 	}
 
 	model := tui.New(sender, th, copyFn).WithStream(stream).WithCancel(cancel).
+		WithConfigSet(configSet).
 		WithWorkspace(cwd).WithModel(*modelFlag).WithEffort(*effortFlag)
 	if *seedFile != "" {
 		b, err := os.ReadFile(*seedFile)

@@ -63,10 +63,16 @@ func rewritePromptRow(ln string, th *render.Theme) string {
 	return strings.ReplaceAll(ln, "\x1b[40m", th.BackgroundSeq())
 }
 
+// nixIcon prefixes the workspace path — the Nerd Font NixOS glyph.
+const nixIcon = "󱄅"
+
 // topLabel is the workspace the session runs in — nothing else. The app name
 // already lives in the title row.
 func (m Model) topLabel() string {
-	return m.cwd
+	if m.cwd == "" {
+		return ""
+	}
+	return nixIcon + " " + m.cwd
 }
 
 // stateLabel is the bottom-left footer: model and effort — the same in every

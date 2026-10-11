@@ -10,10 +10,12 @@ import (
 // Session wraps initialize + session/new for one goose subprocess and answers
 // prompts with the assembled agent_message_chunk text.
 type Session struct {
-	client    *Client
-	sessionID string
-	model     string // model goose runs (ACP configOptions), may be empty
-	effort    string // thinking effort (ACP configOptions), may be empty
+	client        *Client
+	sessionID     string
+	model         string   // model goose runs (ACP configOptions), may be empty
+	effort        string   // thinking effort (ACP configOptions), may be empty
+	modelOptions  []string // selectable models goose announced
+	effortOptions []string // selectable effort levels goose announced
 }
 
 // Model reports the model goose announced for this session (configOptions
@@ -24,11 +26,31 @@ func (s *Session) Model() string { return s.model }
 // "thinking_effort"); empty when the agent does not say.
 func (s *Session) Effort() string { return s.effort }
 
+// ModelOptions lists the selectable models goose announced; may be empty.
+func (s *Session) ModelOptions() []string { return s.modelOptions }
+
+// EffortOptions lists the selectable effort levels goose announced; may be
+// empty.
+func (s *Session) EffortOptions() []string { return s.effortOptions }
+
+// SetConfigOption changes a session config option (e.g. "model",
+// "thinking_effort") and returns the raw result with the refreshed
+// configOptions list.
+func (s *Session) SetConfigOption(ctx context.Context, id, value string) (json.RawMessage, error) {
+	return s.client.Request(ctx, "session/set_config_option", map[string]any{
+		"sessionId": s.sessionID,
+		"configId":  id,
+		"value":     value,
+	})
+}
+
 // sessionInfo bundles what heron reads out of the session/new response.
 type sessionInfo struct {
-	sessionID string
-	model     string
-	effort    string
+	sessionID     string
+	model         string
+	effort        string
+	modelOptions  []string
+	effortOptions []string
 }
 
 // parseSessionInfo extracts the session id plus the config options goose
@@ -40,7 +62,10 @@ func parseSessionInfo(sres []byte) sessionInfo {
 		SessionID     string `json:"sessionId"`
 		ConfigOptions []struct {
 			ID           string `json:"id"`
-			CurrentValue string `json:"currentValue"`
+			CurrentValue string   `json:"currentValue"`
+			Options      []struct {
+				Value string `json:"value"`
+			} `json:"options"`
 		} `json:"configOptions"`
 	}
 	if json.Unmarshal(sres, &raw) != nil {
@@ -51,8 +76,14 @@ func parseSessionInfo(sres []byte) sessionInfo {
 		switch co.ID {
 		case "model":
 			si.model = co.CurrentValue
+			for _, o := range co.Options {
+				si.modelOptions = append(si.modelOptions, o.Value)
+			}
 		case "thinking_effort":
 			si.effort = co.CurrentValue
+			for _, o := range co.Options {
+				si.effortOptions = append(si.effortOptions, o.Value)
+			}
 		}
 	}
 	return si
@@ -90,7 +121,8 @@ func NewSession(ctx context.Context, gooseBin, cwd string) (*Session, error) {
 		c.Close()
 		return nil, fmt.Errorf("session/new parse: %v", sres)
 	}
-	return &Session{client: c, sessionID: si.sessionID, model: si.model, effort: si.effort}, nil
+	return &Session{client: c, sessionID: si.sessionID, model: si.model, effort: si.effort,
+		modelOptions: si.modelOptions, effortOptions: si.effortOptions}, nil
 }
 
 // update mirrors the session/update payload. ACP puts tool metadata directly
