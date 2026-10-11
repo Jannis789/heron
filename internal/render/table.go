@@ -168,6 +168,13 @@ func boxWidth(widths []int) int {
 // display width of the action. st colors the chrome (dim); the action keeps
 // its own styling.
 func FooterLine(totalW int, label, action, actionStyled string, actionW int, st, labelStyle lipgloss.Style, junctions []int) string {
+	// No label: the dashes run straight into the action box — no empty
+	// bracket chrome (FR-30 think block footer).
+	if strings.TrimSpace(label) == "" {
+		n := max(totalW-actionW-8, 0)
+		return st.Render("└─"+strings.Repeat("─", n)) +
+			st.Render("[ ") + actionStyled + st.Render(" ]─┘")
+	}
 	labelW := runewidth.StringWidth(label)
 	spaced := totalW-labelW-actionW-12 >= 0
 	pad := ""

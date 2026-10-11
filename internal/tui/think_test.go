@@ -15,17 +15,16 @@ func TestThinkBlockCollapsesLongThinking(t *testing.T) {
 	r.do(thoughtMsg{text: "eins\nzwei\ndrei\nvier\nfünf"})
 
 	r.contains("denken")
-	r.contains("… 2 weitere Zeilen")
-	// "denken" appears exactly once: in the block header. The footer only
-	// carries the fold action (no duplicate label).
+	// The collapsed block shows the END of the thinking ("drei/vier/fünf");
+	// the beginning ("eins") stays hidden until unfolded. "denken" appears
+	// exactly once: in the block header.
 	if n := strings.Count(stripANSI(r.m.View()), "denken"); n != 1 {
 		t.Fatalf("'denken' appears %d times, want exactly 1 (header only)", n)
 	}
-	// The collapsed block must stop after three lines ("vier"/"fünf" stay
-	// hidden until unfolded).
-	if strings.Contains(stripANSI(r.m.View()), "vier") {
-		t.Fatal("collapsed block shows more than three lines")
+	if strings.Contains(stripANSI(r.m.View()), "eins") {
+		t.Fatal("collapsed block shows the beginning instead of the end")
 	}
+	r.contains("fünf")
 
 	// Unfold: focus the block and press enter.
 	r.do(tea.KeyMsg{Type: tea.KeyTab})

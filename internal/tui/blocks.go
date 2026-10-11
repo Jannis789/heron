@@ -496,14 +496,15 @@ func (b ThinkBlock) bodyLines() []string {
 	return strings.Split(strings.TrimRight(b.text, "\n"), "\n")
 }
 
-// bodyRows is the rendered body row count for the current fold state. Long
+// bodyRows is the rendered body row count for the current fold state. A
+// collapsed block shows the LAST lines of the thinking (the conclusion), long
 // lines are truncated per row, so the count never depends on the width.
 func (b ThinkBlock) bodyRows() int {
 	n := len(b.bodyLines())
 	if b.expanded || n <= thinkCollapsed {
 		return n
 	}
-	return thinkCollapsed + 1 // three lines plus the "n more" marker
+	return thinkCollapsed
 }
 
 func (b ThinkBlock) Height(width int) int { return 1 + b.bodyRows() + 1 }
@@ -569,17 +570,12 @@ func (b ThinkBlock) View(width int) string {
 		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
 
 	body := b.bodyLines()
-	for i, ln := range body {
-		if !b.expanded && i >= thinkCollapsed {
-			more := len(body) - thinkCollapsed
-			txt := ls.Render(fmt.Sprintf("… %d weitere Zeilen", more))
-			gap := inner - lipgloss.Width(txt)
-			if gap < 0 {
-				gap = 0
-			}
-			lines = append(lines, bs.Render("│")+" "+txt+strings.Repeat(" ", gap)+" "+bs.Render("│"))
-			break
-		}
+	// Collapsed shows the END of the thinking — the conclusion lives there.
+	start := 0
+	if !b.expanded && len(body) > thinkCollapsed {
+		start = len(body) - thinkCollapsed
+	}
+	for _, ln := range body[start:] {
 		txt := ls.Render(truncateCells(ln, inner))
 		gap := inner - lipgloss.Width(txt)
 		if gap < 0 {
