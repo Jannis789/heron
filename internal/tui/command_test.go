@@ -33,12 +33,12 @@ func TestSlashInlineGhost(t *testing.T) {
 // TestSlashFilterAndExecuteOpensDialog (FR-20): the list filters while
 // typing; enter runs /model, which opens the selection dialog.
 func TestSlashFilterAndExecuteOpensDialog(t *testing.T) {
-	r, _ := popupRig(t)
+	r, _ := pickerRig(t)
 	typeRunes(r, "/mo")
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
 
-	if !r.m.popupOpen {
-		t.Fatal("/model did not open the selection dialog")
+	if !r.m.modelListOpen {
+		t.Fatal("/model did not open the model list")
 	}
 	if r.m.input.Value() != "" {
 		t.Fatalf("input not cleared: %q", r.m.input.Value())

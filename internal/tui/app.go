@@ -46,13 +46,13 @@ type Model struct {
 	modelLabel string    // model shown in the bottom border
 	effort     string    // effort level shown next to the model
 
-	// Model/effort popup (FR-20-lite).
+	// Model picker (FR-20): the input box expands into a searchable list.
 	modelOptions  []string
-	effortOptions []string
 	configSet     func(id, value string) error
-	popupOpen     bool
-	popupCursor   int
-	popupEntries  []configEntry
+	modelListOpen bool
+	modelSearch   string
+	modelCursor   int
+	modelScroll   int
 
 	// Slash-command autocomplete (FR-20).
 	cmdCursor    int
@@ -95,125 +95,117 @@ func (m Model) WithModel(name string) Model { m.modelLabel = name; return m }
 // WithEffort sets the effort level shown next to the model.
 func (m Model) WithEffort(e string) Model { m.effort = e; return m }
 
-// WithConfigSet wires the backend call that changes a session config option
-// (modell / effort) for the popup (FR-20-lite).
+// WithConfigSet wires the backend call that changes the session model for
+// the picker (FR-20).
 func (m Model) WithConfigSet(fn func(id, value string) error) Model { m.configSet = fn; return m }
 
-// configEntry is one row of the model/effort popup (FR-20-lite).
-type configEntry struct {
-	kind   string // "modell" or "effort"
-	value  string
-	active bool
-	header bool // section caption, not selectable
-}
-
-// configResultMsg reports a finished config option change.
+// configResultMsg reports a finished model change.
 type configResultMsg struct {
 	kind  string
 	value string
 	err   error
 }
 
-// openPopup builds the model/effort selection rows from the announced config
-// options (FR-20-lite). No-op without announced options.
-func (m *Model) openPopup() {
-	var entries []configEntry
-	add := func(kind string, options []string, active string) {
-		if len(options) == 0 {
-			return
-		}
-		entries = append(entries, configEntry{kind: kind, header: true})
-		for _, o := range options {
-			entries = append(entries, configEntry{kind: kind, value: o, active: o == active})
+// filteredModels returns the announced models matching the search text.
+func (m Model) filteredModels() []string {
+	q := strings.ToLower(m.modelSearch)
+	var out []string
+	for _, o := range m.modelOptions {
+		if q == "" || strings.Contains(strings.ToLower(o), q) {
+			out = append(out, o)
 		}
 	}
-	add("modell", m.modelOptions, m.modelLabel)
-	add("effort", m.effortOptions, m.effort)
-	if len(entries) == 0 {
+	return out
+}
+
+// openModelList expands the prompt box into the searchable model list.
+// No-op without announced options.
+func (m *Model) openModelList() {
+	if len(m.modelOptions) == 0 {
 		return
 	}
-	cursor := 0
-	for i, e := range entries {
-		if !e.header {
-			cursor = i
-			break
-		}
-	}
-	m.popupOpen = true
-	m.popupCursor = cursor
-	m.popupEntries = entries
+	m.modelListOpen = true
+	m.modelSearch = ""
+	m.modelCursor = 0
+	m.modelScroll = 0
 }
 
-// popupKey handles keys while the popup is open; the bool reports whether
-// the key was consumed.
-func (m Model) popupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+// closeModelList collapses the picker and clears the search.
+func (m *Model) closeModelList() {
+	m.modelListOpen = false
+	m.modelSearch = ""
+	m.modelCursor = 0
+	m.modelScroll = 0
+}
+
+// pickerRows caps the model rows visible in the expanded input box.
+const pickerRows = 8
+
+// clampModelScroll keeps the cursor inside the visible list window.
+func (m *Model) clampModelScroll() {
+	n := len(m.filteredModels())
+	if m.modelCursor >= n {
+		m.modelCursor = max(n-1, 0)
+	}
+	if m.modelCursor < m.modelScroll {
+		m.modelScroll = m.modelCursor
+	}
+	if m.modelCursor >= m.modelScroll+pickerRows {
+		m.modelScroll = m.modelCursor - pickerRows + 1
+	}
+	if m.modelScroll < 0 {
+		m.modelScroll = 0
+	}
+}
+
+// modelListKey handles keys while the picker is open: typing filters, ↑↓
+// navigate, enter applies the highlighted model live, esc closes.
+func (m Model) modelListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up":
-		m.popupCursor = m.prevSelectable()
-		return m, nil, true
+		if m.modelCursor > 0 {
+			m.modelCursor--
+		}
 	case "down":
-		m.popupCursor = m.nextSelectable()
-		return m, nil, true
-	case "esc":
-		m.popupOpen = false
-		return m, nil, true
+		if m.modelCursor < len(m.filteredModels())-1 {
+			m.modelCursor++
+		}
 	case "enter":
-		e := m.popupEntries[m.popupCursor]
-		if e.header {
-			return m, nil, true
+		filtered := m.filteredModels()
+		if m.modelCursor >= len(filtered) {
+			return m, nil
 		}
-		return m.applyConfigCmd(e)
-	}
-	return m, nil, false
-}
-
-// nextSelectable/prevSelectable move the cursor across section captions.
-func (m Model) nextSelectable() int {
-	for i := m.popupCursor + 1; i < len(m.popupEntries); i++ {
-		if !m.popupEntries[i].header {
-			return i
+		value := filtered[m.modelCursor]
+		if m.configSet == nil {
+			m.applyConfig(value)
+			m.closeModelList()
+			return m, nil
 		}
-	}
-	return m.popupCursor
-}
-
-func (m Model) prevSelectable() int {
-	for i := m.popupCursor - 1; i >= 0; i-- {
-		if !m.popupEntries[i].header {
-			return i
+		fn := m.configSet
+		return m, func() tea.Msg {
+			return configResultMsg{value: value, err: fn("model", value)}
 		}
-	}
-	return m.popupCursor
-}
-
-// applyConfigCmd applies the selection: without a backend (demo) locally,
-// otherwise as a command so the event loop never blocks on I/O (NFR-2).
-func (m Model) applyConfigCmd(e configEntry) (tea.Model, tea.Cmd, bool) {
-	if m.configSet == nil {
-		nm := m
-		nm.applyConfig(e.kind, e.value)
-		return nm, nil, true
-	}
-	kind, value, fn := e.kind, e.value, m.configSet
-	return m, func() tea.Msg {
-		return configResultMsg{kind: kind, value: value, err: fn(kind, value)}
-	}, true
-}
-
-// applyConfig updates the labels locally (demo path or confirmed result) and
-// keeps the open popup's active marks in sync.
-func (m *Model) applyConfig(kind, value string) {
-	switch kind {
-	case "modell":
-		m.modelLabel = value
-	case "effort":
-		m.effort = value
-	}
-	for i, e := range m.popupEntries {
-		if e.kind == kind {
-			m.popupEntries[i].active = e.value == value
+	case "esc":
+		m.closeModelList()
+		return m, nil
+	case "backspace":
+		if r := []rune(m.modelSearch); len(r) > 0 {
+			m.modelSearch = string(r[:len(r)-1])
+		}
+	default:
+		if len(msg.Runes) > 0 {
+			m.modelSearch += string(msg.Runes)
+			m.modelCursor = 0
+			m.modelScroll = 0
 		}
 	}
+	m.clampModelScroll()
+	return m, nil
+}
+
+// applyConfig updates the model label (demo path or confirmed result).
+func (m *Model) applyConfig(value string) {
+	m.modelLabel = value
 }
 
 // modelSegmentRange returns the screen columns of the model segment in the
@@ -248,109 +240,6 @@ func (m Model) footerView() string {
 		line += m.theme.LabelStyle().Render(hints) + " "
 	}
 	return strings.TrimRight(line, " ")
-}
-
-// dialogGeometry returns position and size of the centered selection dialog.
-func (m Model) dialogGeometry() (int, int, int, int) {
-	w := popupWidth(m.popupEntries) + 4
-	if w > m.width-2 {
-		w = m.width - 2
-	}
-	h := len(m.popupEntries) + 5 // borders, padding rows, hint row
-	x := max((m.width-w)/2, 0)
-	y := max((m.height-h)/2, 0)
-	return x, y, w, h
-}
-
-// popupRowAt maps a click to a dialog entry row; ok is false outside the
-// entry area of the centered dialog.
-func (m Model) popupRowAt(x, y int) (int, bool) {
-	dx, dy, w, h := m.dialogGeometry()
-	if y < dy+2 || y >= dy+h-2 { // skip border and padding rows
-		return 0, false
-	}
-	row := y - dy - 2
-	if row < 0 || row >= len(m.popupEntries) || x < dx+2 || x > dx+w-2 {
-		return 0, false
-	}
-	return row, true
-}
-
-// popupWidth is the box width for the current entries (capped).
-func popupWidth(entries []configEntry) int {
-	w := len("modell / effort")
-	for _, e := range entries {
-		n := len(e.kind)
-		if !e.header {
-			n = len(e.value)
-		}
-		if n+4 > w {
-			w = n + 4
-		}
-	}
-	if w < 20 {
-		w = 20
-	}
-	if w > 42 {
-		w = 42
-	}
-	return w
-}
-
-// renderDialog paints the open model/effort dialog centered over the frame —
-// a solid panel with padding and a hint row, like crush's dialogs (FR-20-lite).
-func (m Model) renderDialog(frame string) string {
-	if !m.popupOpen || m.height <= 0 || m.width < 24 {
-		return frame
-	}
-	dx, dy, w, h := m.dialogGeometry()
-	inner := w - 2
-	ls := m.theme.LabelStyle()
-
-	rows := make([]string, 0, h)
-	rows = append(rows, "┌─ modell / effort "+strings.Repeat("─", max(w-20, 0))+"┐")
-	rows = append(rows, "│"+strings.Repeat(" ", inner)+"│")
-	for i, e := range m.popupEntries {
-		cursor := "  "
-		if i == m.popupCursor {
-			cursor = "▸ "
-		}
-		check := "   "
-		if e.active {
-			check = " ✓ "
-		}
-		txt := cursor + check + e.value
-		if e.header {
-			txt = "  " + strings.ToUpper(e.kind)
-		}
-		gap := inner - 2 - runewidth.StringWidth(txt)
-		if gap < 0 {
-			gap = 0
-		}
-		if i == m.popupCursor && !e.header {
-			// The selected row inverts, like crush's dialog selection.
-			rows = append(rows, "│  "+ls.Reverse(true).Render(txt+strings.Repeat(" ", gap))+"  │")
-			continue
-		}
-		rows = append(rows, "│  "+ls.Render(txt)+strings.Repeat(" ", gap)+"  │")
-	}
-	rows = append(rows, "│"+strings.Repeat(" ", inner)+"│")
-	hint := "↑↓ · enter · esc"
-	hw := runewidth.StringWidth(hint)
-	lp := max((inner-hw)/2, 0)
-	rows = append(rows, "│"+strings.Repeat(" ", lp)+ls.Render(hint)+strings.Repeat(" ", max(inner-hw-lp, 0))+"│")
-	rows = append(rows, "└"+strings.Repeat("─", inner)+"┘")
-
-	lines := strings.Split(frame, "\n")
-	for r, row := range rows {
-		y := dy + r
-		if y < 0 || y >= len(lines) {
-			continue
-		}
-		pad := max(m.width-dx-runewidth.StringWidth(row), 0)
-		lines[y] = strings.Repeat(" ", dx) + row + strings.Repeat(" ", pad)
-	}
-	return strings.Join(lines, "\n")
 }
 
 // startTurn resets the live state for a fresh prompt.
@@ -408,18 +297,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// inside the open popup select, outside close it (FR-20-lite).
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if lo, hi := m.modelSegmentRange(); msg.Y == m.height-1 && msg.X >= lo && msg.X < hi {
-				m.popupOpen = !m.popupOpen
-				if m.popupOpen {
-					m.openPopup()
-				}
-				return m, nil
-			}
-			if m.popupOpen {
-				if idx, ok := m.popupRowAt(msg.X, msg.Y); ok && !m.popupEntries[idx].header {
-					nm, cmd, _ := m.applyConfigCmd(m.popupEntries[idx])
-					return nm, cmd
-				}
-				m.popupOpen = false
+				m.openModelList()
 				return m, nil
 			}
 		}
@@ -434,13 +312,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	case tea.KeyMsg:
-		// The open popup swallows keys first (FR-20-lite).
-		if m.popupOpen {
-			nm, cmd, used := m.popupKey(msg)
-			if used {
-				return nm, cmd
-			}
-			return m, nil
+		// The open model picker swallows keys first (FR-20).
+		if m.modelListOpen {
+			return m.modelListKey(msg)
 		}
 		// Slash-command navigation (FR-20): while the prompt starts with
 		// "/", up/down move the selection, tab completes, esc dismisses.
@@ -578,15 +452,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.effort = msg.effort
 		}
 		m.modelOptions = msg.modelOptions
-		m.effortOptions = msg.effortOptions
 		return m, nil
 	case configResultMsg:
-		// The backend confirmed (or failed) a model/effort change.
+		// The backend confirmed (or failed) the model change.
 		if msg.err != nil {
 			m.chat = m.chat.Append(NewTextBlock("Fehler: "+msg.err.Error(), "1"))
 			return m, nil
 		}
-		m.applyConfig(msg.kind, msg.value)
+		m.applyConfig(msg.value)
+		m.closeModelList()
 		return m, nil
 	case plantumlDoneMsg:
 		m.chat, _ = m.chat.applyPlantUML(msg.results)
@@ -675,7 +549,7 @@ func (m Model) View() string {
 		// No terminal size known yet (tests, first paint): render as-is
 		// instead of squeezing the frame into an unknown height, which cut
 		// the header and the newest chat rows.
-		return m.renderDialog(m.fillScreen(top.String() + "\n\n" + prompt + "\n" + m.footerView()))
+		return m.fillScreen(top.String() + "\n\n" + prompt + "\n" + m.footerView())
 	}
 	promptRows := len(strings.Split(prompt, "\n"))
 	avail := m.height - promptRows - 1 // the footer row
@@ -689,7 +563,7 @@ func (m Model) View() string {
 	for len(topLines) < avail {
 		topLines = append(topLines, "")
 	}
-	return m.renderDialog(m.fillScreen(strings.Join(append(append(topLines, prompt), m.footerView()), "\n")))
+	return m.fillScreen(strings.Join(append(append(topLines, prompt), m.footerView()), "\n"))
 }
 
 // fillScreen pads every line to the terminal width and paints the theme

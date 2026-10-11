@@ -84,19 +84,17 @@ func (s *Stream) Tool(name string, done bool) {
 }
 
 // Info publishes the model/effort the backend announced (ACP configOptions)
-// once the session exists, plus the selectable option lists.
-func (s *Stream) Info(model, effort string, modelOptions, effortOptions []string) {
-	s.publish(infoMsg{model: model, effort: effort,
-		modelOptions: modelOptions, effortOptions: effortOptions})
+// once the session exists, plus the selectable model list.
+func (s *Stream) Info(model, effort string, modelOptions []string) {
+	s.publish(infoMsg{model: model, effort: effort, modelOptions: modelOptions})
 }
 
 // infoMsg carries the session's real model/effort labels and the selectable
-// option lists behind them.
+// model list behind them.
 type infoMsg struct {
-	model         string
-	effort        string
-	modelOptions  []string
-	effortOptions []string
+	model        string
+	effort       string
+	modelOptions []string
 }
 
 // chunkMsg carries one piece of the in-flight answer.

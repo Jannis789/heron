@@ -92,7 +92,7 @@ func (m Model) execCommand(full string) (tea.Model, tea.Cmd) {
 			m.chat = m.chat.Append(NewTextBlock("goose hat keine Modell-Optionen gemeldet.", "1"))
 			return m, nil
 		}
-		m.openPopup()
+		m.openModelList()
 		return m, nil
 	}
 	m.chat = m.chat.Append(NewTextBlock("Unbekannter Befehl: "+full, "1"))

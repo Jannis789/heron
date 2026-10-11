@@ -116,6 +116,42 @@ func (m Model) inputView() string {
 		lines = append(lines, bs.Render("┌─ "+label+" "+strings.Repeat("─", dashes)+"┐"))
 	}
 
+	// Model picker (FR-20): the box expands into the search line and the
+	// filtered model list.
+	if th != nil && m.modelListOpen {
+		ls := th.LabelStyle()
+		row := func(s string) string {
+			gap := w - 4 - lipgloss.Width(s)
+			if gap < 0 {
+				gap = 0
+			}
+			return bs.Render("│") + " " + s + strings.Repeat(" ", gap) + " " + bs.Render("│")
+		}
+		search := "› " + m.modelSearch + "▏"
+		if m.modelSearch == "" {
+			search += ls.Render("  tippen zum filtern")
+		}
+		lines = append(lines, row(search))
+		filtered := m.filteredModels()
+		if len(filtered) == 0 {
+			lines = append(lines, row("  " + ls.Render("keine Treffer")))
+		}
+		end := min(m.modelScroll+pickerRows, len(filtered))
+		for idx := m.modelScroll; idx < end; idx++ {
+			name := filtered[idx]
+			prefix := "    "
+			if name == m.modelLabel {
+				prefix = "  ✓ "
+			}
+			if idx == m.modelCursor {
+				prefix = "  ▸ "
+			}
+			lines = append(lines, row(prefix+name))
+		}
+		lines = append(lines, bs.Render("└"+strings.Repeat("─", w-2)+"╯"))
+		return strings.Join(lines, "\n")
+	}
+
 	for i, raw := range strings.Split(m.input.View(), "\n") {
 		ln := rewritePromptRow(raw, th)
 		// Slash mode (FR-20) renders its own row: typed text + dim ghost —
@@ -140,8 +176,8 @@ func (m Model) inputView() string {
 			fill.Render(ln+strings.Repeat(" ", gap))+" "+bs.Render("│"))
 	}
 
-	// The model/effort label lives in the footer bar below (crush-style) —
-	// the box border stays clean.
+	// The box border stays clean — the model/effort label lives in the
+	// footer bar below (crush-style).
 	lines = append(lines, bs.Render("└"+strings.Repeat("─", w-2)+"╯"))
 	return strings.Join(lines, "\n")
 }
