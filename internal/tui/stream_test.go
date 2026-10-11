@@ -59,18 +59,15 @@ func TestStreamingKeepsFollowAtBottom(t *testing.T) {
 	}
 }
 
-// TestThinkingToggleShowsAndHides (FR-2): thinking is off by default and
-// toggleable; only the current line is shown.
-func TestThinkingToggleShowsAndHides(t *testing.T) {
+// TestThinkingStreamsIntoCollapsedBlock (FR-2/FR-30): thinking streams into
+// the collapsible block — present, but truncated to the first lines.
+func TestThinkingStreamsIntoCollapsedBlock(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "überlege kurz\nfast fertig"})
 
-	r.notContains("💭")
-	r.key("ctrl+t")
-	r.contains("💭")
-	r.contains("fast fertig")
-	r.key("ctrl+t")
+	r.contains("denken ▸")
+	r.contains("überlege kurz")
 	r.notContains("💭")
 }
 

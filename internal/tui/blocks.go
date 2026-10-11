@@ -477,8 +477,7 @@ func (b TableBlock) SetID(i int) Widget {
 const thinkCollapsed = 3
 
 // ThinkBlock shows the model's thinking as a collapsible chat block: long
-// thinking is truncated to a few lines until unfolded; ctrl+t remains the
-// global visibility toggle (FR-2).
+// thinking is truncated to a few lines until unfolded (FR-30).
 type ThinkBlock struct {
 	id       int
 	text     string

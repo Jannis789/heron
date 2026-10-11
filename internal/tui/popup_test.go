@@ -24,13 +24,13 @@ func popupRig(t *testing.T) (*rig, *[]string) {
 	return r, &calls
 }
 
-// TestPopupOpensAndAppliesEffort (FR-20-lite): ctrl+o opens the popup with
-// the active entries marked; enter applies the effort live.
+// TestPopupOpensAndAppliesEffort (FR-20-lite): the opened popup marks the
+// active entries; enter applies the effort live.
 func TestPopupOpensAndAppliesEffort(t *testing.T) {
 	r, calls := popupRig(t)
-	r.key("ctrl+o")
+	r.m.openPopup()
 	if !r.m.popupOpen {
-		t.Fatal("ctrl+o did not open the popup")
+		t.Fatal("openPopup did not open the popup")
 	}
 	r.contains("modell / effort")
 	r.contains("✓ glm-5.3")
@@ -52,7 +52,7 @@ func TestPopupOpensAndAppliesEffort(t *testing.T) {
 // TestPopupEnterAppliesModelAndEscCloses (FR-20-lite).
 func TestPopupEnterAppliesModelAndEscCloses(t *testing.T) {
 	r, calls := popupRig(t)
-	r.key("ctrl+o")
+	r.m.openPopup()
 	r.do(tea.KeyMsg{Type: tea.KeyEnter}) // cursor sits on the first model row
 
 	if len(*calls) != 1 || (*calls)[0] != "modell=glm-5.2" {

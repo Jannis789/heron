@@ -40,7 +40,6 @@ type Model struct {
 	streaming  string  // raw answer received so far
 	thinking   string  // thinking received so far
 	toolStatus string  // last tool label while the turn runs
-	showThink  bool    // thinking visible in the status line (FR-2 toggle)
 
 	// Prompt box chrome (FR-23, minimal).
 	cwd        string    // workspace shown in the top border
@@ -220,11 +219,14 @@ func (m Model) modelSegmentRange() (int, int) {
 }
 
 // footerView is the status bar under the prompt box, crush-style: the model
-// segment on the left (click/ctrl+o opens the selection dialog), key hints on
-// the right.
+// segment on the left (click opens the selection dialog), contextual hints on
+// the right — only what applies right now.
 func (m Model) footerView() string {
 	left := m.stateLabel()
-	hints := "ctrl+o modell · ctrl+t denken"
+	hints := ""
+	if m.running {
+		hints = "ctrl+c abbrechen"
+	}
 	w := m.width
 	if w <= 0 {
 		w = 80
@@ -234,11 +236,14 @@ func (m Model) footerView() string {
 		gap = 1
 	}
 	if m.theme == nil {
-		return " " + left + strings.Repeat(" ", gap) + hints
+		return strings.TrimRight(" "+left+strings.Repeat(" ", gap+3+runewidth.StringWidth(hints)), " ")
 	}
 	fill := m.theme.TableFill()
-	return " " + fill.Render(" "+left+" ") + strings.Repeat(" ", gap) +
-		m.theme.LabelStyle().Render(hints) + " "
+	line := " " + fill.Render(" "+left+" ") + strings.Repeat(" ", gap)
+	if hints != "" {
+		line += m.theme.LabelStyle().Render(hints) + " "
+	}
+	return strings.TrimRight(line, " ")
 }
 
 // dialogGeometry returns position and size of the centered selection dialog.
@@ -451,21 +456,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg { cancel(); return nil }
 			}
 			return m, tea.Quit
-		case "ctrl+t":
-			// FR-2 toggle stays; FR-30 renders the thinking as a collapsible
-			// block instead of dropping it after the turn.
-			m.showThink = !m.showThink
-			if m.showThink && m.thinking != "" {
-				m.chat = m.chat.upsertThinkBlock(m.thinking, m.theme)
-			}
-			if !m.showThink {
-				m.chat = m.chat.removeBlock(ThinkBlockID)
-			}
-			return m, nil
-		case "ctrl+o":
-			// Keyboard twin of the footer chip: open the popup (FR-20-lite).
-			m.openPopup()
-			return m, nil
 		case "enter":
 			if m.chat.Focused() {
 				var cmd tea.Cmd
@@ -522,9 +512,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case thoughtMsg:
 		m.thinking += msg.text
-		if m.showThink {
-			m.chat = m.chat.upsertThinkBlock(m.thinking, m.theme)
-		}
+		m.chat = m.chat.upsertThinkBlock(m.thinking, m.theme)
 		return m, nil
 	case toolMsg:
 		if msg.done {
@@ -599,33 +587,20 @@ func blockNumFromKey(s string) int {
 	return 0
 }
 
-// statusLine is the fixed line under the title: tool activity and the current
-// thinking line (FR-2). Keeping it to exactly one row keeps chatTop at 2, so
-// mouse hit-testing against the chat area stays correct.
+// statusLine is the fixed line under the title: tool activity (FR-2). Keeping
+// it to exactly one row keeps chatTop at 2, so mouse hit-testing against the
+// chat area stays correct. Thinking lives in its own collapsible block (FR-30).
 func (m Model) statusLine() string {
-	if m.toolStatus == "" && !(m.showThink && m.thinking != "") {
+	if m.toolStatus == "" {
 		return ""
 	}
-	var parts []string
-	if m.toolStatus != "" {
-		parts = append(parts, "🔧 "+m.toolStatus)
-	}
-	if m.showThink && m.thinking != "" {
-		parts = append(parts, "💭 "+lastLine(m.thinking))
-	}
-	line := strings.Join(parts, "  ")
+	line := "🔧 " + m.toolStatus
 	if m.width > 0 {
 		if w := render.WrapDisplay(line, m.width); len(w) > 0 {
 			line = w[0]
 		}
 	}
 	return lipgloss.NewStyle().Faint(true).Render(line)
-}
-
-// lastLine returns the final line of a possibly multi-line stream.
-func lastLine(s string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	return lines[len(lines)-1]
 }
 
 func (m Model) View() string {
