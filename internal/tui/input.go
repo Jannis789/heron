@@ -116,10 +116,13 @@ func (m Model) inputView() string {
 		lines = append(lines, bs.Render("┌─ "+label+" "+strings.Repeat("─", dashes)+"┐"))
 	}
 
-	// Model picker (FR-20): the box expands into the search line and the
-	// filtered model list.
-	if th != nil && m.modelListOpen {
+	// Model/effort picker (FR-20): the box expands into the option list.
+	if th != nil && m.pickerOpen {
 		ls := th.LabelStyle()
+		active := m.modelLabel
+		if m.pickerKind == "effort" {
+			active = m.effort
+		}
 		row := func(s string) string {
 			gap := w - 4 - lipgloss.Width(s)
 			if gap < 0 {
@@ -127,23 +130,18 @@ func (m Model) inputView() string {
 			}
 			return bs.Render("│") + " " + s + strings.Repeat(" ", gap) + " " + bs.Render("│")
 		}
-		search := "› " + m.modelSearch + "▏"
-		if m.modelSearch == "" {
-			search += ls.Render("  tippen zum filtern")
+		options := m.pickerOptions()
+		if len(options) == 0 {
+			lines = append(lines, row("  " + ls.Render("keine Optionen")))
 		}
-		lines = append(lines, row(search))
-		filtered := m.filteredModels()
-		if len(filtered) == 0 {
-			lines = append(lines, row("  " + ls.Render("keine Treffer")))
-		}
-		end := min(m.modelScroll+pickerRows, len(filtered))
-		for idx := m.modelScroll; idx < end; idx++ {
-			name := filtered[idx]
+		end := min(m.pickerScroll+pickerRows, len(options))
+		for idx := m.pickerScroll; idx < end; idx++ {
+			name := options[idx]
 			prefix := "    "
-			if name == m.modelLabel {
+			if name == active {
 				prefix = "  ✓ "
 			}
-			if idx == m.modelCursor {
+			if idx == m.pickerCursor {
 				prefix = "  ▸ "
 			}
 			lines = append(lines, row(prefix+name))

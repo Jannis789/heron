@@ -105,7 +105,7 @@ func main() {
 		if mdl == "" && eff == "" {
 			return
 		}
-		stream.Info(mdl, eff, s.ModelOptions())
+		stream.Info(mdl, eff, s.ModelOptions(), s.EffortOptions())
 	}
 
 	sender := func(prompt string) (string, error) {

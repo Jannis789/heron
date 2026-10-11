@@ -37,7 +37,7 @@ func TestSlashFilterAndExecuteOpensDialog(t *testing.T) {
 	typeRunes(r, "/mo")
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
 
-	if !r.m.modelListOpen {
+	if !r.m.pickerOpen {
 		t.Fatal("/model did not open the model list")
 	}
 	if r.m.input.Value() != "" {

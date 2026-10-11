@@ -15,77 +15,75 @@ func pickerRig(t *testing.T) (*rig, *[]string) {
 		return nil
 	})
 	r.m.modelOptions = []string{"glm-5.2", "glm-5.3"}
+	r.m.effortOptions = []string{"low", "high", "max"}
 	r.m.modelLabel = "glm-5.3"
+	r.m.effort = "max"
 	return r, &calls
 }
 
-// TestModelListOpensViaSlashCommand (FR-20): enter auf /model öffnet die
-// Modellliste im Eingabefeld, das aktive Modell ist markiert.
+// TestModelListOpensViaSlashCommand (FR-20): /model öffnet die Modellliste,
+// das aktive Modell ist markiert.
 func TestModelListOpensViaSlashCommand(t *testing.T) {
 	r, _ := pickerRig(t)
 	typeRunes(r, "/model")
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
 
-	if !r.m.modelListOpen {
+	if !r.m.pickerOpen {
 		t.Fatal("/model did not open the model list")
 	}
 	r.contains("✓ glm-5.3")
-	r.contains("›")
 }
 
-// TestModelListSearchFilters (FR-20): tippen filtert die Liste.
-func TestModelListSearchFilters(t *testing.T) {
+// TestEffortListOpensViaSlashCommand (FR-20): /effort öffnet die Stufenliste,
+// die aktive Stufe ist markiert.
+func TestEffortListOpensViaSlashCommand(t *testing.T) {
 	r, _ := pickerRig(t)
-	r.m.openModelList()
-	r.do(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("5")})
-	r.do(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(".")})
-	r.do(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	typeRunes(r, "/effort")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
 
-	view := stripANSI(r.m.View())
-	if !strings.Contains(view, "glm-5.2") {
-		t.Fatal("glm-5.2 missing after filtering")
+	if !r.m.pickerOpen {
+		t.Fatal("/effort did not open the effort list")
 	}
-	if strings.Contains(view, "✓ glm-5.3") {
-		t.Fatal("filtered-out model is still marked active")
-	}
+	r.contains("✓ max")
 }
 
-// TestModelListEnterAppliesAndCloses (FR-20): enter setzt das markierte
-// Modell live und schließt die Liste.
-func TestModelListEnterAppliesAndCloses(t *testing.T) {
+// TestEffortEnterAppliesAndCloses (FR-20): enter setzt die markierte Stufe
+// live und schließt die Liste.
+func TestEffortEnterAppliesAndCloses(t *testing.T) {
 	r, calls := pickerRig(t)
-	r.m.openModelList()
-	r.do(tea.KeyMsg{Type: tea.KeyEnter}) // cursor 0 → glm-5.2
+	typeRunes(r, "/effort")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter}) // executes /effort → opens the list
+	r.do(tea.KeyMsg{Type: tea.KeyEnter}) // applies the highlighted option ("low")
 
-	if len(*calls) != 1 || (*calls)[0] != "model=glm-5.2" {
+	if len(*calls) != 1 || (*calls)[0] != "thinking_effort=low" {
 		t.Fatalf("config calls = %v", *calls)
 	}
-	if r.m.modelLabel != "glm-5.2" {
-		t.Fatalf("model label = %q", r.m.modelLabel)
+	if r.m.effort != "low" {
+		t.Fatalf("effort = %q", r.m.effort)
 	}
-	if r.m.modelListOpen {
+	if r.m.pickerOpen {
 		t.Fatal("list stayed open after applying")
 	}
 }
 
-// TestModelListEscCloses (FR-20).
-func TestModelListEscCloses(t *testing.T) {
+// TestPickerEscCloses (FR-20).
+func TestPickerEscCloses(t *testing.T) {
 	r, _ := pickerRig(t)
-	r.m.openModelList()
+	r.m.openPicker("model")
 	r.do(tea.KeyMsg{Type: tea.KeyEsc})
-	if r.m.modelListOpen {
-		t.Fatal("esc did not close the list")
+	if r.m.pickerOpen {
+		t.Fatal("esc did not close the picker")
 	}
 }
 
-// TestFooterSegmentClickOpensModelList (FR-20): Klick aufs Modell-Segment in
-// der Footer-Bar öffnet die Liste.
-func TestFooterSegmentClickOpensModelList(t *testing.T) {
+// TestFooterSegmentClickOpensPicker (FR-20): Klick aufs Modell-Segment in der
+// Footer-Bar öffnet die Modellliste.
+func TestFooterSegmentClickOpensPicker(t *testing.T) {
 	r, _ := pickerRig(t)
 	lo, _ := r.m.modelSegmentRange()
 	r.do(tea.MouseMsg{X: lo + 2, Y: 29, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-	if !r.m.modelListOpen {
-		t.Fatal("segment click did not open the model list")
+	if !r.m.pickerOpen {
+		t.Fatal("segment click did not open the picker")
 	}
 }
 

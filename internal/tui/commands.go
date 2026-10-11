@@ -15,7 +15,8 @@ type command struct {
 // commands lists the available slash commands; the suggestion list filters
 // this by prefix while the user types.
 var commands = []command{
-	{"model", "Modell und Effort wählen"},
+	{"model", "Modell wählen"},
+	{"effort", "Effort-Stufe wählen"},
 }
 
 // slashActive reports whether the prompt is currently typing a slash command
@@ -92,7 +93,14 @@ func (m Model) execCommand(full string) (tea.Model, tea.Cmd) {
 			m.chat = m.chat.Append(NewTextBlock("goose hat keine Modell-Optionen gemeldet.", "1"))
 			return m, nil
 		}
-		m.openModelList()
+		m.openPicker("model")
+		return m, nil
+	case "/effort":
+		if len(m.effortOptions) == 0 {
+			m.chat = m.chat.Append(NewTextBlock("goose hat keine Effort-Optionen gemeldet.", "1"))
+			return m, nil
+		}
+		m.openPicker("effort")
 		return m, nil
 	}
 	m.chat = m.chat.Append(NewTextBlock("Unbekannter Befehl: "+full, "1"))

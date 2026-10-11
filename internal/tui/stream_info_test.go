@@ -5,7 +5,7 @@ import "testing"
 func TestStreamBuffersUntilAttach(t *testing.T) {
 	var s Stream
 	s.publish(chunkMsg{text: "x"})
-	s.Info("glm-5.3", "max", nil)
+	s.Info("glm-5.3", "max", nil, nil)
 
 	s.mu.Lock()
 	n := len(s.pending)

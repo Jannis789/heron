@@ -46,13 +46,15 @@ type Model struct {
 	modelLabel string    // model shown in the bottom border
 	effort     string    // effort level shown next to the model
 
-	// Model picker (FR-20): the input box expands into a searchable list.
+	// Model/effort picker (FR-20): the input box expands into a searchable
+	// list. pickerKind selects what the list edits.
 	modelOptions  []string
+	effortOptions []string
 	configSet     func(id, value string) error
-	modelListOpen bool
-	modelSearch   string
-	modelCursor   int
-	modelScroll   int
+	pickerKind    string // "model" or "effort" while open
+	pickerOpen    bool
+	pickerCursor  int
+	pickerScroll  int
 
 	// Slash-command autocomplete (FR-20).
 	cmdCursor    int
@@ -106,105 +108,106 @@ type configResultMsg struct {
 	err   error
 }
 
-// filteredModels returns the announced models matching the search text.
-func (m Model) filteredModels() []string {
-	q := strings.ToLower(m.modelSearch)
-	var out []string
-	for _, o := range m.modelOptions {
-		if q == "" || strings.Contains(strings.ToLower(o), q) {
-			out = append(out, o)
-		}
+// pickerOptions returns the announced options for the open picker kind —
+// the rows of the list.
+func (m Model) pickerOptions() []string {
+	if m.pickerKind == "effort" {
+		return m.effortOptions
 	}
-	return out
+	return m.modelOptions
 }
 
-// openModelList expands the prompt box into the searchable model list.
-// No-op without announced options.
-func (m *Model) openModelList() {
-	if len(m.modelOptions) == 0 {
+// openPicker expands the prompt box into the option list for the given kind
+// ("model" or "effort"). No-op without announced options.
+func (m *Model) openPicker(kind string) {
+	var options []string
+	if kind == "effort" {
+		options = m.effortOptions
+	} else {
+		options = m.modelOptions
+	}
+	if len(options) == 0 {
 		return
 	}
-	m.modelListOpen = true
-	m.modelSearch = ""
-	m.modelCursor = 0
-	m.modelScroll = 0
+	m.pickerKind = kind
+	m.pickerOpen = true
+	m.pickerCursor = 0
+	m.pickerScroll = 0
 }
 
-// closeModelList collapses the picker and clears the search.
-func (m *Model) closeModelList() {
-	m.modelListOpen = false
-	m.modelSearch = ""
-	m.modelCursor = 0
-	m.modelScroll = 0
+// closePicker collapses the picker.
+func (m *Model) closePicker() {
+	m.pickerOpen = false
+	m.pickerCursor = 0
+	m.pickerScroll = 0
 }
 
-// pickerRows caps the model rows visible in the expanded input box.
+// pickerRows caps the option rows visible in the expanded input box.
 const pickerRows = 8
 
-// clampModelScroll keeps the cursor inside the visible list window.
-func (m *Model) clampModelScroll() {
-	n := len(m.filteredModels())
-	if m.modelCursor >= n {
-		m.modelCursor = max(n-1, 0)
+// clampPickerScroll keeps the cursor inside the visible list window.
+func (m *Model) clampPickerScroll() {
+	n := len(m.pickerOptions())
+	if m.pickerCursor >= n {
+		m.pickerCursor = max(n-1, 0)
 	}
-	if m.modelCursor < m.modelScroll {
-		m.modelScroll = m.modelCursor
+	if m.pickerCursor < m.pickerScroll {
+		m.pickerScroll = m.pickerCursor
 	}
-	if m.modelCursor >= m.modelScroll+pickerRows {
-		m.modelScroll = m.modelCursor - pickerRows + 1
+	if m.pickerCursor >= m.pickerScroll+pickerRows {
+		m.pickerScroll = m.pickerCursor - pickerRows + 1
 	}
-	if m.modelScroll < 0 {
-		m.modelScroll = 0
+	if m.pickerScroll < 0 {
+		m.pickerScroll = 0
 	}
 }
 
-// modelListKey handles keys while the picker is open: typing filters, ↑↓
-// navigate, enter applies the highlighted model live, esc closes.
-func (m Model) modelListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// pickerKey handles keys while the picker is open: ↑↓ navigate, enter
+// applies the highlighted option live, esc closes.
+func (m Model) pickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up":
-		if m.modelCursor > 0 {
-			m.modelCursor--
+		if m.pickerCursor > 0 {
+			m.pickerCursor--
 		}
 	case "down":
-		if m.modelCursor < len(m.filteredModels())-1 {
-			m.modelCursor++
+		if m.pickerCursor < len(m.pickerOptions())-1 {
+			m.pickerCursor++
 		}
 	case "enter":
-		filtered := m.filteredModels()
-		if m.modelCursor >= len(filtered) {
+		options := m.pickerOptions()
+		if m.pickerCursor >= len(options) {
 			return m, nil
 		}
-		value := filtered[m.modelCursor]
+		value := options[m.pickerCursor]
 		if m.configSet == nil {
-			m.applyConfig(value)
-			m.closeModelList()
+			m.applyPicker(value)
+			m.closePicker()
 			return m, nil
 		}
-		fn := m.configSet
+		id := "model"
+		if m.pickerKind == "effort" {
+			id = "thinking_effort"
+		}
+		kind, fn := m.pickerKind, m.configSet
 		return m, func() tea.Msg {
-			return configResultMsg{value: value, err: fn("model", value)}
+			return configResultMsg{kind: kind, value: value, err: fn(id, value)}
 		}
 	case "esc":
-		m.closeModelList()
+		m.closePicker()
 		return m, nil
-	case "backspace":
-		if r := []rune(m.modelSearch); len(r) > 0 {
-			m.modelSearch = string(r[:len(r)-1])
-		}
-	default:
-		if len(msg.Runes) > 0 {
-			m.modelSearch += string(msg.Runes)
-			m.modelCursor = 0
-			m.modelScroll = 0
-		}
 	}
-	m.clampModelScroll()
+	m.clampPickerScroll()
 	return m, nil
 }
 
-// applyConfig updates the model label (demo path or confirmed result).
-func (m *Model) applyConfig(value string) {
+// applyPicker updates the label of the open picker kind (demo path or
+// confirmed result).
+func (m *Model) applyPicker(value string) {
+	if m.pickerKind == "effort" {
+		m.effort = value
+		return
+	}
 	m.modelLabel = value
 }
 
@@ -297,7 +300,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// inside the open popup select, outside close it (FR-20-lite).
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if lo, hi := m.modelSegmentRange(); msg.Y == m.height-1 && msg.X >= lo && msg.X < hi {
-				m.openModelList()
+				m.openPicker("model")
 				return m, nil
 			}
 		}
@@ -312,9 +315,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	case tea.KeyMsg:
-		// The open model picker swallows keys first (FR-20).
-		if m.modelListOpen {
-			return m.modelListKey(msg)
+		// The open picker swallows keys first (FR-20).
+		if m.pickerOpen {
+			return m.pickerKey(msg)
 		}
 		// Slash-command navigation (FR-20): while the prompt starts with
 		// "/", up/down move the selection, tab completes, esc dismisses.
@@ -452,15 +455,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.effort = msg.effort
 		}
 		m.modelOptions = msg.modelOptions
+		m.effortOptions = msg.effortOptions
 		return m, nil
 	case configResultMsg:
-		// The backend confirmed (or failed) the model change.
+		// The backend confirmed (or failed) the model/effort change.
 		if msg.err != nil {
 			m.chat = m.chat.Append(NewTextBlock("Fehler: "+msg.err.Error(), "1"))
 			return m, nil
 		}
-		m.applyConfig(msg.value)
-		m.closeModelList()
+		m.pickerKind = msg.kind
+		m.applyPicker(msg.value)
+		m.closePicker()
 		return m, nil
 	case plantumlDoneMsg:
 		m.chat, _ = m.chat.applyPlantUML(msg.results)
