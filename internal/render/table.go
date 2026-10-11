@@ -414,6 +414,10 @@ func BoxWidth(widths []int) int { return boxWidth(widths) }
 // ActionRange returns the [start,end) cell positions of the action box in a
 // footer line of totalW cells (for mouse hit-testing).
 func ActionRange(totalW int, label string, actionW int) (int, int) {
+	// Labelless footer (FR-30 think block): "└─" + dashes + "[ action ]─┘".
+	if strings.TrimSpace(label) == "" {
+		return totalW - actionW - 6, totalW - actionW - 2
+	}
 	labelW := runewidth.StringWidth(label)
 	spaced := totalW-labelW-actionW-12 >= 0
 	if spaced {

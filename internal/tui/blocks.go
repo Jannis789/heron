@@ -496,18 +496,36 @@ func (b ThinkBlock) bodyLines() []string {
 	return strings.Split(strings.TrimRight(b.text, "\n"), "\n")
 }
 
-// bodyRows is the rendered body row count for the current fold state. A
-// collapsed block shows the LAST lines of the thinking (the conclusion), long
-// lines are truncated per row, so the count never depends on the width.
-func (b ThinkBlock) bodyRows() int {
-	n := len(b.bodyLines())
-	if b.expanded || n <= thinkCollapsed {
-		return n
+// wrappedBody wraps the thinking to the inner width. The model streams
+// thoughts as one long line — truncating per row would hide everything but
+// the start, so lines break at word boundaries instead (FR-30).
+func (b ThinkBlock) wrappedBody(inner int) []string {
+	if inner <= 0 {
+		return b.bodyLines()
+	}
+	var out []string
+	for _, ln := range b.bodyLines() {
+		if ln == "" {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, render.WrapWords(ln, inner)...)
+	}
+	return out
+}
+
+// bodyRows is the rendered body row count for the current fold state: all
+// wrapped rows when expanded, otherwise the LAST thinkCollapsed rows (the
+// conclusion of the thinking).
+func (b ThinkBlock) bodyRows(width int) int {
+	rows := b.wrappedBody(codeInnerWidth(width))
+	if b.expanded || len(rows) <= thinkCollapsed {
+		return len(rows)
 	}
 	return thinkCollapsed
 }
 
-func (b ThinkBlock) Height(width int) int { return 1 + b.bodyRows() + 1 }
+func (b ThinkBlock) Height(width int) int { return 1 + b.bodyRows(width) + 1 }
 
 // label is the header caption: fold state, line count, selection mark.
 func (b ThinkBlock) label() string {
@@ -569,14 +587,14 @@ func (b ThinkBlock) View(width int) string {
 	lines = append(lines, bs.Render("┌─ ")+b.th.ActionStyle().Render(label)+
 		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
 
-	body := b.bodyLines()
+	rows := b.wrappedBody(inner)
 	// Collapsed shows the END of the thinking — the conclusion lives there.
 	start := 0
-	if !b.expanded && len(body) > thinkCollapsed {
-		start = len(body) - thinkCollapsed
+	if !b.expanded && len(rows) > thinkCollapsed {
+		start = len(rows) - thinkCollapsed
 	}
-	for _, ln := range body[start:] {
-		txt := ls.Render(truncateCells(ln, inner))
+	for _, ln := range rows[start:] {
+		txt := ls.Render(ln)
 		gap := inner - lipgloss.Width(txt)
 		if gap < 0 {
 			gap = 0
@@ -628,10 +646,11 @@ func (b ThinkBlock) Resize(width int) Widget {
 	return b
 }
 func (b ThinkBlock) HitAction(width, x, y int) bool {
-	if y != 1+b.bodyRows() {
+	if y != 1+b.bodyRows(width) {
 		return false
 	}
-	start, end := render.ActionRange(width, "denken", runewidth.StringWidth(b.actionLabel()))
+	// The think footer carries no left label — the header names the block.
+	start, end := render.ActionRange(width, "", runewidth.StringWidth(b.actionLabel()))
 	return x >= start && x < end
 }
 func (b ThinkBlock) Copy() (Widget, tea.Cmd) { return b, nil }

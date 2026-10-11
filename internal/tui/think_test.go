@@ -26,6 +26,22 @@ func TestThinkBlockCollapsesLongThinking(t *testing.T) {
 	}
 	r.contains("fünf")
 
+	// One long streamed line wraps at word boundaries instead of being cut
+	// with an ellipsis — the collapsed block still shows the tail.
+	r2 := newRig(t)
+	r2.m.startTurn()
+	r2.do(thoughtMsg{text: strings.Repeat("Denkzeile ", 40) + "Schlusswort"})
+	r2.contains("Schlusswort")
+	// The block itself wraps — no ellipsis in the block body (the status
+	// line above may still abbreviate its one-liner).
+	b := NewThinkBlock(strings.Repeat("Denkzeile ", 40)+"Schlusswort", r2.m.theme)
+	if strings.Contains(stripANSI(b.View(r2.m.width)), "…") {
+		t.Fatal("long thinking line is truncated instead of wrapped")
+	}
+	r2.do(tea.KeyMsg{Type: tea.KeyTab})
+	r2.do(tea.KeyMsg{Type: tea.KeyEnter})
+	r2.contains("Denkzeile")
+
 	// Unfold: focus the block and press enter.
 	r.do(tea.KeyMsg{Type: tea.KeyTab})
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
