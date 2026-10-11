@@ -53,6 +53,10 @@ type Model struct {
 	popupOpen     bool
 	popupCursor   int
 	popupEntries  []configEntry
+
+	// Slash-command autocomplete (FR-20).
+	cmdCursor    int
+	cmdDismissed bool
 }
 
 func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
@@ -392,6 +396,7 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	prevValue := m.input.Value()
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -437,6 +442,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// Slash-command navigation (FR-20): while the prompt starts with
+		// "/", up/down move the selection, tab completes, esc dismisses.
+		if m.slashActive() && len(m.slashMatches()) > 0 {
+			switch msg.String() {
+			case "down":
+				m.cmdCursor = m.nextCmd(1)
+				return m, nil
+			case "up":
+				m.cmdCursor = m.nextCmd(-1)
+				return m, nil
+			case "tab":
+				if matches := m.slashMatches(); m.cmdCursor < len(matches) {
+					m.input.SetValue("/" + matches[m.cmdCursor].name + " ")
+					m.cmdCursor = 0
+					m.syncInputSize()
+				}
+				return m, nil
+			case "esc":
+				m.cmdDismissed = true
+				return m, nil
+			case "enter":
+				if matches := m.slashMatches(); m.cmdCursor < len(matches) {
+					return m.execCommand("/" + matches[m.cmdCursor].name)
+				}
+			}
+		}
 		// Numbered copy fallback (FR-5): alt+<n> / ctrl+<n> copy block n.
 		if n := blockNumFromKey(msg.String()); n > 0 {
 			chat, cmd, ok := m.chat.copyByID(n)
@@ -464,6 +495,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			prompt := strings.TrimSpace(m.input.Value())
 			if prompt == "" {
+				return m, nil
+			}
+			if strings.HasPrefix(prompt, "/") {
+				// Slash commands (FR-20): /model opens the selection dialog,
+				// unknown commands report an error instead of sending.
+				name := strings.TrimPrefix(prompt, "/")
+				for _, c := range commands {
+					if c.name == name {
+						return m.execCommand("/" + name)
+					}
+				}
+				m.chat = m.chat.Append(NewTextBlock("Unbekannter Befehl: "+prompt, "1"))
+				m.input.SetValue("")
+				m.syncInputSize()
 				return m, nil
 			}
 			m.chat = m.chat.Append(NewUserBlock(prompt))
@@ -565,6 +610,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if m.input.Value() != prevValue {
+		// Typing resets the slash-command state (FR-20).
+		m.cmdDismissed = false
+		m.cmdCursor = 0
+	}
 	// The prompt box grows with the text, so the chat gives the rows back.
 	m.syncInputSize()
 	return m, cmd

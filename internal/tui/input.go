@@ -128,6 +128,33 @@ func (m Model) inputView() string {
 			fill.Render(ln+strings.Repeat(" ", gap))+" "+bs.Render("│"))
 	}
 
+	// Slash-command suggestions (FR-20): below the typed line, filtered by
+	// the current prefix; the highlighted row inverts.
+	if th != nil && m.slashActive() {
+		matches := m.slashMatches()
+		if len(matches) > 0 {
+			ls := th.LabelStyle()
+			lines = append(lines, bs.Render("├"+strings.Repeat("─", w-2)+"┤"))
+			for i, c := range matches {
+				mark := "  "
+				if i == m.cmdCursor {
+					mark = "▸ "
+				}
+				left := mark + "/" + c.name + "  "
+				help := ls.Render(c.help)
+				gap := w - 2 - runewidth.StringWidth(left) - runewidth.StringWidth(c.help)
+				if gap < 0 {
+					gap = 0
+				}
+				line := left + help + strings.Repeat(" ", gap)
+				if i == m.cmdCursor {
+					line = th.ActionStyle().Reverse(true).Render(line)
+				}
+				lines = append(lines, bs.Render("│")+line+bs.Render("│"))
+			}
+		}
+	}
+
 	// The model/effort label lives in the footer bar below (crush-style) —
 	// the box border stays clean.
 	lines = append(lines, bs.Render("└"+strings.Repeat("─", w-2)+"╯"))

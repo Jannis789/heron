@@ -68,7 +68,7 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | FR-17 | UX | Theme / Konfig | C | später | ⬜ | Schriftart/-größe über Thema/Theme anpassbar; Default bleibt System-Font (FR-16) | Konfig wirkt auf die Textdarstellung; Default unverändert |
 | FR-18 | UX | Chat-Fläche (leer) | C | M1 | ⬜ | ASCII-Art-Grüßung, solange nichts im Chat, statt des textuellen Platzhalters; passt in die Fläche, verschwindet mit erster Nachricht | ASCII-Art bei leerem Chat erscheint, danach normaler Chat; kein Layout-Bruch |
 | FR-19 | F | Eingabefeld: `@`-Dropdown | S | M2 | ⬜ | `@` öffnet ein Datei-Popup des Arbeitsverzeichnisses; weiteres Tippen filtert, Enter fügt den Pfad ein, Esc schließt | Dropdown öffnet/filtert/fügt ein; nichts wird versehentlich gesendet |
-| FR-20 | F | Eingabefeld: `/`-Popup | S | M2 | 🟡 | Popup über das Modell-Segment in der Footer-Bar (Klick): Modelle + Effort-Stufen aus ACP configOptions, aktive markiert, enter/Klick setzt live via `session/set_config_option` (gegen echtes goose verifiziert); eingabegefiltertes `/`-Popup fehlt noch | Auswahl wirkt sofort auf die laufende Session; unbekannter Befehl meldet Fehler |
+| FR-20 | F | Eingabefeld: `/`-Popup | S | M2 | ✅ | `/` lässt das Eingabefeld aufklappen: Vorschlagsliste darunter, beim Tippen gefiltert, `↑↓` Navigation, `enter` führt aus, `tab` vervollständigt, `esc` schließt; `/model` öffnet den Modell/Effort-Dialog (ACP configOptions, live via `session/set_config_option`, gegen echtes goose verifiziert); unbekannte Befehle melden einen Fehler statt zu senden | Auswahl wirkt sofort auf die laufende Session; unbekannter Befehl meldet Fehler |
 | FR-21 | F | Chat-Block (Shell-Ausgabe) | S | M2 | ⬜ | `!` führt das Kommando im Arbeitsverzeichnis der Session aus, Ausgabe als Block mit Copy; respektiert FR-9 | `!pwd` zeigt korrektes Verzeichnis; `ask` fragt, `deny` blockiert |
 | FR-22 | UX | `/model`-Liste (Reihenfolge) | C | M2 | ⬜ | häufig/zuletzt genutzte Modelle oben, Rest in Katalog-Reihenfolge | nach Nutzung erscheint das Modell beim nächsten `/model` oben |
 | FR-23 | UX | Status-Fusszeile unter dem Eingabefeld | S | M4 | 🟡 | Modell und Effort live in der Box (`modell · effort`, aus ACP configOptions bzw. Flags); In-/Out-Tokens, Reasoning-Tokens, Preis und Dauer bewusst weggelassen — goose liefert sie in `stopReason.usage`, Anzeige später auf Abruf | Werte pro Turn aktuell; „–“ ohne Daten, kein Layout-Bruch |
@@ -98,7 +98,7 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | NFR-10 | UX | UI-Texte zentral | C | M4 | ⬜ | UI-Texte zentral (deutsch als Ausgangssprache; Übersetzung nachrüstbar) | Texte nicht hart über Code verstreut |
 
 **Abnahme-Übersicht (Stand 2026-10-10):** ✅ FR-1, FR-2, FR-3, FR-6, FR-7, FR-8, FR-14, FR-15, FR-16,
-FR-29, FR-30, FR-37, NFR-2, NFR-8 · 🟡 FR-5, FR-10, FR-20, FR-23, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (25 offen).
+FR-20, FR-29, FR-30, FR-37, NFR-2, NFR-8 · 🟡 FR-5, FR-10, FR-23, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (24 offen).
 
 **Abnahme-Hinweise (wie verifiziert):** FR-14 `nix build .#default` · FR-15/NFR-8 Suite ohne goose ·
 FR-3 Modell-Test (Kopfzeile + COPY + stabile ID, per pty-Screenshot bestätigt) · FR-6 echter
