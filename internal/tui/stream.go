@@ -5,8 +5,6 @@ import (
 	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"heron/internal/render"
 )
 
 // StreamBlockID addresses the transient block that shows an answer while it
@@ -136,35 +134,4 @@ func (l BlockList) upsertStreamWidgets(widgets []Widget) BlockList {
 	return l
 }
 
-// ThinkBlockID addresses the collapsible thinking block (FR-30). Like the
-// stream preview it lives outside the user-visible numbering — far enough
-// below the streaming range to never collide with it.
-const ThinkBlockID = 999900
 
-// upsertThinkBlock creates or refreshes the collapsible thinking block and
-// keeps the pager pinned while follow is active (FR-30). The fold state
-// survives the refresh so streaming does not collapse an unfolded block.
-func (l BlockList) upsertThinkBlock(text string, th *render.Theme) BlockList {
-	expanded := false
-	for _, it := range l.items {
-		if it.ID() == ThinkBlockID {
-			if tb, ok := it.(ThinkBlock); ok {
-				expanded = tb.expanded
-			}
-		}
-	}
-	tb := NewThinkBlock(text, th)
-	tb.expanded = expanded
-	nb := tb.SetID(ThinkBlockID)
-	if _, ok := l.UpdateBlock(ThinkBlockID, nb); ok {
-		if l.follow {
-			l = l.ScrollEnd()
-		}
-		return l
-	}
-	l = l.Append(nb)
-	if l.follow {
-		l = l.ScrollEnd()
-	}
-	return l
-}

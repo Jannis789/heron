@@ -44,13 +44,13 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 **Legende**
 
 - **Typ:** `F` = funktional (was das System tut) · `T` = technisch (Robustheit/Build/Performance/Sicherheit) · `UX` = Nutzererlebnis & Accessibility (Darstellung, Interaktion, wo/wie für den Nutzer zugänglich)
-- **Status:** ✅ erledigt (Abnahme erfüllt/verifiziert) · 🟡 teilweise (begonnen, Abnahme offen) · ⬜ offen (nicht begonnen)
+- **Status:** ✅ erledigt (Abnahme erfüllt/verifiziert) · 🟡 teilweise (begonnen, Abnahme offen) · ⬜ offen (nicht begonnen) · ➖ verworfen (Nutzerentscheid)
 - **Prio:** M Muss · S Should · C Could · W Won't
 
 | Nr | Typ | UX-Zugang (wo/wie für Nutzer) | Prio | Ms | Status | Beschreibung | Abnahmekriterium |
 |---|---|---|---|---|---|---|---|
 | FR-1 | F | CLI-Start + Statuszeile | M | M0 | ✅ | `goose acp` als Subprozess (stdio, JSON-RPC 2.0, ACP v2): initialize, session/new, session/prompt, session/cancel, session/close; Agent-Anfragen (permission, fs) beantworten | Handshake + session/new + session/prompt gegen echtes goose 1.53.0 verifiziert (acp-probe) |
-| FR-2 | F | Chat-Stream + Statuszeile | M | M1 | ✅ | `agent_message_chunk` live inkrementell (Vorschau-Block, finale Blöcke ersetzen ihn); `agent_thought_chunk` als klappbaren Thinking-Block (FR-30); `tool_call(_update)` als Statuszeile | interaktiver Stream ohne UI-Blockierung, Autoscroll mit einrastendem Follow |
+| FR-2 | F | Chat-Stream + Statuszeile | M | M1 | ✅ | `agent_message_chunk` live inkrementell (Vorschau-Blöcke: Prosa roh, Tabellen wachsen zeilenweise, finale Blöcke ersetzen sie); `agent_thought_chunk` als 💭-Zeile in der Statuszeile; `tool_call(_update)` als Statuszeile | interaktiver Stream ohne UI-Blockierung, Autoscroll mit einrastendem Follow |
 | FR-3 | F | Chat-Blöcke | M | M1 | ✅ | Markdown in Blöcke zerlegen; Fenced-Code als CodeBlock (Kopfzeile + Copy-Aktion); Text/Tabellen über den eigenen Renderer; stabile Block-IDs | Codeblock mit Kopfzeile und COPY; neue ID pro Block |
 | FR-4 | F | Konfig / Registrierung | M | M1 | ⬜ | erweiterbare Map `[lang] → Renderer` (copy/render-ascii/image/raw); eigene Text-Visualisierungen per Konfig ohne Kerncode-Eingriff | zusätzlicher Renderer wirkt nur über Registrierung, kein Kerncode nötig |
 | FR-5 | F | Copy je Block (Maus + `alt+<i>`) | M | M1 | 🟡 | OSC52 primär, Fallback wl-copy → xclip → pbcopy (nicht blockierend); Mausklick und Keyboard `alt+<i>`/`ctrl+<i>`; Feedback „COPIED“ | Copy lokal wie über SSH geprüft per Einfügen; kein Secret-Leak |
@@ -78,7 +78,7 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | FR-27 | F | Chat (Bild) | C | M4 | ⬜ | PlantUML-PNG über Kitty-/Sixel-Image-Protokoll (ghostty: Kitty), Erkennung nach NFR-3; ASCII-Fallback (FR-6) | PNG im Kitty-Terminal, sonst ASCII; kein Fehler/Absturz |
 | FR-28 | F | Chat (mermaid-Block) | C | M5 | ⬜ | mermaid-Fence über Tag-Routing (FR-4): v1 ASCII-/Text-Renderer, v2 Bild (FR-27), sonst Roh-Text | wirkt nur per Registrierung/Konfig, kein Kerncode-Eingriff |
 | FR-29 | UX | Maus-/Tastatur-Selection | S | M1 | ✅ | Space markiert den fokussierten Block, Mausklick auf den Blockkörper toggelt die Markierung (MARKED-Chip, invertierte Prosa); `y` kopiert die Auswahl als rohes Markdown ohne ANSI; Esc löscht zuerst die Selektion | eingefügte Auswahl = unverändertes Markdown ohne Stil-Codes; FR-5 bleibt |
-| FR-30 | UX | Think-Block im Chat | S | M1 | ✅ | Thinking immer als klappbarer Block im Chat: zusammengeklappt 3 Zeilen + „… n weitere“, enter oder Klick auf AUFKLAPPEN klappt um, Fold-State überlebt Stream-Refreshes | langer Think-Text gekürzt + aufklappbar; kein Layout-Bruch |
+| FR-30 | UX | Think-Block im Chat | S | M1 | ➖ | verworfen (Nutzerwunsch): das Thinking zeigt die 💭-Statuszeile aus FR-2 (aktuelle letzte Zeile) — ein eigener klappbarer Block wurde wieder entfernt | — |
 | FR-31 | F | Status-/Fusszeile + Tool-Karten | S | M4 | ⬜ | Anzahl der Tool-Calls des letzten Turns anzeigen; Tool-Karten weiterhin kollabierbar (FR-2) | Turn mit n Tool-Calls zeigt „n tool calls“; Zähler pro Turn korrekt |
 | FR-32 | F | Tool-Block (apply/reset) | S | M4 | ⬜ | Diff-Statistik `+n`/`−n` Zeilen je Turn; apply wendet den Patch an, reset nimmt zurück; danach Zähler auf 0 | Statistik korrekt; apply/reset nullt die Anzeige; `deny` verhindert apply |
 | FR-33 | F | Fehler-Block + Retry im Chat | S | M2 | 🟡 | Fehler (Abbruch/Timeout/Crash) als markierter Block mit Icon und Retry-Aktion (letzten Prompt erneut) statt Fließtext | fehlgeschlagener Turn zeigt Block + Retry; Retry ersetzt den Block; ohne Fehler kein Block |
@@ -98,7 +98,7 @@ Nutzer sie erreicht), **Priorität** (MoSCoW), **Meilenstein**, **Status** sowie
 | NFR-10 | UX | UI-Texte zentral | C | M4 | ⬜ | UI-Texte zentral (deutsch als Ausgangssprache; Übersetzung nachrüstbar) | Texte nicht hart über Code verstreut |
 
 **Abnahme-Übersicht (Stand 2026-10-10):** ✅ FR-1, FR-2, FR-3, FR-6, FR-7, FR-8, FR-14, FR-15, FR-16,
-FR-20, FR-29, FR-30, FR-37, NFR-2, NFR-8 · 🟡 FR-5, FR-10, FR-23, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (24 offen).
+FR-20, FR-29, FR-37, NFR-2, NFR-8 · ➖ FR-30 verworfen · 🟡 FR-5, FR-10, FR-23, FR-33, NFR-4, NFR-5, NFR-6 · ⬜ übrige (24 offen).
 
 **Abnahme-Hinweise (wie verifiziert):** FR-14 `nix build .#default` · FR-15/NFR-8 Suite ohne goose ·
 FR-3 Modell-Test (Kopfzeile + COPY + stabile ID, per pty-Screenshot bestätigt) · FR-6 echter
