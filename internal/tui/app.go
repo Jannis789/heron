@@ -252,7 +252,9 @@ func (m *Model) startTurn() {
 	m.streaming = ""
 	m.thinking = ""
 	m.toolStatus = ""
-	// A fresh turn starts without stale streaming preview blocks.
+	// A fresh turn starts without the previous thinking block (FR-30) and
+	// without stale streaming preview blocks.
+	m.chat = m.chat.removeBlock(ThinkBlockID)
 	m.chat = m.chat.removeStreamBlocks()
 }
 
@@ -438,6 +440,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case thoughtMsg:
 		m.thinking += msg.text
+		m.chat = m.chat.upsertThinkBlock(m.thinking, m.theme)
 		return m, nil
 	case toolMsg:
 		if msg.done {
@@ -519,33 +522,20 @@ func blockNumFromKey(s string) int {
 	return 0
 }
 
-// statusLine is the fixed line under the title: tool activity and the current
-// thinking line (FR-2). Keeping it to exactly one row keeps chatTop at 2, so
-// mouse hit-testing against the chat area stays correct.
+// statusLine is the fixed line under the title: tool activity (FR-2). Keeping
+// it to exactly one row keeps chatTop at 2, so mouse hit-testing against the
+// chat area stays correct. Thinking lives in its own collapsible block (FR-30).
 func (m Model) statusLine() string {
-	var parts []string
-	if m.toolStatus != "" {
-		parts = append(parts, "🔧 "+m.toolStatus)
-	}
-	if m.thinking != "" {
-		parts = append(parts, "💭 "+lastLine(m.thinking))
-	}
-	if len(parts) == 0 {
+	if m.toolStatus == "" {
 		return ""
 	}
-	line := strings.Join(parts, "  ")
+	line := "🔧 " + m.toolStatus
 	if m.width > 0 {
 		if w := render.WrapDisplay(line, m.width); len(w) > 0 {
 			line = w[0]
 		}
 	}
 	return lipgloss.NewStyle().Faint(true).Render(line)
-}
-
-// lastLine returns the final line of a possibly multi-line stream.
-func lastLine(s string) string {
-	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
-	return lines[len(lines)-1]
 }
 
 func (m Model) View() string {

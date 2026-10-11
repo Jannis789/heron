@@ -59,15 +59,16 @@ func TestStreamingKeepsFollowAtBottom(t *testing.T) {
 	}
 }
 
-// TestThinkingStreamsIntoStatusLine (FR-2): thinking streams into the status
-// line — the 💭 marker plus the current last line.
-func TestThinkingStreamsIntoStatusLine(t *testing.T) {
+// TestThinkingStreamsIntoCollapsedBlock (FR-2/FR-30): thinking streams into
+// the collapsible block — present, but truncated to the first lines.
+func TestThinkingStreamsIntoCollapsedBlock(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "überlege kurz\nfast fertig"})
 
-	r.contains("💭")
-	r.contains("fast fertig")
+	r.contains("denken ▸")
+	r.contains("überlege kurz")
+	r.notContains("💭")
 }
 
 // TestToolStatusShowsAndClears (FR-2): tool activity is visible while the
