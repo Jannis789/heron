@@ -16,6 +16,11 @@ func TestThinkBlockCollapsesLongThinking(t *testing.T) {
 
 	r.contains("denken")
 	r.contains("… 2 weitere Zeilen")
+	// "denken" appears exactly once: in the block header. The footer only
+	// carries the fold action (no duplicate label).
+	if n := strings.Count(stripANSI(r.m.View()), "denken"); n != 1 {
+		t.Fatalf("'denken' appears %d times, want exactly 1 (header only)", n)
+	}
 	// The collapsed block must stop after three lines ("vier"/"fünf" stay
 	// hidden until unfolded).
 	if strings.Contains(stripANSI(r.m.View()), "vier") {

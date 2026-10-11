@@ -589,7 +589,9 @@ func (b ThinkBlock) View(width int) string {
 	}
 
 	action, styled := b.action()
-	lines = append(lines, render.FooterLine(width, "denken", action, styled,
+	// No left label: the header above already names the block ("denken") —
+	// the footer carries only the fold action.
+	lines = append(lines, render.FooterLine(width, "", action, styled,
 		runewidth.StringWidth(action), lipgloss.NewStyle(), b.th.LabelStyle(), nil))
 	return strings.Join(lines, "\n")
 }
