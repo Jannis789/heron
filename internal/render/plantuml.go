@@ -25,7 +25,8 @@ func PlantUMLToASCII(ctx context.Context, source string) (string, error) {
 	if bin == "" {
 		bin = "plantuml"
 	}
-	cmd := exec.CommandContext(ctx, bin, "-ttxt", src)
+	// -tutxt: Unicode-Kastenzeichnung (┌─┐ statt +-+) — deutlich lesbarer.
+	cmd := exec.CommandContext(ctx, bin, "-tutxt", src)
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("plantuml: %w: %s", err, out)
@@ -33,7 +34,7 @@ func PlantUMLToASCII(ctx context.Context, source string) (string, error) {
 	// Modern plantuml (>= 1.2024) writes diagram.atxt for the -ttxt flag,
 	// older releases wrote diagram.txt — accept either (FR-6).
 	var b []byte
-	for _, name := range []string{"diagram.atxt", "diagram.txt"} {
+	for _, name := range []string{"diagram.utxt", "diagram.atxt", "diagram.txt"} {
 		if b, err = os.ReadFile(filepath.Join(dir, name)); err == nil {
 			return string(b), nil
 		}

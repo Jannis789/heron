@@ -2,15 +2,23 @@ package tui
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/binary"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"heron/internal/render"
 )
+
+// findImage liefert den Block mit der stabilen ID, wenn er ein ImageBlock ist.
+func findImage(l BlockList, id int) (Widget, bool) {
+	for _, it := range l.items {
+		if it.ID() == id {
+			_, ok := it.(ImageBlock)
+			return it, ok
+		}
+	}
+	return nil, false
+}
 
 func fakePNG(w, h int) []byte {
 	b := []byte("\x89PNG\r\n\x1a\n")
@@ -35,83 +43,116 @@ func TestPNGDims(t *testing.T) {
 	}
 }
 
-func TestKittyImageEscapes(t *testing.T) {
-	png := fakePNG(8, 4)
-	esc := kittyImageEscapes(png, 40, 10)
-	// Ein kleiner Payload ist ein einzelner Chunk: m=0 ist protokollrichtig.
-	if !strings.HasPrefix(esc, "\x1b_Ga=T,f=100,q=2,c=40,r=10,m=0;") {
-		t.Fatalf("kitty header wrong: %q", esc[:48])
-	}
-	if !strings.HasSuffix(esc, base64.StdEncoding.EncodeToString(png)+"\x1b\\") {
-		t.Fatal("kitty escape not terminated with the full payload")
-	}
-	if strings.Count(esc, "\x1b_G") != 1 {
-		t.Fatal("small png must be a single chunk")
-	}
-
-	// Payloads > 4096 Base64-Zeichen werden mit m=1 gekettet.
-	big := append(append([]byte{}, png...), bytes.Repeat([]byte{0xAB}, 6000)...)
-	bigEsc := kittyImageEscapes(big, 40, 10)
-	if n := strings.Count(bigEsc, "\x1b_G"); n < 2 {
-		t.Fatalf("large payload not chunked: %d transmissions", n)
-	}
-	if !strings.Contains(bigEsc, "m=1;") || !strings.Contains(bigEsc, "m=0;") {
-		t.Fatal("chunk continuation markers missing")
-	}
-	if !strings.HasSuffix(bigEsc, "\x1b\\") {
-		t.Fatal("chunked escape not terminated")
-	}
-	if strings.Count(bigEsc, "c=40,r=10") != 1 {
-		t.Fatal("geometry must only be sent in the first transmission")
-	}
-}
-
-
-
-func TestImageTermDetection(t *testing.T) {
-	t.Setenv("TERM", "xterm-kitty")
-	t.Setenv("HERON_IMAGES", "")
-	if !imageProtocolTerm() {
-		t.Fatal("kitty TERM not detected")
-	}
-	t.Setenv("HERON_IMAGES", "off")
-	if imageProtocolTerm() {
-		t.Fatal("HERON_IMAGES=off must disable images")
-	}
-	t.Setenv("HERON_IMAGES", "force")
-	if !imageProtocolTerm() {
-		t.Fatal("HERON_IMAGES=force must enable images")
-	}
-	t.Setenv("HERON_IMAGES", "")
-	t.Setenv("HERON_NO_IMAGES", "")
-	t.Setenv("TERM", "xterm-256color")
-	t.Setenv("KITTY_WINDOW_ID", "")
-	t.Setenv("GHOSTTY_RESOURCES_DIR", "/x")
-	if !imageProtocolTerm() {
-		t.Fatal("ghostty env not detected")
-	}
-}
-
-func TestApplyDiagramsInstallsImageBlock(t *testing.T) {
-	t.Setenv("TERM", "xterm-kitty")
+// TestImageBlockUsesPlaceholders (FR-27): mit Platzhalter-Faehigkeit steht
+// das Bild als Zellen im Textfluss — es verschiebt sich beim Scrollen mit
+// und die Groesse folgt der echten Zellpixeologia (Aspekt korrekt).
+func TestImageBlockUsesPlaceholders(t *testing.T) {
 	r := newRig(t)
 	r.do(tea.WindowSizeMsg{Width: 80, Height: 24})
-	r.do(runes("x"))
-	l := r.m.chat.Append(NewImageBlock(fakePNG(80, 40), "ASCII-Fallback", nil, r.m.theme))
-	img, ok := l.items[len(l.items)-1].(ImageBlock)
+	caps := TermCaps{Placeholders: true, CellW: 10, CellH: 20}
+	img := NewImageBlock(fakePNG(80, 40), "roh", true, caps, nil, r.m.theme)
+	img = img.SetID(7).(ImageBlock)
+
+	view := img.View(40)
+	cols := 38
+	rows := rowsFor(80, 40, cols, 10, 20) // 9
+	if !strings.Contains(view, "a=p,U=1,i=7,q=2,c=38,r=9;") {
+		t.Fatalf("placement control missing:\n%q", view[:80])
+	}
+	if n := strings.Count(view, placeholderChar); n != cols*rows {
+		t.Fatalf("placeholder cells = %d, want %d", n, cols*rows)
+	}
+	if !strings.Contains(view, "a=t,f=100,i=7,q=2,s=80,v=40,") {
+		t.Fatal("transmit escape missing")
+	}
+	if img.Height(40) != rows {
+		t.Fatalf("Height=%d want %d", img.Height(40), rows)
+	}
+
+	// Aspekt folgt der Zellgroesse: breite Zellen -> weniger Zeilen.
+	wide := TermCaps{Placeholders: true, CellW: 20, CellH: 10}
+	if h := NewImageBlock(fakePNG(80, 40), "roh", true, wide, nil, r.m.theme).Height(40); h != 24 {
+		t.Fatalf("wide-cell rows = %d, want 24 (capped)", h)
+	}
+}
+
+// TestFallbackWithoutPlaceholders: ohne Platzhalter rendert der Block den
+// ASCII-/Roh-Text und keine Graphics-Escapes.
+func TestFallbackWithoutPlaceholders(t *testing.T) {
+	r := newRig(t)
+	img := NewImageBlock(fakePNG(80, 40), "roh text", true, TermCaps{}, nil, r.m.theme)
+	view := img.View(80)
+	if strings.Contains(view, "\x1b_G") {
+		t.Fatal("fallback must not contain graphics escapes")
+	}
+	if !strings.Contains(stripANSI(view), "roh text") {
+		t.Fatal("fallback lost the text")
+	}
+}
+
+// TestApplyDiagramsPlaceholderCaps: mit Faehigkeit wird der CodeBlock zum
+// ImageBlock, ohne bleibt der Code stehen (Roh-Fallback). Jede Phase in
+// ihrem eigenen Rig — applyDiagrams mutiert das geteilte Backing-Array,
+// daher darf der zweite Lauf nicht vom mutierten Zustand ausgehen.
+func TestApplyDiagramsPlaceholderCaps(t *testing.T) {
+	res := func(id int) []diagramResult {
+		return []diagramResult{{id: id, png: fakePNG(80, 40), ascii: "Alice -> Bob: hi", ok: true}}
+	}
+
+	// Mit Platzhalter-Faehigkeit wird er zum ImageBlock.
+	r := newRig(t).seed("```plantuml\nAlice -> Bob: hi\n```")
+	id := r.m.diagramJobs()[0].id
+	l, n := r.m.chat.applyDiagrams(res(id), true, TermCaps{Placeholders: true, CellW: 10, CellH: 20})
+	if n != 1 {
+		t.Fatalf("apply=%d", n)
+	}
+	img, ok := findImage(l, id)
 	if !ok {
-		t.Fatalf("expected ImageBlock, got %T", l.items[len(l.items)-1])
+		t.Fatal("block is not an ImageBlock")
 	}
-	if img.Height(80) < 1 {
-		t.Fatal("image height must reserve rows")
+	view := img.View(40)
+	if !strings.Contains(view, "a=p,U=1,i=") {
+		t.Fatal("placement control missing")
 	}
-	if !strings.Contains(img.View(80), "\x1b_G") {
-		t.Fatal("kitty view missing graphics escape")
+	if !strings.Contains(view, placeholderChar) {
+		t.Fatal("placeholder cells missing")
 	}
-	if img.Markdown() != "ASCII-Fallback" {
+	if img.Markdown() != "Alice -> Bob: hi" {
 		t.Fatal("markdown fallback wrong")
 	}
-	_ = render.Render
+
+	// Ohne Platzhalter-Faehigkeit bleibt der Roh-Text sichtbar (FR-6).
+	r2 := newRig(t).seed("```plantuml\nAlice -> Bob: hi\n```")
+	id2 := r2.m.diagramJobs()[0].id
+	l2, n2 := r2.m.chat.applyDiagrams(res(id2), false, TermCaps{})
+	if n2 != 1 {
+		t.Fatalf("apply without caps = %d", n2)
+	}
+	cb := findCode(t, l2, id2)
+	if !cb.converted {
+		t.Fatal("block not marked converted")
+	}
+	if cb.code != "Alice -> Bob: hi" {
+		t.Fatalf("raw source changed: %q", cb.code)
+	}
+}
+
+// TestImagesEnabledOverride: force/off uebersteuert die Probe.
+func TestImagesEnabledOverride(t *testing.T) {
+	m := Model{}
+	t.Setenv("HERON_IMAGES", "force")
+	if !m.imagesEnabled() {
+		t.Fatal("force must enable")
+	}
+	t.Setenv("HERON_IMAGES", "off")
+	if m.imagesEnabled() {
+		t.Fatal("off must disable despite caps")
+	}
+	t.Setenv("HERON_IMAGES", "")
+	m.caps = TermCaps{Placeholders: true}
+	if !m.imagesEnabled() {
+		t.Fatal("probe result not honored")
+	}
 }
 
 // TestSeedQueuesDiagrams (FR-6/27/28): --seed haengt Diagramm-Fences an;
@@ -128,9 +169,6 @@ func TestSeedQueuesDiagrams(t *testing.T) {
 	if r.m.seedDiagrams {
 		t.Fatal("flag not consumed by the first frame")
 	}
-	// Der Rig fuehrt den Cmd aus: mit plantuml auf dem PATH ist der Block
-	// jetzt ASCII, ohne plantuml bleibt der Roh-Text — beides enthaelt
-	// "Alice", und die Queue ist abgearbeitet.
 	if len(r.m.diagramJobs()) != 0 {
 		t.Fatal("diagram jobs survived the first frame")
 	}

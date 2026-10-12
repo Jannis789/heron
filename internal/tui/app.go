@@ -55,6 +55,7 @@ type Model struct {
 	effortOptions []string
 	configSet     func(id, value string) error
 	newSession    func() error // /new: fresh goose session (nil = demo)
+	caps          TermCaps // Term-Probe (FR-27): Platzhalter + Zellpixel
 	pickerKind    string // "model" or "effort" while open
 	pickerOpen    bool
 	pickerCursor  int
@@ -99,6 +100,9 @@ func (m Model) WithStream(s *Stream) Model { m.stream = s; return m }
 
 // WithCancel wires the turn abort invoked by Ctrl+C while a turn runs (FR-7).
 func (m Model) WithCancel(fn func()) Model { m.cancel = fn; return m }
+
+// WithTermCaps uebernimmt das Probe-Ergebnis des Terminals (FR-27).
+func (m Model) WithTermCaps(c TermCaps) Model { m.caps = c; return m }
 
 // WithWorkspace sets the directory shown in the prompt box top border.
 func (m Model) WithWorkspace(dir string) Model { m.cwd = dir; return m }
@@ -652,7 +656,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.closePicker()
 		return m, nil
 	case diagramsDoneMsg:
-		m.chat, _ = m.chat.applyDiagrams(msg.results)
+		m.chat, _ = m.chat.applyDiagrams(msg.results, m.imagesEnabled(), m.caps)
 		return m, nil
 	case replyMsg:
 		// The final text supersedes the live preview (FR-2).

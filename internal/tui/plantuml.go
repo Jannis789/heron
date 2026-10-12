@@ -72,12 +72,20 @@ func (m Model) pendingDiagrams() tea.Cmd {
 			res := diagramResult{id: j.id, lang: j.lang, ascii: j.code}
 			switch j.lang {
 			case "mermaid":
-				if png, err := render.MermaidToPNG(ctx, j.code); err == nil {
-					res.png = png
-					res.ok = true
+				// FR-28: PNG nur im experimentellen force-Modus mit
+				// installiertem mmdc und bildfaehigem Terminal; ohne
+				// bleibt der Klartext.
+				if m.imagesEnabled() {
+					if png, err := render.MermaidToPNG(ctx, j.code); err == nil {
+						res.png = png
+						res.ok = true
+					}
 				}
 			default:
-				if imageProtocolTerm() {
+				// FR-6: Unicode-ASCII ist der Default-Pfad. PNG nur im
+				// experimentellen force-Modus mit bildfaehigem Terminal
+				// (FR-27, s. ImageBlock).
+				if m.imagesEnabled() {
 					if png, err := render.PlantUMLToPNG(ctx, j.code); err == nil {
 						res.png = png
 						res.ok = true
@@ -100,7 +108,7 @@ func (m Model) pendingDiagrams() tea.Cmd {
 // become ImageBlocks (FR-27), ASCII results replace the source, failures
 // keep the raw source. Either way the block is marked converted so it is
 // never queued again.
-func (l BlockList) applyDiagrams(results []diagramResult) (BlockList, int) {
+func (l BlockList) applyDiagrams(results []diagramResult, useImages bool, caps TermCaps) (BlockList, int) {
 	applied := 0
 	for _, r := range results {
 		for i, it := range l.items {
@@ -108,8 +116,8 @@ func (l BlockList) applyDiagrams(results []diagramResult) (BlockList, int) {
 			if !ok || cb.id != r.id {
 				continue
 			}
-			if r.png != nil && imageProtocolTerm() {
-				img := NewImageBlock(r.png, strings.TrimSuffix(r.ascii, "\n"), cb.copyFn, cb.th)
+			if r.png != nil && useImages {
+				img := NewImageBlock(r.png, strings.TrimSuffix(r.ascii, "\n"), useImages, caps, cb.copyFn, cb.th)
 				img = img.SetID(r.id).(ImageBlock)
 				if cb.focused {
 					img = img.SetFocused(true).(ImageBlock)

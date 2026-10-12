@@ -179,9 +179,12 @@ func main() {
 		cwd = "~" + strings.TrimPrefix(cwd, home)
 	}
 
+	// Term-Faehigkeiten abfragen (Kitty-Graphics/Platzhalter, Zellpixel),
+	// bevor bubbletea stdin uebernimmt (FR-27).
+	caps := tui.ProbeTerminal()
 	model := tui.New(sender, th, copyFn).WithStream(stream).WithCancel(cancel).
 		WithConfigSet(configSet).WithNewSession(resetSession).
-		WithContextWindow(*contextWindow).
+		WithContextWindow(*contextWindow).WithTermCaps(caps).
 		WithWorkspace(cwd).WithModel(*modelFlag).WithEffort(*effortFlag)
 	if *seedFile != "" {
 		b, err := os.ReadFile(*seedFile)
