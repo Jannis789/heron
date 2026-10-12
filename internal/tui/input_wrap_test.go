@@ -45,6 +45,25 @@ func TestTypingPastFullRowKeepsVisible(t *testing.T) {
 	}
 }
 
+// TestMultipleBreaksKeepEveryLine (FR-7): mehrfache Umbrueche mit langen
+// Zeilen — jede Zeile bleibt sichtbar, der Cursor folgt der Hoehe.
+func TestMultipleBreaksKeepEveryLine(t *testing.T) {
+	r := newRig(t)
+	r.do(tea.WindowSizeMsg{Width: 80, Height: 24})
+	r.do(runes("eins " + strings.Repeat("wort ", 20)))
+	r.do(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	r.do(runes("zwei " + strings.Repeat("text ", 18)))
+	r.do(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	r.do(runes("drei schluss"))
+
+	view := stripANSI(r.m.inputView())
+	for _, want := range []string{"eins", "zwei", "drei schluss"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("line %q cut:\n%s", want, view)
+		}
+	}
+}
+
 // TestSmallTerminalNoOverflow (FR-7): selbst mit grosser Box laeuft der
 // Screen nie ueber — der Footer bleibt sichtbar.
 func TestSmallTerminalNoOverflow(t *testing.T) {

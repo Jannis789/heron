@@ -29,10 +29,11 @@ func (m *Model) syncInputSize() {
 		w = 80
 	}
 	inner := w - 4
-	lines := 0
+	var rows []string
 	for _, ln := range strings.Split(m.input.Value(), "\n") {
-		lines += len(render.WrapWords(ln, inner))
+		rows = append(rows, render.WrapWords(ln, inner)...)
 	}
+	lines := len(rows)
 	if lines < inputMinHeight {
 		lines = inputMinHeight
 	}
@@ -41,6 +42,23 @@ func (m *Model) syncInputSize() {
 	}
 	if lines != m.input.Height() {
 		m.input.SetHeight(lines)
+	}
+	// The textarea viewport follows the cursor only downward: an insert
+	// that pushes the cursor past a too-small box scrolls it and it never
+	// scrolls back (repositionView has no upward correction for a grown
+	// window) — the first rows stayed hidden. When the whole value fits the
+	// box and the cursor is at the end (typing/pasting flow), reset the
+	// viewport via SetValue; the cursor lands back at the end. Mid-text
+	// cursors are left alone, an over-height box scrolls intentionally.
+	if v := m.input.Value(); v != "" && len(rows) <= lines {
+		hard := strings.Split(v, "\n")
+		last := hard[len(hard)-1]
+		li := m.input.LineInfo()
+		atEnd := li.RowOffset == li.Height-1 &&
+			li.CharOffset >= len([]rune(last))
+		if atEnd {
+			m.input.SetValue(v)
+		}
 	}
 	m.relayout()
 }
