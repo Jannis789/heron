@@ -48,7 +48,7 @@ func TestThinkBlockCollapsesLongThinking(t *testing.T) {
 	r.do(tea.KeyMsg{Type: tea.KeyTab})
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
 	r.contains("fünf")
-	r.contains("ZUKLAPPEN")
+	r.contains("weniger anzeigen")
 }
 
 // TestThinkActionHoverMatchesCopy (FR-30): hovering AUFKLAPPEN highlights it
@@ -60,18 +60,18 @@ func TestThinkActionHoverMatchesCopy(t *testing.T) {
 	if w == 0 {
 		w = 80
 	}
-	b := NewThinkBlock("eins\nzwei", r.m.theme)
+	b := NewThinkBlock("eins\nzwei\ndrei\nvier\nfünf", r.m.theme)
 	lines := strings.Split(stripANSI(b.View(w)), "\n")
 	footer := lines[len(lines)-1]
 	// Byte offsets are not cell offsets: box-drawing chars are 3 bytes but
 	// one cell — measure the prefix in cells.
-	cellX := len([]rune(footer[:strings.Index(footer, "AUFKLAPPEN")]))
+	cellX := len([]rune(footer[:strings.Index(footer, "mehr anzeigen")]))
 	if cellX < 0 {
-		t.Fatal("footer does not show AUFKLAPPEN")
+		t.Fatal("footer does not show the fold action")
 	}
 	y := len(lines) - 1 // footer row: header + body rows, 0-based
 	if !b.HitAction(w, cellX+2, y) {
-		t.Fatalf("HitAction misses AUFKLAPPEN at cell x=%d y=%d", cellX+2, y)
+		t.Fatalf("HitAction misses the fold action at cell x=%d y=%d", cellX+2, y)
 	}
 	// ... and does not fire outside the action box.
 	if b.HitAction(w, 10, y) {
@@ -87,7 +87,7 @@ func TestThinkActionHoverMatchesCopy(t *testing.T) {
 
 	hb := b.SetHover(true).(ThinkBlock)
 	hoverLabel, hoverStyled := hb.action()
-	if hoverLabel != "AUFKLAPPEN" || stripANSI(hoverStyled) != "AUFKLAPPEN" {
+	if hoverLabel != "+ mehr anzeigen" || stripANSI(hoverStyled) != "+ mehr anzeigen" {
 		t.Fatal("hover styling changed the label")
 	}
 	// lipgloss v1.1 emits the attribute doubled ("\x1b[4;4m"), so match the
@@ -97,7 +97,7 @@ func TestThinkActionHoverMatchesCopy(t *testing.T) {
 	}
 	fb := b.SetFocused(true).(ThinkBlock)
 	focusLabel, focusedStyled := fb.action()
-	if focusLabel != "AUFKLAPPEN" || stripANSI(focusedStyled) != "AUFKLAPPEN" {
+	if focusLabel != "+ mehr anzeigen" || stripANSI(focusedStyled) != "+ mehr anzeigen" {
 		t.Fatal("focus styling changed the label")
 	}
 	// Reverse is emitted as a plain "\x1b[7m" (no doubled attribute).
@@ -121,9 +121,9 @@ func TestThinkBlockUnfoldsOnClick(t *testing.T) {
 	}
 	h := b.Height(w)
 	footer := strings.Split(stripANSI(b.View(w)), "\n")[h-1]
-	i := strings.Index(footer, "AUFKLAPPEN")
+	i := strings.Index(footer, "mehr anzeigen")
 	if i < 0 {
-		t.Fatal("footer does not show AUFKLAPPEN")
+		t.Fatal("footer does not show the fold action")
 	}
 	x := len([]rune(footer[:i])) + 2 // cell offset, +2 lands inside the label
 	y := chatTop + h - 1             // only block → list top = chatTop
@@ -131,23 +131,23 @@ func TestThinkBlockUnfoldsOnClick(t *testing.T) {
 	r.click(x, y)
 	nb, ok := r.m.chat.items[0].(ThinkBlock)
 	if !ok || !nb.expanded {
-		t.Fatal("clicking AUFKLAPPEN did not unfold the block")
+		t.Fatal("clicking the fold action did not unfold the block")
 	}
 	r.contains("eins") // the beginning appears only when unfolded
-	r.contains("ZUKLAPPEN")
+	r.contains("weniger anzeigen")
 
-	// Clicking ZUKLAPPEN folds it back. The expanded block is taller —
+	// Clicking the fold action folds it back. The expanded block is taller —
 	// recompute footer row and screen y, they moved with the height.
 	h2 := nb.Height(w)
 	footer2 := strings.Split(stripANSI(nb.View(w)), "\n")[h2-1]
-	i2 := strings.Index(footer2, "ZUKLAPPEN")
+	i2 := strings.Index(footer2, "weniger anzeigen")
 	if i2 < 0 {
-		t.Fatal("footer does not show ZUKLAPPEN")
+		t.Fatal("footer does not show the fold action")
 	}
 	x2 := len([]rune(footer2[:i2])) + 2
 	r.click(x2, chatTop+h2-1)
 	if nb2, _ := r.m.chat.items[0].(ThinkBlock); nb2.expanded {
-		t.Fatal("clicking ZUKLAPPEN did not fold the block")
+		t.Fatal("clicking the fold action did not fold the block")
 	}
 	r.notContains("eins")
 
@@ -168,6 +168,29 @@ func TestThinkBlockUnfoldsOnClick(t *testing.T) {
 	}
 	if nb4.Marked() {
 		t.Fatal("header clicks set the selection mark")
+	}
+}
+
+// TestThinkBlockNoFoldForShort (FR-30): a short thinking shows everything —
+// no fold action anywhere (the footer is a plain closing border).
+func TestThinkBlockNoFoldForShort(t *testing.T) {
+	r := newRig(t)
+	r.m.startTurn()
+	r.do(thoughtMsg{text: "nur\neine\nZeile"})
+	if strings.Contains(stripANSI(r.m.View()), "mehr anzeigen") {
+		t.Fatal("short thinking shows a fold action")
+	}
+	l := r.m.chat
+	w := l.Width()
+	b, ok := l.items[0].(ThinkBlock)
+	if !ok {
+		t.Fatal("thought did not produce a think block")
+	}
+	if b.HitAction(w, 5, b.Height(w)-1) {
+		t.Fatal("footer offers a fold hit area without hidden content")
+	}
+	if b.HitAction(w, 5, 0) {
+		t.Fatal("header offers a fold hit area without hidden content")
 	}
 }
 

@@ -391,7 +391,7 @@ func (l BlockList) handleMouse(msg tea.MouseMsg) (BlockList, tea.Cmd, bool) {
 	switch msg.Button {
 	case tea.MouseButtonLeft:
 		// Click on a footer action triggers that action: COPY copies (FR-5),
-		// AUFKLAPPEN/ZUKLAPPEN folds the think block (FR-30).
+		// the fold action folds the think block (FR-30).
 		if idx, ok := l.hitAction(msg.X, l.offset+msg.Y); ok {
 			switch a := l.items[idx].(type) {
 			case actionWidget:

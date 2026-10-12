@@ -336,7 +336,7 @@ func (m Model) usageLabel() string {
 		pct := used * 100 / win
 		filled := used * 10 / win
 		bar := strings.Repeat("█", filled) + strings.Repeat("░", 10-filled)
-		use += " ▏" + bar + " " + fmt.Sprintf("%d%%", pct)
+		use += " · " + bar + " " + fmt.Sprintf("%d%%", pct)
 	}
 	return use
 }

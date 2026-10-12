@@ -42,7 +42,7 @@ type Widget interface {
 }
 
 // actionWidget is a block whose footer action does something of its own:
-// COPY copies (CodeBlock/TableBlock), AUFKLAPPEN/ZUKLAPPEN folds the think
+// COPY copies (CodeBlock/TableBlock), the fold action folds the think
 // block (FR-30). Mouse clicks dispatch through Action — never through Copy,
 // which is the copy-only keyboard path (alt+<i>, y).
 type actionWidget interface {
@@ -78,7 +78,7 @@ func NewHeadingBlock(text string) TextBlock {
 }
 
 // actionStyle is the shared hover/focus treatment for footer actions —
-// reversed when focused, underlined when hovered. COPY and AUFKLAPPEN must
+// reversed when focused, underlined when hovered. COPY and the fold action
 // stay visually identical (FR-30).
 func actionStyle(focused, hover bool) lipgloss.Style {
 	st := lipgloss.NewStyle()
@@ -563,9 +563,9 @@ func (b ThinkBlock) label() string {
 
 func (b ThinkBlock) actionLabel() string {
 	if b.expanded {
-		return "ZUKLAPPEN"
+		return "− weniger anzeigen"
 	}
-	return "AUFKLAPPEN"
+	return "+ mehr anzeigen"
 }
 
 // action returns the plain fold label and its styled variant — the same
@@ -620,11 +620,15 @@ func (b ThinkBlock) View(width int) string {
 		lines = append(lines, bs.Render("│")+" "+txt+strings.Repeat(" ", gap)+" "+bs.Render("│"))
 	}
 
-	action, styled := b.action()
-	// No left label: the header above already names the block ("denken") —
-	// the footer carries only the fold action.
-	lines = append(lines, render.FooterLine(width, "", action, styled,
-		runewidth.StringWidth(action), lipgloss.NewStyle(), b.th.LabelStyle(), nil))
+	// The fold action sits centered, GitHub-style, and only when content is
+	// actually hidden — a short block gets a plain closing border (FR-30).
+	if len(rows) > thinkCollapsed {
+		action, styled := b.action()
+		lines = append(lines, render.CenteredActionLine(width, action, styled,
+			runewidth.StringWidth(action), lipgloss.NewStyle()))
+	} else {
+		lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -664,6 +668,11 @@ func (b ThinkBlock) Resize(width int) Widget {
 	return b
 }
 func (b ThinkBlock) HitAction(width, x, y int) bool {
+	rows := b.wrappedBody(codeInnerWidth(width))
+	if len(rows) <= thinkCollapsed {
+		// Nothing hidden — no fold affordance anywhere, not even the header.
+		return false
+	}
 	// The header caption ("denken ▸ n Zeilen") folds too — clicking the
 	// section title is the natural unfold, and it must NOT toggle the
 	// selection mark (FR-30).
@@ -673,8 +682,8 @@ func (b ThinkBlock) HitAction(width, x, y int) bool {
 	if y != 1+b.bodyRows(width) {
 		return false
 	}
-	// The think footer carries no left label — the header names the block.
-	start, end := render.ActionRange(width, "", runewidth.StringWidth(b.actionLabel()))
+	// The fold action sits centered in the footer.
+	start, end := render.CenteredActionRange(width, runewidth.StringWidth(b.actionLabel()))
 	return x >= start && x < end
 }
 func (b ThinkBlock) Copy() (Widget, tea.Cmd) { return b, nil }

@@ -434,6 +434,33 @@ func TableBodyLines(cells [][]string, aligns []Align, th *Theme, width int) (lin
 	return tableBody(cells, aligns, th, width)
 }
 
+// CenteredActionLine renders a closing border with the action box centered:
+// ╰─────[ + mehr anzeigen ]─────╯ — dashes on both sides, so the box never
+// touches the corners (FR-30 think block).
+func CenteredActionLine(totalW int, action, actionStyled string, actionW int, st lipgloss.Style) string {
+	box := actionW + 4 // "[ " + action + " ]"
+	n := totalW - box - 2
+	if n < 0 {
+		n = 0
+	}
+	left := n / 2
+	return st.Render("└"+strings.Repeat("─", left)) +
+		st.Render("[ ") + actionStyled + st.Render(" ]") +
+		st.Render(strings.Repeat("─", n-left)+"┘")
+}
+
+// CenteredActionRange returns the [start,end) cell positions of the centered
+// action box (mouse hit-testing, FR-30).
+func CenteredActionRange(totalW, actionW int) (int, int) {
+	box := actionW + 4
+	n := totalW - box - 2
+	if n < 0 {
+		n = 0
+	}
+	left := n / 2
+	return 1 + left, 1 + left + box
+}
+
 // TableFooterLine renders the closing bottom border of a table with the size
 // label and the copy action embedded; chrome colored via the theme border.
 func TableFooterLine(widths []int, rows, cols int, th *Theme, action, actionStyled string, actionW int) string {
