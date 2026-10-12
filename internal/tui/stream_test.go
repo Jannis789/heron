@@ -66,7 +66,7 @@ func TestThinkingStreamsIntoCollapsedBlock(t *testing.T) {
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "überlege kurz\nfast fertig"})
 
-	r.contains("denken ▸")
+	r.contains("thinking ▸")
 	r.contains("überlege kurz")
 	r.notContains("💭")
 }

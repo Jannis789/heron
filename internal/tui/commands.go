@@ -15,10 +15,10 @@ type command struct {
 // commands lists the available slash commands; the suggestion list filters
 // this by prefix while the user types.
 var commands = []command{
-	{"model", "Modell wählen"},
-	{"effort", "Effort-Stufe wählen"},
-	{"new", "Neue Session starten"},
-	{"quit", "heron beenden"},
+	{"model", "choose model"},
+	{"effort", "choose effort level"},
+	{"new", "start a new session"},
+	{"quit", "quit heron"},
 }
 
 // newSessionMsg reports the /new backend result — the session spawn runs as
@@ -96,14 +96,14 @@ func (m Model) execCommand(full string) (tea.Model, tea.Cmd) {
 	switch full {
 	case "/model":
 		if len(m.modelOptions) == 0 {
-			m.chat = m.chat.Append(NewTextBlock("goose hat keine Modell-Optionen gemeldet.", "1"))
+			m.chat = m.chat.Append(NewTextBlock("goose reported no model options.", "1"))
 			return m, nil
 		}
 		m.openPicker("model")
 		return m, nil
 	case "/effort":
 		if len(m.effortOptions) == 0 {
-			m.chat = m.chat.Append(NewTextBlock("goose hat keine Effort-Optionen gemeldet.", "1"))
+			m.chat = m.chat.Append(NewTextBlock("goose reported no effort options.", "1"))
 			return m, nil
 		}
 		m.openPicker("effort")
@@ -112,11 +112,11 @@ func (m Model) execCommand(full string) (tea.Model, tea.Cmd) {
 		// A fresh session while a turn is running would interleave two
 		// streams into one chat — refuse until it settles.
 		if m.running {
-			m.chat = m.chat.Append(NewTextBlock("Turn läuft noch — erst ctrl+c abbrechen.", "1"))
+			m.chat = m.chat.Append(NewTextBlock("A turn is still running — abort it with ctrl+c first.", "1"))
 			return m, nil
 		}
 		if m.newSession == nil {
-			m.chat = m.chat.Append(NewTextBlock("Kein Backend für eine neue Session (Demo-Modus).", "1"))
+			m.chat = m.chat.Append(NewTextBlock("No backend for a new session (demo mode).", "1"))
 			return m, nil
 		}
 		fn := m.newSession

@@ -81,7 +81,7 @@ func TestModelPickerSearchFilters(t *testing.T) {
 	}
 	typeRunes(r, "/model")
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
-	r.contains("Sucheingabe")
+	r.contains("search")
 
 	typeRunes(r, "flash")
 	r.contains("glm-5.3-flash")
@@ -101,7 +101,7 @@ func TestEffortPickerHasNoSearch(t *testing.T) {
 	r, _ := pickerRig(t)
 	typeRunes(r, "/effort")
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
-	if strings.Contains(stripANSI(r.m.View()), "Sucheingabe") {
+	if strings.Contains(stripANSI(r.m.View()), "search") {
 		t.Fatal("effort picker shows a search line")
 	}
 }

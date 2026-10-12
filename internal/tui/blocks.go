@@ -78,22 +78,31 @@ func NewHeadingBlock(text string) TextBlock {
 }
 
 // actionStyle is the shared hover/focus treatment for footer actions —
-// reversed when focused, underlined when hovered. COPY and the fold action
-// stay visually identical (FR-30).
-func actionStyle(focused, hover bool) lipgloss.Style {
+// one single style so the WHOLE label restyles at once (nested renders
+// kept the first glyph in the old colour). The theme action colour at
+// rest, white when hovered, reversed when focused. COPY and the fold
+// action stay visually identical (FR-30).
+const hoverWhite = "#FFFFFF"
+
+func actionStyle(th *render.Theme, focused, hover bool) lipgloss.Style {
 	st := lipgloss.NewStyle()
-	if focused {
+	if th != nil {
+		st = th.ActionStyle()
+	}
+	switch {
+	case focused:
 		st = st.Reverse(true)
-	} else if hover {
-		st = st.Underline(true)
+	case hover:
+		st = st.Foreground(lipgloss.Color(hoverWhite)).Underline(true)
 	}
 	return st
 }
 
 // copyAction returns the plain action label and a styled variant: MARKED
 // while the block is in the selection (FR-29), COPIED after a copy, styled
-// by actionStyle (reversed when focused, underlined when hovered).
-func copyAction(copied, marked, focused, hover bool) (string, string) {
+// by actionStyle (theme action colour at rest, white when hovered, reversed
+// when focused).
+func copyAction(th *render.Theme, copied, marked, focused, hover bool) (string, string) {
 	label := "COPY"
 	if marked {
 		label = "MARKED"
@@ -101,7 +110,7 @@ func copyAction(copied, marked, focused, hover bool) (string, string) {
 	if copied {
 		label = "COPIED"
 	}
-	return label, actionStyle(focused, hover).Render(label)
+	return label, actionStyle(th, focused, hover).Render(label)
 }
 
 // actionWidth is the display width of the current action label.
@@ -290,10 +299,9 @@ func (b CodeBlock) View(width int) string {
 			bs.Render("│"))
 	}
 
-	action, styled := copyAction(b.copied, b.marked, b.focused, b.hover)
-	styled = b.th.ActionStyle().Render(styled)
+	action, styled := copyAction(b.th, b.copied, b.marked, b.focused, b.hover)
 	lines = append(lines, render.FooterLine(width, labelAt(len(body)), action, styled,
-		runewidth.StringWidth(action), lipgloss.NewStyle(), b.th.LabelStyle(), nil))
+		runewidth.StringWidth(action), b.th.BorderStyle(), b.th.LabelStyle(), nil))
 	return strings.Join(lines, "\n")
 }
 func (b CodeBlock) Update(msg tea.Msg) (Widget, tea.Cmd) {
@@ -409,7 +417,7 @@ func (b TableBlock) View(width int) string {
 	if rows < 0 {
 		rows = 0
 	}
-	action, styled := copyAction(b.copied, b.marked, b.focused, b.hover)
+	action, styled := copyAction(b.th, b.copied, b.marked, b.focused, b.hover)
 	lines := append(append([]string{}, body...),
 		render.TableFooterLine(widths, rows, len(widths), b.th, action, styled, runewidth.StringWidth(action)))
 	return strings.Join(lines, "\n")
@@ -554,7 +562,7 @@ func (b ThinkBlock) label() string {
 	if b.expanded {
 		state = "▾"
 	}
-	l := fmt.Sprintf("denken %s %d Zeilen", state, len(b.bodyLines()))
+	l := fmt.Sprintf("thinking %s %d lines", state, len(b.bodyLines()))
 	if b.marked {
 		l += " ✓"
 	}
@@ -563,17 +571,17 @@ func (b ThinkBlock) label() string {
 
 func (b ThinkBlock) actionLabel() string {
 	if b.expanded {
-		return "− weniger anzeigen"
+		return "− show less"
 	}
-	return "+ mehr anzeigen"
+	return "+ show more"
 }
 
 // action returns the plain fold label and its styled variant — the same
-// actionStyle treatment as COPY (reversed when focused, underlined when
-// hovered), wrapped in the theme action colour.
+// single-style actionStyle treatment as COPY (theme colour at rest, white
+// when hovered, reversed when focused).
 func (b ThinkBlock) action() (string, string) {
 	action := b.actionLabel()
-	return action, b.th.ActionStyle().Render(actionStyle(b.focused, b.hover).Render(action))
+	return action, actionStyle(b.th, b.focused, b.hover).Render(action)
 }
 
 // truncateCells cuts a line to w display cells, marking the cut with an
@@ -602,7 +610,7 @@ func (b ThinkBlock) View(width int) string {
 	lines := make([]string, 0, b.Height(width))
 	// The caption is a fold hit target (HitAction y==0) — same hover/focus
 	// treatment as the footer action.
-	lines = append(lines, bs.Render("┌─ ")+b.th.ActionStyle().Render(actionStyle(b.focused, b.hover).Render(label))+
+	lines = append(lines, bs.Render("┌─ ")+actionStyle(b.th, b.focused, b.hover).Render(label)+
 		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
 
 	rows := b.wrappedBody(inner)
@@ -625,7 +633,7 @@ func (b ThinkBlock) View(width int) string {
 	if len(rows) > thinkCollapsed {
 		action, styled := b.action()
 		lines = append(lines, render.CenteredActionLine(width, action, styled,
-			runewidth.StringWidth(action), lipgloss.NewStyle()))
+			runewidth.StringWidth(action), b.th.BorderStyle()))
 	} else {
 		lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
 	}

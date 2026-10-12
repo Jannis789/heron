@@ -71,7 +71,7 @@ func TestInfoMsgKeepsFlagOverrides(t *testing.T) {
 // placeholder so the borders stay free for live information.
 func TestPlaceholderCarriesTheHints(t *testing.T) {
 	r := newRig(t)
-	r.contains("enter sendet")
+	r.contains("enter sends")
 	r.contains("ctrl+j")
 }
 
@@ -88,6 +88,24 @@ func TestPromptBoxGrowsWithText(t *testing.T) {
 	after := strings.Split(r.m.inputView(), "\n")
 	if len(after) <= before {
 		t.Fatalf("prompt box did not grow: %d rows before, %d after", before, len(after))
+	}
+	if !strings.HasPrefix(stripANSI(after[len(after)-1]), "└") {
+		t.Fatalf("bottom border lost while growing: %q", after[len(after)-1])
+	}
+}
+
+// TestPromptBoxGrowsWithWrappedLine: the input soft-wraps a long single
+// line and the box grows with every filled row — no explicit ctrl+j needed.
+func TestPromptBoxGrowsWithWrappedLine(t *testing.T) {
+	r := newRig(t)
+	before := len(strings.Split(r.m.inputView(), "\n"))
+
+	// 200 cells at a 96-cell inner width: must wrap onto 3 rows.
+	r.typeLine(strings.Repeat("word ", 40))
+
+	after := strings.Split(r.m.inputView(), "\n")
+	if len(after) < before+2 {
+		t.Fatalf("prompt box did not grow with wrapped text: %d rows before, %d after", before, len(after))
 	}
 	if !strings.HasPrefix(stripANSI(after[len(after)-1]), "└") {
 		t.Fatalf("bottom border lost while growing: %q", after[len(after)-1])

@@ -464,7 +464,7 @@ func CenteredActionRange(totalW, actionW int) (int, int) {
 // TableFooterLine renders the closing bottom border of a table with the size
 // label and the copy action embedded; chrome colored via the theme border.
 func TableFooterLine(widths []int, rows, cols int, th *Theme, action, actionStyled string, actionW int) string {
-	return FooterLine(boxWidth(widths), DimsLabel(rows, cols), action, th.ActionStyle().Render(actionStyled), actionW, th.BorderStyle(), th.LabelStyle(), junctionPositions(widths))
+	return FooterLine(boxWidth(widths), DimsLabel(rows, cols), action, actionStyled, actionW, th.BorderStyle(), th.LabelStyle(), junctionPositions(widths))
 }
 
 // renderTable renders a goldmark table as a bordered box whose bottom border

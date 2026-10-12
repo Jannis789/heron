@@ -18,10 +18,21 @@ const (
 	inputChromeRows = 2
 )
 
-// syncInputSize grows the prompt box with its content (one row per line,
-// clamped) and keeps the chat viewport sized to whatever is left over.
+// syncInputSize grows the prompt box with its content and keeps the chat
+// viewport sized to whatever is left over. Height follows the SOFT-WRAPPED
+// row count: the textarea already word-wraps long lines at its width, so
+// the box must grow as soon as a line is full — not only after explicit
+// ctrl+j newlines.
 func (m *Model) syncInputSize() {
-	lines := strings.Count(m.input.Value(), "\n") + 1
+	w := m.width
+	if w < 24 {
+		w = 80
+	}
+	inner := w - 4
+	lines := 0
+	for _, ln := range strings.Split(m.input.Value(), "\n") {
+		lines += len(render.WrapWords(ln, inner))
+	}
 	if lines < inputMinHeight {
 		lines = inputMinHeight
 	}
@@ -134,14 +145,14 @@ func (m Model) inputView() string {
 		// enough to browse without one (FR-20).
 		if m.pickerKind == "model" {
 			if m.pickerQuery == "" {
-				lines = append(lines, row("> "+ls.Render("Sucheingabe")))
+				lines = append(lines, row("> "+ls.Render("search")))
 			} else {
 				lines = append(lines, row("> "+runewidth.Truncate(m.pickerQuery, inner-3, "…")))
 			}
 		}
 		options := m.pickerOptions()
 		if len(options) == 0 {
-			lines = append(lines, row("  " + ls.Render("keine Optionen")))
+			lines = append(lines, row("  " + ls.Render("no options")))
 		}
 		rows := m.pickerVisibleRows()
 		end := min(m.pickerScroll+rows, len(options))

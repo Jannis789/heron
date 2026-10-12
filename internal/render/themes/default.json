@@ -1,6 +1,6 @@
 {
   "name": "default",
-  "text": { "color": "220", "bold": true, "italic": false },
+  "text": { "color": "#D9D4EC", "bold": true, "italic": false },
   "border": { "color": "#B4BEFE", "bold": true, "italic": false },
   "action": { "color": "#B999FF", "bold": false, "italic": false },
   "background": "#141419"

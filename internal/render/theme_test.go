@@ -10,7 +10,7 @@ import (
 
 func init() { lipgloss.SetColorProfile(termenv.ANSI256) }
 
-func TestRenderTextDefaultIsBoldYellow(t *testing.T) {
+func TestRenderTextDefaultIsBoldLavenderWhite(t *testing.T) {
 	th, err := DefaultTheme()
 	if err != nil {
 		t.Fatalf("DefaultTheme: %v", err)
@@ -25,8 +25,8 @@ func TestRenderTextDefaultIsBoldYellow(t *testing.T) {
 	if !strings.Contains(out, "\x1b[1") {
 		t.Fatalf("fett fehlt: %q", out)
 	}
-	if !strings.Contains(out, "38;5;220") {
-		t.Fatalf("gelb(220) fehlt: %q", out)
+	if !strings.Contains(out, "38;5;189") {
+		t.Fatalf("lavender-white(189) fehlt: %q", out)
 	}
 }
 

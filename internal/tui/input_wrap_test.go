@@ -1,0 +1,64 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// TestCtrlJKeepsFirstLine (FR-7): nach ctrl+j darf die erste Zeile nicht
+// abgeschnitten sein. Die bubbles-Textarea scrollt ihren internen Viewport,
+// wenn der Cursor eine zu kleine Box verlaesst, und scrollt nach dem
+// spaeteren SetHeight nicht zurueck — deshalb waechst die Box vor dem
+// Einfuegen (ctrl+j Pre-Grow in Update).
+func TestCtrlJKeepsFirstLine(t *testing.T) {
+	r := newRig(t)
+	r.do(tea.WindowSizeMsg{Width: 80, Height: 24})
+	r.do(runes("erste zeile"))
+	r.do(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	r.do(runes("zweite zeile"))
+
+	view := stripANSI(r.m.inputView())
+	if !strings.Contains(view, "erste zeile") {
+		t.Errorf("first line cut after ctrl+j:\n%s", view)
+	}
+	if !strings.Contains(view, "zweite zeile") {
+		t.Errorf("second line cut after ctrl+j:\n%s", view)
+	}
+}
+
+// TestTypingPastFullRowKeepsVisible (FR-7): tippen ueber eine volle Zeile
+// hinaus (weicher Umbruch mitten im Schreiben) — Anfang und Ende muessen
+// sichtbar bleiben.
+func TestTypingPastFullRowKeepsVisible(t *testing.T) {
+	r := newRig(t)
+	r.do(tea.WindowSizeMsg{Width: 80, Height: 24})
+	r.do(runes(strings.Repeat("wort ", 20)))
+	r.do(runes(" mehr"))
+	view := stripANSI(r.m.inputView())
+	if !strings.Contains(view, "wort") {
+		t.Errorf("beginning cut after soft wrap:\n%s", view)
+	}
+	if !strings.Contains(view, "mehr") {
+		t.Errorf("tail cut after soft wrap:\n%s", view)
+	}
+}
+
+// TestSmallTerminalNoOverflow (FR-7): selbst mit grosser Box laeuft der
+// Screen nie ueber — der Footer bleibt sichtbar.
+func TestSmallTerminalNoOverflow(t *testing.T) {
+	r := newRig(t)
+	r.do(tea.WindowSizeMsg{Width: 80, Height: 12})
+	for i := 0; i < 10; i++ {
+		r.do(runes("zeile mit inhalt damit die box waechst\n"))
+	}
+	screen := stripANSI(r.m.View())
+	rows := strings.Split(screen, "\n")
+	if len(rows) > 12 {
+		t.Errorf("screen overflows: %d rows on a 12-row terminal", len(rows))
+	}
+	if !strings.Contains(screen, "goose · medium") {
+		t.Errorf("footer pushed off screen:\n%s", screen[len(screen)-300:])
+	}
+}

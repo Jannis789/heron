@@ -75,7 +75,7 @@ func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
 	ta := textarea.New()
 	// Hints live in the placeholder: they are only useful before the first
 	// keystroke, and the borders carry the live session info instead.
-	ta.Placeholder = "Nachricht an goose …  (enter sendet · ctrl+j = neue Zeile)"
+	ta.Placeholder = "Message goose …  (enter sends · ctrl+j = new line)"
 	// The frame already marks the prompt area, so the textarea itself stays
 	// free of a line prefix — one prompt character per row reads as noise
 	// once the box grows.
@@ -357,7 +357,7 @@ func (m Model) footerView() string {
 	use := m.usageLabel()
 	hints := ""
 	if m.running {
-		hints = "ctrl+c abbrechen"
+		hints = "ctrl+c abort"
 	}
 	w := m.width
 	if w <= 0 {
@@ -493,6 +493,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if matches := m.slashMatches(); m.cmdCursor < len(matches) {
 					return m.execCommand("/" + matches[m.cmdCursor].name)
 				}
+			}
+		}
+		// ctrl+j is the line break (FR-7). Grow the box BEFORE the textarea
+		// moves the cursor to the new line: its internal viewport scrolls
+		// when the cursor leaves a too-small window and never scrolls back
+		// after SetHeight — the first line was cut off above. Growing first
+		// keeps every row visible; syncInputSize normalises afterwards.
+		if msg.String() == "ctrl+j" {
+			if h := m.input.Height(); h < inputMaxHeight {
+				m.input.SetHeight(h + 1)
 			}
 		}
 		// Numbered copy fallback (FR-5): alt+<n> / ctrl+<n> copy block n.
@@ -706,7 +716,7 @@ func (m Model) View() string {
 	top.WriteString(m.statusLine())
 	top.WriteString("\n")
 	if m.chat.Empty() {
-		top.WriteString("(noch keine Nachricht — tippe unten)\n")
+		top.WriteString("(no messages yet — type below)\n")
 	}
 	top.WriteString(m.chat.View())
 

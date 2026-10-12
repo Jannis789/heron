@@ -211,7 +211,7 @@ func main() {
 func demoStreamingSender(stream *tui.Stream) func(string) (string, error) {
 	return func(prompt string) (string, error) {
 		full := demoMarkdown(prompt)
-		stream.Thought("demo: überlege eine Antwort …")
+		stream.Thought("demo: thinking of a reply …")
 		stream.Tool("demo-tool", false)
 		for _, piece := range splitChunks(full, 14) {
 			stream.Chunk(piece)
@@ -248,12 +248,12 @@ func splitChunks(s string, n int) []string {
 // demoMarkdown is the canned answer used by -demo (text, fence, table).
 func demoMarkdown(prompt string) string {
 	var b strings.Builder
-	b.WriteString("Du fragst: **" + prompt + "**\n\n")
-	b.WriteString("Das ist eine Demowiederung von heron ohne goose-Subprozess.\n\n")
-	b.WriteString("```go\npackage main\n\nfunc main() {\n    println(hallo)\n}\n```\n\n")
-	b.WriteString("| Komponente | Status | Note |\n|---|---|---|\n")
-	b.WriteString("| Render | ok | Codeblock + Tabelle |\n")
-	b.WriteString("| Copy | ok | Maus oder Tab |\n")
-	b.WriteString("| Session | demo | kein goose nötig |\n")
+	b.WriteString("You ask: **" + prompt + "**\n\n")
+	b.WriteString("This is a demo run of heron without a goose subprocess.\n\n")
+	b.WriteString("```go\npackage main\n\nfunc main() {\n    println(hello)\n}\n```\n\n")
+	b.WriteString("| Component | Status | Note |\n|---|---|---|\n")
+	b.WriteString("| Render | ok | code block + table |\n")
+	b.WriteString("| Copy | ok | mouse or tab |\n")
+	b.WriteString("| Session | demo | no goose needed |\n")
 	return b.String()
 }

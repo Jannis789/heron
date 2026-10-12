@@ -16,12 +16,12 @@ func TestThinkBlockCollapsesLongThinking(t *testing.T) {
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "eins\nzwei\ndrei\nvier\nfünf"})
 
-	r.contains("denken")
+	r.contains("thinking")
 	// The collapsed block shows the END of the thinking ("drei/vier/fünf");
 	// the beginning ("eins") stays hidden until unfolded. "denken" appears
 	// exactly once: in the block header.
-	if n := strings.Count(stripANSI(r.m.View()), "denken"); n != 1 {
-		t.Fatalf("'denken' appears %d times, want exactly 1 (header only)", n)
+	if n := strings.Count(stripANSI(r.m.View()), "thinking"); n != 1 {
+		t.Fatalf("'thinking' appears %d times, want exactly 1 (header only)", n)
 	}
 	if strings.Contains(stripANSI(r.m.View()), "eins") {
 		t.Fatal("collapsed block shows the beginning instead of the end")
@@ -48,7 +48,7 @@ func TestThinkBlockCollapsesLongThinking(t *testing.T) {
 	r.do(tea.KeyMsg{Type: tea.KeyTab})
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
 	r.contains("fünf")
-	r.contains("weniger anzeigen")
+	r.contains("show less")
 }
 
 // TestThinkActionHoverMatchesCopy (FR-30): hovering AUFKLAPPEN highlights it
@@ -65,7 +65,7 @@ func TestThinkActionHoverMatchesCopy(t *testing.T) {
 	footer := lines[len(lines)-1]
 	// Byte offsets are not cell offsets: box-drawing chars are 3 bytes but
 	// one cell — measure the prefix in cells.
-	cellX := len([]rune(footer[:strings.Index(footer, "mehr anzeigen")]))
+	cellX := len([]rune(footer[:strings.Index(footer, "show more")]))
 	if cellX < 0 {
 		t.Fatal("footer does not show the fold action")
 	}
@@ -77,7 +77,7 @@ func TestThinkActionHoverMatchesCopy(t *testing.T) {
 	if b.HitAction(w, 10, y) {
 		t.Fatal("HitAction hits outside the action box")
 	}
-	// Hover/focus restyle the fold action exactly like COPY (underline on
+	// Hover/focus restyle the fold action exactly like COPY (white text on
 	// hover, reverse on focus). go test runs with an Ascii color profile, so
 	// force TrueColor for this check and restore it afterwards.
 	rp := lipgloss.DefaultRenderer()
@@ -87,21 +87,28 @@ func TestThinkActionHoverMatchesCopy(t *testing.T) {
 
 	hb := b.SetHover(true).(ThinkBlock)
 	hoverLabel, hoverStyled := hb.action()
-	if hoverLabel != "+ mehr anzeigen" || stripANSI(hoverStyled) != "+ mehr anzeigen" {
+	if hoverLabel != "+ show more" || stripANSI(hoverStyled) != "+ show more" {
 		t.Fatal("hover styling changed the label")
 	}
-	// lipgloss v1.1 emits the attribute doubled ("\x1b[4;4m"), so match the
-	// attribute prefix, not an exact sequence.
-	if !strings.Contains(hoverStyled, "\x1b[4;") {
-		t.Fatalf("hover does not underline the fold action: %q", hoverStyled)
+	// One single style wraps the WHOLE label — white from the first glyph
+	// to the last (nested renders used to leave the first one lavender).
+	// lipgloss v1.1 re-applies the style per run, so require white on
+	// EVERY run, not one big sequence.
+	for i, run := range strings.Split(hoverStyled, "\x1b[0m") {
+		if run == "" {
+			continue
+		}
+		if !strings.Contains(run, "38;2;255;255;255") {
+			t.Fatalf("hover run %d is not white: %q", i, run)
+		}
 	}
 	fb := b.SetFocused(true).(ThinkBlock)
 	focusLabel, focusedStyled := fb.action()
-	if focusLabel != "+ mehr anzeigen" || stripANSI(focusedStyled) != "+ mehr anzeigen" {
+	if focusLabel != "+ show more" || stripANSI(focusedStyled) != "+ show more" {
 		t.Fatal("focus styling changed the label")
 	}
-	// Reverse is emitted as a plain "\x1b[7m" (no doubled attribute).
-	if !strings.Contains(focusedStyled, "\x1b[7m") {
+	// Reverse now merges into the single style's sequence ("\x1b[7;38;…").
+	if !strings.Contains(focusedStyled, "\x1b[7;") {
 		t.Fatalf("focus does not reverse the fold action: %q", focusedStyled)
 	}
 }
@@ -121,7 +128,7 @@ func TestThinkBlockUnfoldsOnClick(t *testing.T) {
 	}
 	h := b.Height(w)
 	footer := strings.Split(stripANSI(b.View(w)), "\n")[h-1]
-	i := strings.Index(footer, "mehr anzeigen")
+	i := strings.Index(footer, "show more")
 	if i < 0 {
 		t.Fatal("footer does not show the fold action")
 	}
@@ -134,13 +141,13 @@ func TestThinkBlockUnfoldsOnClick(t *testing.T) {
 		t.Fatal("clicking the fold action did not unfold the block")
 	}
 	r.contains("eins") // the beginning appears only when unfolded
-	r.contains("weniger anzeigen")
+	r.contains("show less")
 
 	// Clicking the fold action folds it back. The expanded block is taller —
 	// recompute footer row and screen y, they moved with the height.
 	h2 := nb.Height(w)
 	footer2 := strings.Split(stripANSI(nb.View(w)), "\n")[h2-1]
-	i2 := strings.Index(footer2, "weniger anzeigen")
+	i2 := strings.Index(footer2, "show less")
 	if i2 < 0 {
 		t.Fatal("footer does not show the fold action")
 	}
@@ -177,7 +184,7 @@ func TestThinkBlockNoFoldForShort(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "nur\neine\nZeile"})
-	if strings.Contains(stripANSI(r.m.View()), "mehr anzeigen") {
+	if strings.Contains(stripANSI(r.m.View()), "show more") {
 		t.Fatal("short thinking shows a fold action")
 	}
 	l := r.m.chat
@@ -206,7 +213,7 @@ func TestThinkBlockSurvivesStreaming(t *testing.T) {
 	if !strings.Contains(stripANSI(r.m.View()), "schritt drei") {
 		t.Fatal("refresh collapsed the unfolded block")
 	}
-	if !strings.Contains(stripANSI(r.m.View()), "denken ▾") {
+	if !strings.Contains(stripANSI(r.m.View()), "thinking ▾") {
 		t.Fatal("unfolded block lost its header state")
 	}
 }
@@ -216,7 +223,7 @@ func TestStartTurnDropsThinkBlock(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "alt"})
-	r.contains("denken")
+	r.contains("thinking")
 
 	r.m.startTurn()
 	r.notContains("denken ▸")
