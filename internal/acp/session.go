@@ -53,6 +53,26 @@ type sessionInfo struct {
 	effortOptions []string
 }
 
+// parseUsage reads the token usage from a session/prompt response. Zero
+// values on schema drift — the UI hides the segment instead of lying.
+func parseUsage(res []byte) Usage {
+	var raw struct {
+		Usage struct {
+			TotalTokens  int `json:"totalTokens"`
+			InputTokens  int `json:"inputTokens"`
+			OutputTokens int `json:"outputTokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(res, &raw) != nil {
+		return Usage{}
+	}
+	return Usage{
+		InputTokens:  raw.Usage.InputTokens,
+		OutputTokens: raw.Usage.OutputTokens,
+		TotalTokens:  raw.Usage.TotalTokens,
+	}
+}
+
 // parseSessionInfo extracts the session id plus the config options goose
 // announces. Anything missing stays empty — schema drift cannot break
 // session creation.
@@ -99,6 +119,16 @@ type Events struct {
 	OnThought func(string)
 	// OnTool reports tool activity: the tool label and whether it finished.
 	OnTool func(name string, done bool)
+	// OnUsage reports the token accounting of the finished turn (the
+	// session/prompt response carries it next to stopReason, FR-23).
+	OnUsage func(Usage)
+}
+
+// Usage carries the token accounting of one finished turn.
+type Usage struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
 }
 
 // NewSession connects a fresh `goose acp` subprocess and creates a session.
@@ -192,11 +222,19 @@ func (s *Session) PromptStream(ctx context.Context, text string, ev *Events) (st
 		}
 	}
 	defer func() { s.client.onNotify = nil }()
-	if _, err := s.client.Request(ctx, "session/prompt", map[string]any{
+	res, err := s.client.Request(ctx, "session/prompt", map[string]any{
 		"sessionId": s.sessionID,
 		"prompt":    []map[string]any{{"type": "text", "text": text}},
-	}); err != nil {
+	})
+	if err != nil {
 		return sb.String(), fmt.Errorf("prompt: %w", err)
+	}
+	// The response carries stopReason + usage (FR-23): publish the token
+	// accounting when the backend reports it.
+	if ev != nil && ev.OnUsage != nil {
+		if u := parseUsage(res); u.TotalTokens > 0 || u.InputTokens > 0 || u.OutputTokens > 0 {
+			ev.OnUsage(u)
+		}
 	}
 	return sb.String(), nil
 }

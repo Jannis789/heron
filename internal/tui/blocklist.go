@@ -282,6 +282,18 @@ func (l BlockList) hitAction(x, y int) (int, bool) {
 	return 0, false
 }
 
+// Clear drops every chat block and resets paging/marks — /new starts fresh
+// without losing width/copy wiring (FR-20).
+func (l BlockList) Clear() BlockList {
+	l.items = nil
+	l.offset = 0
+	l.focus = -1
+	l.hoverIdx = -1
+	l.follow = true
+	l.marks = map[int]bool{}
+	return l
+}
+
 // toggleMarkFocused flips the selection mark of the focused block (FR-29).
 func (l BlockList) toggleMarkFocused() BlockList {
 	if !l.Focused() {

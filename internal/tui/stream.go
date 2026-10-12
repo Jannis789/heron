@@ -83,6 +83,14 @@ func (s *Stream) Tool(name string, done bool) {
 	s.publish(toolMsg{name: name, done: done})
 }
 
+// Usage publishes the token accounting of a finished turn (FR-23).
+func (s *Stream) Usage(in, out int) {
+	s.publish(usageMsg{in: in, out: out})
+}
+
+// usageMsg carries the token usage of the finished turn.
+type usageMsg struct{ in, out int }
+
 // Info publishes the model/effort the backend announced (ACP configOptions)
 // once the session exists, plus the selectable option lists.
 func (s *Stream) Info(model, effort string, modelOptions, effortOptions []string) {

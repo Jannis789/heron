@@ -23,6 +23,20 @@ func TestParseSessionInfoReadsModelAndEffort(t *testing.T) {
 	}
 }
 
+// TestParseUsageReadsGoosePayload: the token accounting of a finished turn
+// arrives in the session/prompt response next to stopReason (FR-23).
+func TestParseUsageReadsGoosePayload(t *testing.T) {
+	// Real shape of goose 1.53's session/prompt response.
+	const res = `{"stopReason":"end_turn","usage":{"totalTokens":4471,"inputTokens":4465,"outputTokens":6}}`
+	u := parseUsage([]byte(res))
+	if u.InputTokens != 4465 || u.OutputTokens != 6 || u.TotalTokens != 4471 {
+		t.Fatalf("usage = %+v", u)
+	}
+	if u := parseUsage([]byte(`{"stopReason":"end_turn"}`)); u != (Usage{}) {
+		t.Fatalf("missing usage must stay zero: %+v", u)
+	}
+}
+
 func TestParseSessionInfoToleratesMinimalPayload(t *testing.T) {
 	si := parseSessionInfo([]byte(`{"sessionId":"abc"}`))
 	if si.sessionID != "abc" || si.model != "" || si.effort != "" {

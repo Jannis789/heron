@@ -17,7 +17,13 @@ type command struct {
 var commands = []command{
 	{"model", "Modell wählen"},
 	{"effort", "Effort-Stufe wählen"},
+	{"new", "Neue Session starten"},
+	{"quit", "heron beenden"},
 }
+
+// newSessionMsg reports the /new backend result — the session spawn runs as
+// a tea.Cmd so the event loop never blocks (NFR-2).
+type newSessionMsg struct{ err error }
 
 // slashActive reports whether the prompt is currently typing a slash command
 // and the suggestion list should show.
@@ -102,6 +108,21 @@ func (m Model) execCommand(full string) (tea.Model, tea.Cmd) {
 		}
 		m.openPicker("effort")
 		return m, nil
+	case "/new":
+		// A fresh session while a turn is running would interleave two
+		// streams into one chat — refuse until it settles.
+		if m.running {
+			m.chat = m.chat.Append(NewTextBlock("Turn läuft noch — erst ctrl+c abbrechen.", "1"))
+			return m, nil
+		}
+		if m.newSession == nil {
+			m.chat = m.chat.Append(NewTextBlock("Kein Backend für eine neue Session (Demo-Modus).", "1"))
+			return m, nil
+		}
+		fn := m.newSession
+		return m, func() tea.Msg { return newSessionMsg{err: fn()} }
+	case "/quit":
+		return m, tea.Quit
 	}
 	m.chat = m.chat.Append(NewTextBlock("Unbekannter Befehl: "+full, "1"))
 	return m, nil

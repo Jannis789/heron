@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -51,11 +52,19 @@ type Model struct {
 	modelOptions  []string
 	effortOptions []string
 	configSet     func(id, value string) error
+	newSession    func() error // /new: fresh goose session (nil = demo)
 	pickerKind    string // "model" or "effort" while open
 	pickerOpen    bool
 	pickerCursor  int
 	pickerScroll  int
 	pickerQuery   string // /model filters the list as you type (FR-20)
+
+	// Token usage (FR-23): goose reports per-turn usage in the prompt
+	// response. Totals accumulate the session; lastIn/lastOut feed the
+	// context bar (last input ≈ context used).
+	totalIn, totalOut int
+	lastIn, lastOut   int
+	ctxWin            int // context window tokens; 0 = default 200k
 
 	// Slash-command autocomplete (FR-20).
 	cmdCursor    int
@@ -170,6 +179,19 @@ func (m *Model) closePicker() {
 	m.pickerCursor = 0
 	m.pickerScroll = 0
 	m.pickerQuery = ""
+}
+
+// WithNewSession wires the /new callback: starts a fresh goose session.
+func (m Model) WithNewSession(fn func() error) Model {
+	m.newSession = fn
+	return m
+}
+
+// WithContextWindow sets the context window behind the footer bar
+// (flag -context-window; default 200000).
+func (m Model) WithContextWindow(n int) Model {
+	m.ctxWin = n
+	return m
 }
 
 // pickerRows caps the option rows visible in the expanded input box — wide
@@ -292,8 +314,47 @@ func (m Model) modelSegmentRange() (int, int) {
 // footerView is the status bar under the prompt box, crush-style: the model
 // segment on the left (click opens the selection dialog), contextual hints on
 // the right — only what applies right now.
+// defaultContextWindow backs the context bar when no window is configured.
+const defaultContextWindow = 200000
+
+// usageLabel renders the token segment: session totals up/down plus the
+// context bar (last turn vs. window). Hidden until the first turn (FR-23).
+func (m Model) usageLabel() string {
+	if m.totalIn == 0 && m.totalOut == 0 {
+		return ""
+	}
+	use := "↑" + humanTokens(m.totalIn) + " ↓" + humanTokens(m.totalOut)
+	win := m.ctxWin
+	if win <= 0 {
+		win = defaultContextWindow
+	}
+	if m.lastIn > 0 && win > 0 {
+		used := m.lastIn + m.lastOut
+		if used > win {
+			used = win
+		}
+		pct := used * 100 / win
+		filled := used * 10 / win
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", 10-filled)
+		use += " ▏" + bar + " " + fmt.Sprintf("%d%%", pct)
+	}
+	return use
+}
+
+// humanTokens formats a token count compactly: 980, 4.5k, 1.2M.
+func humanTokens(n int) string {
+	switch {
+	case n >= 1000000:
+		return fmt.Sprintf("%.1fM", float64(n)/1000000)
+	case n >= 1000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
 func (m Model) footerView() string {
 	left := m.stateLabel()
+	use := m.usageLabel()
 	hints := ""
 	if m.running {
 		hints = "ctrl+c abbrechen"
@@ -303,14 +364,27 @@ func (m Model) footerView() string {
 		w = 80
 	}
 	gap := w - runewidth.StringWidth(left) - 2 - runewidth.StringWidth(hints) - 3
+	if use != "" {
+		gap -= runewidth.StringWidth(use) + 2
+	}
 	if gap < 1 {
-		gap = 1
+		// Too narrow for the numbers: drop the usage segment before the
+		// hints lose their place.
+		use = ""
+		gap = w - runewidth.StringWidth(left) - 2 - runewidth.StringWidth(hints) - 3
+		if gap < 1 {
+			gap = 1
+		}
 	}
 	if m.theme == nil {
 		return strings.TrimRight(" "+left+strings.Repeat(" ", gap+3+runewidth.StringWidth(hints)), " ")
 	}
 	fill := m.theme.TableFill()
-	line := " " + fill.Render(" "+left+" ") + strings.Repeat(" ", gap)
+	line := " " + fill.Render(" "+left+" ")
+	if use != "" {
+		line += " " + m.theme.LabelStyle().Render(use)
+	}
+	line += strings.Repeat(" ", gap)
 	if hints != "" {
 		line += m.theme.LabelStyle().Render(hints) + " "
 	}
@@ -532,6 +606,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.modelOptions = msg.modelOptions
 		m.effortOptions = msg.effortOptions
+		return m, nil
+	case usageMsg:
+		m.totalIn += msg.in
+		m.totalOut += msg.out
+		m.lastIn, m.lastOut = msg.in, msg.out
+		return m, nil
+	case newSessionMsg:
+		if msg.err != nil {
+			m.chat = m.chat.Append(NewTextBlock("Neue Session fehlgeschlagen: "+msg.err.Error(), "1"))
+			return m, nil
+		}
+		// Fresh session: fresh chat, fresh counters (FR-20).
+		m.chat = m.chat.Clear()
+		m.totalIn, m.totalOut = 0, 0
+		m.lastIn, m.lastOut = 0, 0
 		return m, nil
 	case configResultMsg:
 		// The backend confirmed (or failed) the model/effort change.

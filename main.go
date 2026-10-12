@@ -25,6 +25,7 @@ func main() {
 	modelFlag := flag.String("model", "", "model label override (default: what goose reports, else \"goose\")")
 	effortFlag := flag.String("effort", "", "effort label override (default: what goose reports, else \"medium\")")
 	seedFile := flag.String("seed", "", "markdown file to seed into the chat on startup")
+	contextWindow := flag.Int("context-window", 200000, "context window tokens for the footer bar")
 	flag.Parse()
 	wd, _ := os.Getwd()
 
@@ -88,6 +89,7 @@ func main() {
 		OnChunk:   func(text string) { stream.Chunk(text) },
 		OnThought: func(text string) { stream.Thought(text) },
 		OnTool:    func(name string, done bool) { stream.Tool(name, done) },
+		OnUsage:   func(u acp.Usage) { stream.Usage(u.InputTokens, u.OutputTokens) },
 	}
 
 	// The prompt box shows what goose really runs (ACP configOptions) —
@@ -152,6 +154,24 @@ func main() {
 		return err
 	}
 
+	// /new starts a fresh session: close the old goose subprocess and spawn
+	// a new one — the cleanest cut, no shared history state (FR-20).
+	resetSession := func() error {
+		sessMu.Lock()
+		defer sessMu.Unlock()
+		if sess != nil {
+			sess.Close()
+			sess = nil
+		}
+		s, err := acp.NewSession(context.Background(), *gooseBin, wd)
+		if err != nil {
+			return err
+		}
+		sess = s
+		publishModelInfo(s)
+		return nil
+	}
+
 	// Shorten the home prefix for display only — the session keeps the real
 	// absolute working directory.
 	cwd := wd
@@ -160,7 +180,8 @@ func main() {
 	}
 
 	model := tui.New(sender, th, copyFn).WithStream(stream).WithCancel(cancel).
-		WithConfigSet(configSet).
+		WithConfigSet(configSet).WithNewSession(resetSession).
+		WithContextWindow(*contextWindow).
 		WithWorkspace(cwd).WithModel(*modelFlag).WithEffort(*effortFlag)
 	if *seedFile != "" {
 		b, err := os.ReadFile(*seedFile)

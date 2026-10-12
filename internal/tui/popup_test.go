@@ -154,6 +154,70 @@ func TestModelPickerScrollsLongLists(t *testing.T) {
 	r.contains("modell-14") // the window followed the cursor to the end
 }
 
+// TestQuitCommand (FR-20): /quit beendet die App.
+func TestQuitCommand(t *testing.T) {
+	r, _ := pickerRig(t)
+	_, cmd := r.m.execCommand("/quit")
+	if cmd == nil {
+		t.Fatal("/quit produced no command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("/quit does not quit")
+	}
+}
+
+// TestNewCommandResetsChat (FR-20): /new startet eine neue Session, leert
+// Chat und Token-Zähler; während eines Turns wird abgelehnt.
+func TestNewCommandResetsChat(t *testing.T) {
+	r, _ := pickerRig(t)
+	calls := 0
+	r.m = r.m.WithNewSession(func() error { calls++; return nil })
+	r.m.startTurn()
+	r.do(thoughtMsg{text: "alt"})
+	r.m.endTurn()
+	r.m.totalIn, r.m.totalOut = 4465, 6
+	r.m.lastIn, r.m.lastOut = 4465, 6
+
+	typeRunes(r, "/new")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
+	if calls != 1 {
+		t.Fatalf("new session calls = %d", calls)
+	}
+	r.notContains("denken") // fresh chat
+	if r.m.totalIn != 0 || r.m.lastIn != 0 {
+		t.Fatal("token counters were not reset")
+	}
+
+	// While a turn runs, /new refuses instead of cutting the stream.
+	r.m.startTurn()
+	typeRunes(r, "/new")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
+	if calls != 1 {
+		t.Fatal("/new must not fire while a turn runs")
+	}
+}
+
+// TestFooterUsageSegment (FR-23): der Footer zeigt In-/Out-Token-Summen und
+// den Context-Balken (letzter Turn vs. Fenster); ohne Nutzung kein Segment.
+func TestFooterUsageSegment(t *testing.T) {
+	r := newRig(t)
+	r.m.totalIn, r.m.totalOut = 104465, 6
+	r.m.lastIn, r.m.lastOut = 100000, 6
+
+	f := r.m.footerView()
+	if !strings.Contains(f, "↑104.5k") || !strings.Contains(f, "↓6") {
+		t.Fatalf("footer misses token totals: %q", f)
+	}
+	if !strings.Contains(f, "50%") || !strings.Contains(f, "█████░░░░░") {
+		t.Fatalf("footer misses the context bar: %q", f)
+	}
+
+	r2 := newRig(t)
+	if s := r2.m.footerView(); strings.Contains(s, "↑") {
+		t.Fatalf("empty session shows usage: %q", s)
+	}
+}
+
 // TestPickerEscCloses (FR-20).
 func TestPickerEscCloses(t *testing.T) {
 	r, _ := pickerRig(t)
