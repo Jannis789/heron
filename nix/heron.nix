@@ -1,4 +1,4 @@
-{ lib, buildGoModule, plantuml, wl-clipboard }:
+{ lib, buildGoModule, makeWrapper, plantuml, wl-clipboard }:
 
 buildGoModule {
   pname = "heron";
@@ -8,10 +8,11 @@ buildGoModule {
 
   # Ignoriere Test-/Doku-Dateien, nur Go-Quellen bauen.
   buildInputs = [ plantuml wl-clipboard ];
+  nativeBuildInputs = [ makeWrapper ];
 
-  # Vendor-Hash der Go-Abhängigkeiten (go.sum). Update: lib.fakeHash
-  # eintragen, `nix build .#default` druckt den "got:"-Hash.
-  vendorHash = "sha256-tYAFOyAb4jtYXzLi1AOPcNyfExdshs0cJdQPTPpXLhM=";
+  # Der committete vendor/-Baum ist die Quelle (go mod vendor haelt ihn
+  # konsistent) — kein Vendor-Fetch-Derivation, kein Hash-Pflege.
+  vendorHash = null;
 
   # plantuml/wl-clipboard sind Laufzeit-Werkzeuge (FR-6/FR-5), nicht nur
   # Build-Inputs — ohne Wrap fehlen sie im PATH von "nix run".
