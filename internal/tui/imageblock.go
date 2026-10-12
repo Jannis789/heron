@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -61,16 +62,51 @@ func pngDims(b []byte) (int, int, bool) {
 	return w, h, w > 0 && h > 0
 }
 
+// imageDebug schreibt Diagnose nach /tmp/heron-images.log — nur mit
+// HERON_IMAGE_DEBUG=1 (FR-27 Sichtprüfung ohne Terminal-Geräusch).
+func imageDebug(msg string) {
+	if os.Getenv("HERON_IMAGE_DEBUG") != "1" {
+		return
+	}
+	f, err := os.OpenFile("/tmp/heron-images.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s\n", time.Now().Format("15:04:05.000"), msg)
+}
+
+// imageMode liest den Override: force = Escapes immer, off = nie, auto
+// (Default) = Terminalerkennung unten.
+func imageMode() string {
+	switch m := strings.ToLower(os.Getenv("HERON_IMAGES")); m {
+	case "force", "off":
+		return m
+	}
+	return "auto"
+}
+
 // imageProtocolTerm erkennt Terminals mit Kitty-Graphics-Protokoll.
 func imageProtocolTerm() bool {
-	if os.Getenv("HERON_NO_IMAGES") == "1" {
+	switch imageMode() {
+	case "force":
+		imageDebug("images: force")
+		return true
+	case "off":
+		imageDebug("images: off")
 		return false
 	}
 	t := strings.ToLower(os.Getenv("TERM"))
 	if strings.Contains(t, "kitty") || strings.Contains(t, "ghostty") {
+		imageDebug("images: on (TERM=" + t + ")")
 		return true
 	}
-	return os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("GHOSTTY_RESOURCES_DIR") != ""
+	if os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("GHOSTTY_RESOURCES_DIR") != "" {
+		imageDebug("images: on (KITTY/GHOSTTY env)")
+		return true
+	}
+	imageDebug("images: off (TERM=" + t + ", kein kitty/ghostty-Merkmal)")
+	return false
 }
 
 // kittyImageEscapes baut die Graphic-Protocol-Escapes: Transmit + Display
@@ -124,6 +160,8 @@ func (b ImageBlock) View(width int) string {
 	}
 	cols, rows := imageGeometry(b.pngW, b.pngH, width)
 	esc := kittyImageEscapes(b.png, cols, rows)
+	imageDebug(fmt.Sprintf("Bild %dx%d px als %dx%d Zellen, %d Bytes Escape",
+		b.pngW, b.pngH, cols, rows, len(esc)))
 	return esc + strings.Repeat("\n", rows-1)
 }
 

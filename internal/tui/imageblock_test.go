@@ -70,14 +70,19 @@ func TestKittyImageEscapes(t *testing.T) {
 
 func TestImageTermDetection(t *testing.T) {
 	t.Setenv("TERM", "xterm-kitty")
-	t.Setenv("HERON_NO_IMAGES", "")
+	t.Setenv("HERON_IMAGES", "")
 	if !imageProtocolTerm() {
 		t.Fatal("kitty TERM not detected")
 	}
-	t.Setenv("HERON_NO_IMAGES", "1")
+	t.Setenv("HERON_IMAGES", "off")
 	if imageProtocolTerm() {
-		t.Fatal("HERON_NO_IMAGES=1 must disable images")
+		t.Fatal("HERON_IMAGES=off must disable images")
 	}
+	t.Setenv("HERON_IMAGES", "force")
+	if !imageProtocolTerm() {
+		t.Fatal("HERON_IMAGES=force must enable images")
+	}
+	t.Setenv("HERON_IMAGES", "")
 	t.Setenv("HERON_NO_IMAGES", "")
 	t.Setenv("TERM", "xterm-256color")
 	t.Setenv("KITTY_WINDOW_ID", "")
