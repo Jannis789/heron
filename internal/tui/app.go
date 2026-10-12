@@ -33,6 +33,8 @@ type Model struct {
 	width  int
 	height int
 
+	seedDiagrams bool // Seed enthaelt plantuml/mermaid: einmalige Konvertierung
+
 	// Live turn state (FR-2, FR-7).
 	stream     *Stream // may be nil: no live updates
 	cancel     func()  // aborts the running turn, may be nil
@@ -424,12 +426,13 @@ func (m Model) SeedMarkdown(src string) Model {
 		return m
 	}
 	m.chat = m.chat.Append(BuildWidgets(nodes, m.theme, m.copyFn)...)
+	m.seedDiagrams = true
 	return m
 }
 
 func (m Model) Init() tea.Cmd {
 	// Seeded chats (-seed / demo) can already contain plantuml blocks.
-	if cmd := m.pendingPlantUML(); cmd != nil {
+	if cmd := m.pendingDiagrams(); cmd != nil {
 		return tea.Batch(textarea.Blink, cmd)
 	}
 	return textarea.Blink
@@ -442,6 +445,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.input.SetWidth(msg.Width - 4)
 		m.syncInputSize()
+		// Der Seed haengt Diagramm-Fences an; die Konvertierung braucht das
+		// laufende Programm — der erste Frame loest sie aus (FR-6/27/28).
+		if m.seedDiagrams {
+			m.seedDiagrams = false
+			return m, m.pendingDiagrams()
+		}
 		return m, nil
 	case tea.MouseMsg:
 		// The [ modell · effort ] footer chip toggles the popup; clicks
@@ -642,8 +651,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyPicker(msg.value)
 		m.closePicker()
 		return m, nil
-	case plantumlDoneMsg:
-		m.chat, _ = m.chat.applyPlantUML(msg.results)
+	case diagramsDoneMsg:
+		m.chat, _ = m.chat.applyDiagrams(msg.results)
 		return m, nil
 	case replyMsg:
 		// The final text supersedes the live preview (FR-2).
@@ -662,7 +671,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// PlantUML blocks in the fresh reply convert in the background (FR-6).
-		return m, m.pendingPlantUML()
+		return m, m.pendingDiagrams()
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)

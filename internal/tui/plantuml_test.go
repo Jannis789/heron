@@ -22,7 +22,7 @@ func findCode(t *testing.T, l BlockList, id int) CodeBlock {
 // queued, and a failed conversion is never queued again.
 func TestPlantUMLJobsCollectedOnce(t *testing.T) {
 	r := newRig(t).seed("```plantuml\nAlice -> Bob: hi\n```")
-	jobs := r.m.plantUMLJobs()
+	jobs := r.m.diagramJobs()
 	if len(jobs) != 1 {
 		t.Fatalf("jobs=%d want 1", len(jobs))
 	}
@@ -30,12 +30,12 @@ func TestPlantUMLJobsCollectedOnce(t *testing.T) {
 		t.Fatalf("bad job: %+v", jobs[0])
 	}
 
-	l, n := r.m.chat.applyPlantUML([]plantumlResult{{id: jobs[0].id, ok: false}})
+	l, n := r.m.chat.applyDiagrams([]diagramResult{{id: jobs[0].id, ok: false}})
 	if n != 1 {
 		t.Fatalf("applied=%d want 1", n)
 	}
 	r.m.chat = l
-	if again := r.m.plantUMLJobs(); len(again) != 0 {
+	if again := r.m.diagramJobs(); len(again) != 0 {
 		t.Fatalf("failed block queued again: %v", again)
 	}
 }
@@ -44,10 +44,10 @@ func TestPlantUMLJobsCollectedOnce(t *testing.T) {
 // the raw source in place, keeping the stable id.
 func TestPlantUMLApplyReplacesSource(t *testing.T) {
 	r := newRig(t).seed("```plantuml\nAlice -> Bob: hi\n```")
-	id := r.m.plantUMLJobs()[0].id
+	id := r.m.diagramJobs()[0].id
 
 	ascii := "+---+     +---+\n| A | --> | B |\n+---+     +---+"
-	l, n := r.m.chat.applyPlantUML([]plantumlResult{{id: id, ascii: ascii, ok: true}})
+	l, n := r.m.chat.applyDiagrams([]diagramResult{{id: id, ascii: ascii, ok: true}})
 	if n != 1 {
 		t.Fatalf("applied=%d want 1", n)
 	}
@@ -66,7 +66,7 @@ func TestPlantUMLApplyReplacesSource(t *testing.T) {
 // TestPlantUMLNoPendingReturnsNil: no work -> no goroutine.
 func TestPlantUMLNoPendingReturnsNil(t *testing.T) {
 	r := newRig(t).seed("```go\nx := 1\n```")
-	if cmd := r.m.pendingPlantUML(); cmd != nil {
+	if cmd := r.m.pendingDiagrams(); cmd != nil {
 		t.Fatal("expected nil cmd when nothing is pending")
 	}
 }
@@ -76,14 +76,14 @@ func TestPlantUMLNoPendingReturnsNil(t *testing.T) {
 func TestPlantUMLFallbackWhenMissing(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	r := newRig(t).seed("```plantuml\nAlice -> Bob: hi\n```")
-	id := r.m.plantUMLJobs()[0].id
+	id := r.m.diagramJobs()[0].id
 	before := findCode(t, r.m.chat, id).code
 
-	cmd := r.m.pendingPlantUML()
+	cmd := r.m.pendingDiagrams()
 	if cmd == nil {
 		t.Fatal("expected a conversion cmd")
 	}
-	done, ok := cmd().(plantumlDoneMsg)
+	done, ok := cmd().(diagramsDoneMsg)
 	if !ok {
 		t.Fatalf("msg type %T", cmd())
 	}
@@ -91,14 +91,14 @@ func TestPlantUMLFallbackWhenMissing(t *testing.T) {
 		t.Fatalf("expected one failed result, got %+v", done.results)
 	}
 
-	l, n := r.m.chat.applyPlantUML(done.results)
+	l, n := r.m.chat.applyDiagrams(done.results)
 	if n != 1 {
 		t.Fatalf("applied=%d", n)
 	}
 	if got := findCode(t, l, id).code; got != before {
 		t.Fatalf("raw source changed on failure:\nbefore %q\nafter  %q", before, got)
 	}
-	if jobs := (Model{chat: l}).plantUMLJobs(); len(jobs) != 0 {
+	if jobs := (Model{chat: l}).diagramJobs(); len(jobs) != 0 {
 		t.Fatalf("still pending after failure: %v", jobs)
 	}
 }
@@ -110,11 +110,11 @@ func TestPlantUMLRealConversion(t *testing.T) {
 		t.Skip("plantuml not installed")
 	}
 	r := newRig(t).seed("```plantuml\n@startuml\nAlice -> Bob: hi\n@enduml\n```")
-	cmd := r.m.pendingPlantUML()
+	cmd := r.m.pendingDiagrams()
 	if cmd == nil {
 		t.Fatal("expected a conversion cmd")
 	}
-	done, ok := cmd().(plantumlDoneMsg)
+	done, ok := cmd().(diagramsDoneMsg)
 	if !ok {
 		t.Fatalf("msg type %T", cmd())
 	}
