@@ -2,7 +2,10 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -65,11 +68,13 @@ func (m Model) pendingDiagrams() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
+		imageLogf("convert start: %d job(s), imagesEnabled=%v", len(jobs), m.imagesEnabled())
 		ctx, cancel := context.WithTimeout(context.Background(), plantumlTimeout)
 		defer cancel()
 		results := make([]diagramResult, 0, len(jobs))
 		for _, j := range jobs {
 			res := diagramResult{id: j.id, lang: j.lang, ascii: j.code}
+			t0 := time.Now()
 			switch j.lang {
 			case "mermaid":
 				// FR-28: PNG nur im experimentellen force-Modus mit
@@ -98,17 +103,50 @@ func (m Model) pendingDiagrams() tea.Cmd {
 					}
 				}
 			}
+			if res.png != nil {
+				imageLogf("convert %s id=%d ok png=%d bytes (%.1fms)", j.lang, j.id, len(res.png), float64(time.Since(t0).Microseconds())/1000.0)
+			} else if res.ascii != "" && res.ascii != j.code {
+				imageLogf("convert %s id=%d ok ascii (%d bytes, %.1fms)", j.lang, j.id, len(res.ascii), float64(time.Since(t0).Microseconds())/1000.0)
+			} else {
+				imageLogf("convert %s id=%d FAILED ascii (%.1fms) -> roh-Fallback", j.lang, j.id, float64(time.Since(t0).Microseconds())/1000.0)
+			}
 			results = append(results, res)
 		}
 		return diagramsDoneMsg{results: results}
 	}
 }
 
+// imageDebugOn kontrolliert das Diagnose-Log (/tmp/heron-images.log) via
+// HERON_IMAGE_DEBUG=1 (FR-27). Ohne das Flag ist das Debugging vollstaendig
+// aus — der Produktivpfad hat keinen Overhead.
+func imageDebugOn() bool {
+	return strings.ToLower(os.Getenv("HERON_IMAGE_DEBUG")) == "1" ||
+		strings.ToLower(os.Getenv("HERON_IMAGE_DEBUG")) == "true"
+}
+
+// imageLog schreibt eine Zeile ins Diagnose-Log. Nur aktiv mit
+// HERON_IMAGE_DEBUG=1 (s. imageDebugOn). Threadsafe ueber den Mutex.
+var imageLogMu sync.Mutex
+
+func imageLogf(format string, a ...interface{}) {
+	if !imageDebugOn() {
+		return
+	}
+	imageLogMu.Lock()
+	defer imageLogMu.Unlock()
+	f, err := os.OpenFile("/tmp/heron-images.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s "+format+"\n", append([]interface{}{time.Now().Format("15:04:05.000")}, a...)...)
+}
+
 // applyDiagrams installs the conversion results in the chat: PNG results
 // become ImageBlocks (FR-27), ASCII results replace the source, failures
 // keep the raw source. Either way the block is marked converted so it is
 // never queued again.
-func (l BlockList) applyDiagrams(results []diagramResult, useImages bool, caps TermCaps) (BlockList, int) {
+func (l BlockList) applyDiagrams(results []diagramResult) (BlockList, int) {
 	applied := 0
 	for _, r := range results {
 		for i, it := range l.items {
@@ -116,9 +154,18 @@ func (l BlockList) applyDiagrams(results []diagramResult, useImages bool, caps T
 			if !ok || cb.id != r.id {
 				continue
 			}
-			if r.png != nil && useImages {
-				img := NewImageBlock(r.png, strings.TrimSuffix(r.ascii, "\n"), useImages, caps, cb.copyFn, cb.th)
-				img = img.SetID(r.id).(ImageBlock)
+			if r.png != nil {
+				// Halbblock-Bild ist reiner Text und damit immer renderbar
+				// (FR-27). Der Block wird scroll-freundlich auf die chat-
+				// Hoehe begrenzt, damit sehr grosse Diagramme nicht den
+				// Bildschirm sprengen und trotzdem per Pager blätterbar
+				// bleiben (FR-Zoom).
+				fitRows := l.height - 3
+				if fitRows < 4 {
+					fitRows = 4
+				}
+				img := NewImageBlock(r.png, strings.TrimSuffix(r.ascii, "\n"), cb.copyFn, cb.th)
+				img = img.SetID(r.id).(ImageBlock).WithFitRows(fitRows)
 				if cb.focused {
 					img = img.SetFocused(true).(ImageBlock)
 				}

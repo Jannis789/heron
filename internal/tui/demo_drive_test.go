@@ -1,0 +1,68 @@
+package tui
+
+import (
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+func lookPath(name string) (string, error) { return exec.LookPath(name) }
+
+// TestDriveRenderTestEndToEnd seeds docs/render-test.md, runs the diagram
+// conversion (with plantuml wrapped into PATH by the nix build) and asserts
+// ImageBlocks appear. Dies ist die Akzeptanz fuer FR-27/FR-31 im echten
+// Pipeline: Roh-Text -> Conversion -> Halbblock-ImageBlock.
+func TestDriveRenderTestEndToEnd(t *testing.T) {
+	b, err := os.ReadFile("../../docs/render-test.md")
+	if err != nil {
+		t.Skipf("render-test.md nicht im Testpfad: %v", err)
+	}
+	// plantuml muss im PATH sein (nix wrap). Bei CI ohne pfad skip.
+	if _, err := lookPath("plantuml"); err != nil {
+		t.Skip("plantuml nicht im PATH (nix wrap fehlt)")
+	}
+	r := newRig(t).seed(string(b))
+
+	// Der erste WindowSizeMsg loest die Konvertierung aus (FR-6/27). Wir
+	// holen den cmd direkt aus Update, statt via do() (das ihn zur Gänze
+	// abarbeiten wuerde).
+	nm, cmd := r.m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	r.m = nm.(Model)
+	if cmd == nil {
+		t.Fatal("kein Diagramm-Pending obwohl render-test.md plantuml enthaelt")
+	}
+	done := cmd().(diagramsDoneMsg)
+	imgs := 0
+	ascii := 0
+	failed := 0
+	for _, res := range done.results {
+		switch {
+		case res.png != nil:
+			imgs++
+		case res.ok && strings.TrimSpace(res.ascii) != "":
+			ascii++
+		default:
+			failed++
+		}
+	}
+	t.Logf("render-test: %d png, %d ascii, %d failed", imgs, ascii, failed)
+	if imgs == 0 {
+		t.Fatalf("kein PNG gerendert: %d ascii, %d failed", ascii, failed)
+	}
+
+	_, n := r.m.chat.applyDiagrams(done.results)
+	if n == 0 {
+		t.Fatal("applyDiagrams hat nichts angewendet")
+	}
+	for _, it := range r.m.chat.items {
+		if ib, ok := it.(ImageBlock); ok {
+			v := ib.View(118)
+			if !strings.Contains(v, "▀") {
+				t.Errorf("ImageBlock id=%d View ohne Halbblock-Zeichen", ib.ID())
+			}
+		}
+	}
+}

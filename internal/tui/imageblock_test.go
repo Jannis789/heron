@@ -2,11 +2,15 @@ package tui
 
 import (
 	"bytes"
-	"encoding/binary"
+	"image"
+	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"heron/internal/render"
 )
 
 // findImage liefert den Block mit der stabilen ID, wenn er ein ImageBlock ist.
@@ -20,89 +24,176 @@ func findImage(l BlockList, id int) (Widget, bool) {
 	return nil, false
 }
 
-func fakePNG(w, h int) []byte {
-	b := []byte("\x89PNG\r\n\x1a\n")
-	b = append(b, 0, 0, 0, 13)
-	b = append(b, []byte("IHDR")...)
-	var len4 [4]byte
-	binary.BigEndian.PutUint32(len4[:], uint32(w))
-	b = append(b, len4[:]...)
-	var len4h [4]byte
-	binary.BigEndian.PutUint32(len4h[:], uint32(h))
-	b = append(b, len4h[:]...)
-	return append(b, bytes.Repeat([]byte{0}, 8)...)
+// realPNG baut ein tatsaechlich dekodierbares PNG (Halbblock-Renderer
+// dekodiert es — ein reiner Header reicht nicht).
+func realPNG(w, h int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x * 255 / w), G: uint8(y * 255 / h), B: 128, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
 }
 
 func TestPNGDims(t *testing.T) {
-	w, h, ok := pngDims(fakePNG(320, 200))
+	w, h, ok := render.PNGDims(realPNG(320, 200))
 	if !ok || w != 320 || h != 200 {
-		t.Fatalf("pngDims = %d,%d,%v", w, h, ok)
+		t.Fatalf("PNGDims = %d,%d,%v", w, h, ok)
 	}
-	if _, _, ok := pngDims([]byte("kein png")); ok {
+	if _, _, ok := render.PNGDims([]byte("kein png")); ok {
 		t.Fatal("garbage accepted as png")
 	}
 }
 
-// TestImageBlockUsesPlaceholders (FR-27): mit Platzhalter-Faehigkeit steht
-// das Bild als Zellen im Textfluss — es verschiebt sich beim Scrollen mit
-// und die Groesse folgt der echten Zellpixeologia (Aspekt korrekt).
-func TestImageBlockUsesPlaceholders(t *testing.T) {
+// TestImageBlockResolution (FR-27): die Halbblock-Grafik hat die Breite der
+// inneren Block-Spalten und eine zur Pixelproportion passende Zeilenzahl —
+// das Bild ist lagerichtig und bleibt reiner Text (scrollbar).
+func TestImageBlockResolution(t *testing.T) {
 	r := newRig(t)
 	r.do(tea.WindowSizeMsg{Width: 80, Height: 24})
-	caps := TermCaps{Placeholders: true, CellW: 10, CellH: 20}
-	img := NewImageBlock(fakePNG(80, 40), "roh", true, caps, nil, r.m.theme)
+	img := NewImageBlock(realPNG(200, 100), "roh", nil, r.m.theme)
 	img = img.SetID(7).(ImageBlock)
 
-	view := img.View(40)
-	cols := 38
-	rows := rowsFor(80, 40, cols, 10, 20) // 9
-	if !strings.Contains(view, "a=p,U=1,i=7,q=2,c=38,r=9;") {
-		t.Fatalf("placement control missing:\n%q", view[:80])
+	width := 44
+	inner := width - 4 // 40
+	view := img.View(width)
+	if !strings.Contains(view, "\u2580") {
+		t.Fatal("halfblock art missing")
 	}
-	if n := strings.Count(view, placeholderChar); n != cols*rows {
-		t.Fatalf("placeholder cells = %d, want %d", n, cols*rows)
-	}
-	if !strings.Contains(view, "a=t,f=100,i=7,q=2,s=80,v=40,") {
-		t.Fatal("transmit escape missing")
-	}
-	if img.Height(40) != rows {
-		t.Fatalf("Height=%d want %d", img.Height(40), rows)
-	}
-
-	// Aspekt folgt der Zellgroesse: breite Zellen -> weniger Zeilen.
-	wide := TermCaps{Placeholders: true, CellW: 20, CellH: 10}
-	if h := NewImageBlock(fakePNG(80, 40), "roh", true, wide, nil, r.m.theme).Height(40); h != 24 {
-		t.Fatalf("wide-cell rows = %d, want 24 (capped)", h)
-	}
-}
-
-// TestFallbackWithoutPlaceholders: ohne Platzhalter rendert der Block den
-// ASCII-/Roh-Text und keine Graphics-Escapes.
-func TestFallbackWithoutPlaceholders(t *testing.T) {
-	r := newRig(t)
-	img := NewImageBlock(fakePNG(80, 40), "roh text", true, TermCaps{}, nil, r.m.theme)
-	view := img.View(80)
 	if strings.Contains(view, "\x1b_G") {
-		t.Fatal("fallback must not contain graphics escapes")
+		t.Fatal("must not emit graphics escapes (pure text)")
 	}
-	if !strings.Contains(stripANSI(view), "roh text") {
-		t.Fatal("fallback lost the text")
+	wantRows := (100*inner + 200/2) / 200 / 2
+	if got := len(strings.Split(view, "\n")) - 2; got != wantRows {
+		t.Fatalf("art rows = %d, want %d", got, wantRows)
+	}
+	if img.Height(width) != wantRows+2 {
+		t.Fatalf("Height=%d want %d", img.Height(width), wantRows+2)
+	}
+	if img.Markdown() != "roh" {
+		t.Fatalf("Markdown raw = %q", img.Markdown())
 	}
 }
 
-// TestApplyDiagramsPlaceholderCaps: mit Faehigkeit wird der CodeBlock zum
-// ImageBlock, ohne bleibt der Code stehen (Roh-Fallback). Jede Phase in
-// ihrem eigenen Rig — applyDiagrams mutiert das geteilte Backing-Array,
-// daher darf der zweite Lauf nicht vom mutierten Zustand ausgehen.
-func TestApplyDiagramsPlaceholderCaps(t *testing.T) {
-	res := func(id int) []diagramResult {
-		return []diagramResult{{id: id, png: fakePNG(80, 40), ascii: "Alice -> Bob: hi", ok: true}}
+// TestImageBlockFitRows (FR-Zoom): sehr grosse Diagramme werden auf die
+// Fit-Hoehe herunterskaliert. Klein genug Bilder werden nicht vergroessert.
+func TestImageBlockFitRows(t *testing.T) {
+	r := newRig(t)
+	img := NewImageBlock(realPNG(200, 100), "roh", nil, r.m.theme).WithFitRows(4)
+	width := 44
+	// cols = min(inner 40, 2*200*4/100=16) = 16; rows=(100*16+99)/200/2 = 4
+	if img.Height(width) != 6 {
+		t.Fatalf("fitted Height=%d want 6", img.Height(width))
+	}
+	// fitRows die groesser sind als die naturale Hoehe vergroessern NIE:
+	// kleine Bilder bleiben bei naturaller Aufloesung (nicht unscharf).
+	small := NewImageBlock(realPNG(20, 10), "roh", nil, r.m.theme).WithFitRows(100)
+	// natural cols=20 (<=inner 40), rows=(10*20+9)/20/2=5, Height=7
+	if small.Height(44) != 7 {
+		t.Fatalf("small Height=%d want 7 (natural, not enlarged)", small.Height(44))
+	}
+}
+
+// TestImageBlockZoom (Bonus-FR): - verkleinert zu grosse Diagramme zu einem
+// Ueberblick, + zoemt zur vollen Aufloesung zurueck. Ueber die naturale
+// Breite hinaus gewinnt bei Halbblock nichts (Terminal-Breite ist die
+// Obergrenze), also wird nie unscharf aufgeblast.
+func TestImageBlockZoom(t *testing.T) {
+	r := newRig(t)
+	img := NewImageBlock(realPNG(200, 100), "roh", nil, r.m.theme).SetID(3).SetFocused(true).(ImageBlock)
+	width := 44
+	inner := width - 4
+	natural := (100*inner + 100) / 200 / 2
+	if img.Height(width) != natural+2 {
+		t.Fatalf("natural Height=%d want %d", img.Height(width), natural+2)
 	}
 
-	// Mit Platzhalter-Faehigkeit wird er zum ImageBlock.
+	// - zoomt hinaus -> Ueberblick (weniger Zeilen).
+	var w Widget = img
+	w, _ = img.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
+	z := w.(ImageBlock)
+	if z.zoomPct != 75 {
+		t.Fatalf("zoom after - = %d, want 75", z.zoomPct)
+	}
+	if z.Height(width) >= img.Height(width) {
+		t.Fatal("- must reduce height (Ueberblick)")
+	}
+	// + zoemt zurueck zur vollen Aufloesung (nie kleiner als natural).
+	w, _ = z.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	z2 := w.(ImageBlock)
+	if z2.zoomPct != 100 {
+		t.Fatalf("zoom after + = %d, want 100", z2.zoomPct)
+	}
+	if z2.Height(width) != natural+2 {
+		t.Fatalf("+ did not restore full res: %d want %d", z2.Height(width), natural+2)
+	}
+	// Bei voller Aufloesung hat + keine Wirkung (kein Aufblasen).
+	w, _ = z2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
+	if w.(ImageBlock).zoomPct != 100 {
+		t.Fatal("+ must be bounded at natural")
+	}
+}
+
+// TestImageBlockToggleRaw (Bonus-FR): 't' blendet zwischen Grafik und
+// Roh-Quelltext um; der Rohblick enthaelt den Quelltext und keine Halbblocks.
+func TestImageBlockToggleRaw(t *testing.T) {
+	r := newRig(t)
+	img := NewImageBlock(realPNG(200, 100), "Alice -> Bob: hi", nil, r.m.theme).
+		SetID(9).SetFocused(true).(ImageBlock)
+	if img.showRaw {
+		t.Fatal("image mode by default")
+	}
+	var w Widget = img
+	w, _ = img.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	raw := w.(ImageBlock)
+	if !raw.showRaw {
+		t.Fatal("t did not switch to raw")
+	}
+	if !strings.Contains(raw.View(40), "Alice -> Bob: hi") {
+		t.Fatal("raw view lost the source")
+	}
+	if strings.Contains(raw.View(40), "\u2580") {
+		t.Fatal("raw view must not render halfblocks")
+	}
+}
+
+// TestImageBlockKeysThroughBlockList: Zoom/Roh-Tasten werden einem
+// fokussierten ImageBlock ueber BlockList.handleKey zugestellt (FR-Zoom +
+// Bonus-FR togglen), ohne den Nicht-Fokus-Tippfluss zu stoeren.
+func TestImageBlockKeysThroughBlockList(t *testing.T) {
+	r := newRig(t)
+	img := NewImageBlock(realPNG(200, 100), "Alice -> Bob: hi", nil, r.m.theme).SetID(5)
+	l := BlockList{items: []Widget{img.SetFocused(true)}}
+
+	// '-' zoomt hinaus.
+	l2, _, _ := l.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
+	ib, ok := l2.items[0].(ImageBlock)
+	if !ok || ib.zoomPct != 75 {
+		t.Fatalf("zoom after - = %d/%v, want 75", ib.zoomPct, ok)
+	}
+	// 't' toggelt auf Roh-Text.
+	l3, _, ok := l2.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	if !ok || !l3.items[0].(ImageBlock).showRaw {
+		t.Fatalf("t did not toggle raw (handled=%v)", ok)
+	}
+	// Ohne Fokus bleibt 't' unberuehrt (Tippen im Eingabefeld).
+	u := BlockList{items: []Widget{img}, focus: -1}
+	if _, _, handled := u.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}}); handled {
+		t.Fatal("unfocused blocklist must not swallow 't'")
+	}
+}
+
+// TestApplyDiagrams (FR-27): png-Ergebnis wird zum ImageBlock (Halbblock,
+// immer darstellbar), nur-ASCII wird im CodeBlock ersetzt.
+func TestApplyDiagrams(t *testing.T) {
 	r := newRig(t).seed("```plantuml\nAlice -> Bob: hi\n```")
 	id := r.m.diagramJobs()[0].id
-	l, n := r.m.chat.applyDiagrams(res(id), true, TermCaps{Placeholders: true, CellW: 10, CellH: 20})
+	l, n := r.m.chat.applyDiagrams([]diagramResult{{id: id, png: realPNG(200, 100), ascii: "Alice -> Bob: hi", ok: true}})
 	if n != 1 {
 		t.Fatalf("apply=%d", n)
 	}
@@ -110,34 +201,12 @@ func TestApplyDiagramsPlaceholderCaps(t *testing.T) {
 	if !ok {
 		t.Fatal("block is not an ImageBlock")
 	}
-	view := img.View(40)
-	if !strings.Contains(view, "a=p,U=1,i=") {
-		t.Fatal("placement control missing")
-	}
-	if !strings.Contains(view, placeholderChar) {
-		t.Fatal("placeholder cells missing")
-	}
 	if img.Markdown() != "Alice -> Bob: hi" {
-		t.Fatal("markdown fallback wrong")
-	}
-
-	// Ohne Platzhalter-Faehigkeit bleibt der Roh-Text sichtbar (FR-6).
-	r2 := newRig(t).seed("```plantuml\nAlice -> Bob: hi\n```")
-	id2 := r2.m.diagramJobs()[0].id
-	l2, n2 := r2.m.chat.applyDiagrams(res(id2), false, TermCaps{})
-	if n2 != 1 {
-		t.Fatalf("apply without caps = %d", n2)
-	}
-	cb := findCode(t, l2, id2)
-	if !cb.converted {
-		t.Fatal("block not marked converted")
-	}
-	if cb.code != "Alice -> Bob: hi" {
-		t.Fatalf("raw source changed: %q", cb.code)
+		t.Fatalf("markdown raw wrong: %q", img.Markdown())
 	}
 }
 
-// TestImagesEnabledOverride: force/off uebersteuert die Probe.
+// TestImagesEnabledOverride: force/off und Default (Halbblock => immer).
 func TestImagesEnabledOverride(t *testing.T) {
 	m := Model{}
 	t.Setenv("HERON_IMAGES", "force")
@@ -146,12 +215,11 @@ func TestImagesEnabledOverride(t *testing.T) {
 	}
 	t.Setenv("HERON_IMAGES", "off")
 	if m.imagesEnabled() {
-		t.Fatal("off must disable despite caps")
+		t.Fatal("off must disable")
 	}
 	t.Setenv("HERON_IMAGES", "")
-	m.caps = TermCaps{Placeholders: true}
 	if !m.imagesEnabled() {
-		t.Fatal("probe result not honored")
+		t.Fatal("default: halfblock is pure text, images on")
 	}
 }
 

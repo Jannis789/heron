@@ -656,7 +656,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.closePicker()
 		return m, nil
 	case diagramsDoneMsg:
-		m.chat, _ = m.chat.applyDiagrams(msg.results, m.imagesEnabled(), m.caps)
+		m.chat, _ = m.chat.applyDiagrams(msg.results)
 		return m, nil
 	case replyMsg:
 		// The final text supersedes the live preview (FR-2).

@@ -59,13 +59,16 @@ func ProbeTerminal() TermCaps {
 // imagesEnabled: HERON_IMAGES=force|off uebersteuert, sonst das Probe-
 // Ergebnis (FR-27).
 func (m Model) imagesEnabled() bool {
+	// Halbblock ist reiner Text — ein Bild kann immer gerendert werden;
+	// HERON_IMAGES=force erlaubt es, =off erzwingt den ASCII-/Roh-Fallback
+	// (FR-27).
 	switch strings.ToLower(os.Getenv("HERON_IMAGES")) {
 	case "force":
 		return true
 	case "off":
 		return false
 	}
-	return m.caps.Placeholders
+	return true
 }
 
 // parseTermCaps wertet die gesammelten Antworten aus (testbar ohne pty).

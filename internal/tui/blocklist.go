@@ -220,7 +220,9 @@ func (l BlockList) handleKey(k tea.KeyMsg) (BlockList, tea.Cmd, bool) {
 		return l, nil, true
 	case "tab":
 		return l.focusNext(), nil, true
-	case "enter", "c":
+	case "enter", "c", "+", "=", "-", "_", "t":
+		// enter/c kopieren; +,- und t steuern Zoom/Roh-Text des fokussierten
+		// Blocks (ImageBlock, Bonus-FR). Nur wenn ein Block im Fokus ist.
 		if l.Focused() {
 			w, cmd := l.items[l.focus].Update(k)
 			l.items[l.focus] = w
