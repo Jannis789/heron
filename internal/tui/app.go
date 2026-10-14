@@ -437,10 +437,9 @@ func (m Model) SeedMarkdown(src string) Model {
 
 func (m Model) Init() tea.Cmd {
 	imageLogf("app open: term=%s images=%v caps=%+v", os.Getenv("TERM"), m.imagesEnabled(), m.caps)
-	// Seeded chats (-seed / demo) can already contain plantuml blocks.
-	if cmd := m.pendingDiagrams(); cmd != nil {
-		return tea.Batch(textarea.Blink, cmd)
-	}
+	// Seeded Diagramme konvertiert der WindowSizeMsg-Handler (seedDiagrams,
+	// FR-6/27/28) — hier NICHT nochmal triggern: doppelter Start hat jede
+	// Konvertierung doppelt ausgefuehrt (doppelte Wartezeit, s. Debug-Log).
 	return textarea.Blink
 }
 

@@ -43,17 +43,22 @@ func ProbeTerminal() TermCaps {
 	os.Stdout.WriteString("\x1b_Ga=q,i=32,f=24,s=1,v=1,U=1;AAAA\x1b\\\x1b\\")
 	os.Stdout.WriteString("\x1b[6n")
 
-	_ = f.SetReadDeadline(time.Now().Add(400 * time.Millisecond))
+	// Antworten sammeln — mit select(2)-Timeouts statt SetReadDeadline:
+	// Letzteres greift auf os.Stdin nicht zuverlaessig (fd 0 ist oft nicht
+	// im Go-Poller registriert), der Read blockierte dann ENDLOS. Der
+	// Sandbox-Strace bewies genau das als Ursache des Endlos-Ladens.
 	buf := make([]byte, 0, 512)
-	tmp := make([]byte, 64)
-	for {
-		n, err := f.Read(tmp)
-		buf = append(buf, tmp[:n]...)
-		if err != nil || strings.HasSuffix(string(buf), "R") {
-			break
+	tmp := make([]byte, 256)
+	deadline := time.Now().Add(400 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		n, _ := probeRead(f, tmp, 25*time.Millisecond)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+			if strings.HasSuffix(string(buf), "R") {
+				break
+			}
 		}
 	}
-	_ = f.SetReadDeadline(time.Time{})
 	// Nachgestellte Maus-Reports schlucken, die nach der "R"-Antwort kommen.
 	drainInput(f, 30*time.Millisecond)
 	caps = parseTermCaps(string(buf))
@@ -62,18 +67,18 @@ func ProbeTerminal() TermCaps {
 	return caps
 }
 
-// drainInput verwirft anstehende Eingabe, bis d Millisekunden lang keine
-// mehr kommt (z. B. SGR-Maus-Reports waehrend und nach der Probe).
+// drainInput verwirft anstehende Eingabe (z. B. SGR-Maus-Reports waehrend
+// und nach der Probe). Bricht ab, wenn d Millisekunden lang nichts kam —
+// blockiert dank select(2) nie.
 func drainInput(f *os.File, d time.Duration) {
-	buf := make([]byte, 512)
-	for i := 0; i < 64; i++ {
-		_ = f.SetReadDeadline(time.Now().Add(d))
-		n, err := f.Read(buf)
-		if err != nil || n == 0 {
+	var tmp [256]byte
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		n, _ := probeRead(f, tmp[:], 10*time.Millisecond)
+		if n == 0 {
 			break
 		}
 	}
-	_ = f.SetReadDeadline(time.Time{})
 }
 
 // printableForLog macht Rohterminalbytes lesbar- und logbar.
