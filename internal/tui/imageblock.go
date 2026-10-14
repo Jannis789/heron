@@ -252,7 +252,12 @@ func (b ImageBlock) virtualPlacement(cols, rows int) string {
 		return ""
 	}
 	payload := base64.StdEncoding.EncodeToString([]byte(b.pngPath))
-	return fmt.Sprintf("\x1b_Ga=T,f=100,t=f,i=%d,p=%d,U=1,c=%d,r=%d,s=%d,v=%d,m=0;%s\x1b\\",
+	// q=2: Terminal-Antworten komplett unterdruecken (Spec). Ohne q antwortet
+	// das Terminal auf JEEDEN a=T mit ESC_Gi=N,p=N;OK ESC\ auf stdin —
+	// bubbletea kann APC-Antworten nicht parsen, sie landeten als Muell-
+	// Tasten auf dem Bildschirm und desynchronisierten daneben auch die
+	// SGR-Maus-Reports ([<65;37;69M-Fragmente).
+	return fmt.Sprintf("\x1b_Ga=T,f=100,t=f,i=%d,p=%d,U=1,q=2,c=%d,r=%d,s=%d,v=%d,m=0;%s\x1b\\",
 		b.kittyID, b.kittyID, cols, rows, b.pngW, b.pngH, payload)
 }
 
@@ -404,7 +409,7 @@ func KittyCleanup() {
 	imgCaches = map[imgCacheKey]*imgCache{}
 	imgCacheMu.Unlock()
 	if used {
-		os.Stdout.WriteString("\x1b_Ga=d,d=a\x1b\\")
+		os.Stdout.WriteString("\x1b_Ga=d,d=a,q=2\x1b\\")
 		imageLogf("cleanup: alle kitty-bilder geloescht, %d temp-dateien entfernt", len(files))
 	}
 	for _, f := range files {

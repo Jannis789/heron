@@ -799,6 +799,25 @@ func (m Model) fillScreen(s string) string {
 	return out
 }
 
+// kittyResponseFilter verwirft Tasten, die wie Kitty-Grafik-Antworten
+// aussehen (z. B. ESC_Gi=1,p=1;OK ESC\): q=2 unterdrueckt die Antworten
+// bereits an der Quelle, aber aeltere Terminals/Passthrough-Layer (tmux)
+// koennen trotzdem senden. bubbletea parst keine APC-Eingabe — ohne Filter
+// landen die Bytes als Muell auf dem Schirm (FR-27).
+func kittyResponseFilter(_ tea.Model, msg tea.Msg) tea.Msg {
+	k, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return msg
+	}
+	s := k.String()
+	for _, frag := range []string{";OK", ";0K", ";ENOENT", ";EINVAL"} {
+		if strings.Contains(s, frag) {
+			return nil
+		}
+	}
+	return msg
+}
+
 // RunModel starts the TUI with a prepared model (all-motion mouse: hover).
 func RunModel(m Model) error {
 	// CPU-Profil bei HERON_CPU_PROF=1 (Diagnose, s. perflog.go): zeigt,
@@ -812,7 +831,7 @@ func RunModel(m Model) error {
 			}
 		}
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithFilter(kittyResponseFilter))
 	// Hand the runtime to the stream so the backend can publish live updates
 	// from its own goroutine (FR-2). A nil stream is a no-op.
 	m.stream.attach(p)
