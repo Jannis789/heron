@@ -59,8 +59,10 @@ func ProbeTerminal() TermCaps {
 			}
 		}
 	}
-	// Nachgestellte Maus-Reports schlucken, die nach der "R"-Antwort kommen.
-	drainInput(f, 30*time.Millisecond)
+	// Nachgestellte Antworten/Maus-Reports schlucken: auch verspaetete
+	// a=q-OKs duerfen bubbletea nie erreichen — dort wuerden sie als Runen-
+	// Muell zerschnitten (s. kittyResponseFilter, PTY-Desync-Beweis).
+	drainInput(f, 120*time.Millisecond)
 	caps = parseTermCaps(string(buf))
 	imageLogf("probe: graphics=%v placeholders=%v cell=%dx%d raw=%q",
 		caps.Graphics, caps.Placeholders, caps.CellW, caps.CellH, printableForLog(string(buf)))

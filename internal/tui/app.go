@@ -4,6 +4,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -799,11 +800,18 @@ func (m Model) fillScreen(s string) string {
 	return out
 }
 
+// kittyRespFrag matcht Runen-Buendel, in die bubbletea verspaetete Kitty-
+// Antworten zerschneidet: ESC_Gi=31;OK ESC\ wird zu KeyMsgs wie "_Gi=31",
+// ";OK", "i=32" — echte Tastatur liefert JEDES Zeichen als eigene KeyMsg,
+// Runen-Buendel dieser Form entstehen nur aus Sequenzmuell (PTY-Beweis).
+var kittyRespFrag = regexp.MustCompile(`^(alt+)?_?G?i=d+(,p=d+)?(;(OK|0K|E[A-Z]+))?$`)
+
 // kittyResponseFilter verwirft Tasten, die wie Kitty-Grafik-Antworten
-// aussehen (z. B. ESC_Gi=1,p=1;OK ESC\): q=2 unterdrueckt die Antworten
-// bereits an der Quelle, aber aeltere Terminals/Passthrough-Layer (tmux)
-// koennen trotzdem senden. bubbletea parst keine APC-Eingabe — ohne Filter
-// landen die Bytes als Muell auf dem Schirm (FR-27).
+// aussehen (z. B. ESC_Gi=1,p=1;OK ESC): q=2 unterdrueckt die Antworten der
+// Bildbefehle bereits an der Quelle, aber die PROBE (a=q) WILL Antworten —
+// treffen die verspaetet bei bubbletea ein, zerschneidet der Parser sie in
+// Runen-Muell (sichtbare Fragmente "i=31", "[<65;..."). Der Filter dropt
+// beide Formen (FR-27).
 func kittyResponseFilter(_ tea.Model, msg tea.Msg) tea.Msg {
 	k, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -814,6 +822,9 @@ func kittyResponseFilter(_ tea.Model, msg tea.Msg) tea.Msg {
 		if strings.Contains(s, frag) {
 			return nil
 		}
+	}
+	if len(k.Runes) > 1 && kittyRespFrag.MatchString(s) {
+		return nil
 	}
 	return msg
 }
