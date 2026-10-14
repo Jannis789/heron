@@ -1,220 +1,316 @@
-
 package tui
 
 import (
+	"encoding/base64"
+	"encoding/binary"
+	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/mattn/go-runewidth"
 
 	"heron/internal/render"
 )
 
-// ImageBlock zeigt ein Diagramm als Truecolor-Halbblock-Grafik (FR-27):
-// plantuml/mermaid liefern ein PNG, das auf Blockbreite als ▀-Zeilen
-// gerendert wird. Reiner Text — scrollt daher sauber mit dem Zellgitter
-// (der Kitty-Image-Layer kollidierte mit bubbleteas Repaint und wurde
-// verworfen). Copy/Markdown liefern den Roh-Quelltext.
+// placeholderChar ist das Kitty-Platzhalterzeichen U+10EEEE (Spec:
+// sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders).
+const placeholderChar = "\U0010EEEE"
+
+// kittyDiacritics ist die offizielle Zeilen-/Spalten-Diakritika-Tabelle des
+// Kitty-Grafikprotokolls (rowcolumn-diacritics.txt: Kombinierende Zeichen
+// der Klasse 230 aus Unicode 6.0.0). Index i kodiert die Zahl i:
+// U+0305=0, U+030D=1, U+030E=2, ... Byte-identisch zur Referenz-
+// implementierung image.nvim (lua/image/backends/kitty/codes.lua).
+var kittyDiacritics = []rune{
+	0x0305, 0x030D, 0x030E, 0x0310, 0x0312, 0x033D, 0x033E, 0x033F,
+	0x0346, 0x034A, 0x034B, 0x034C, 0x0350, 0x0351, 0x0352, 0x0357,
+	0x035B, 0x0363, 0x0364, 0x0365, 0x0366, 0x0367, 0x0368, 0x0369,
+	0x036A, 0x036B, 0x036C, 0x036D, 0x036E, 0x036F, 0x0483, 0x0484,
+	0x0485, 0x0486, 0x0487, 0x0592, 0x0593, 0x0594, 0x0595, 0x0597,
+	0x0598, 0x0599, 0x059C, 0x059D, 0x059E, 0x059F, 0x05A0, 0x05A1,
+	0x05A8, 0x05A9, 0x05AB, 0x05AC, 0x05AF, 0x05C4, 0x0610, 0x0611,
+	0x0612, 0x0613, 0x0614, 0x0615, 0x0616, 0x0617, 0x0657, 0x0658,
+	0x0659, 0x065A, 0x065B, 0x065D, 0x065E, 0x06D6, 0x06D7, 0x06D8,
+	0x06D9, 0x06DA, 0x06DB, 0x06DC, 0x06DF, 0x06E0, 0x06E1, 0x06E2,
+	0x06E4, 0x06E7, 0x06E8, 0x06EB, 0x06EC, 0x0730, 0x0732, 0x0733,
+	0x0735, 0x0736, 0x073A, 0x073D, 0x073F, 0x0740, 0x0741, 0x0743,
+	0x0745, 0x0747, 0x0749, 0x074A, 0x07EB, 0x07EC, 0x07ED, 0x07EE,
+	0x07EF, 0x07F0, 0x07F1, 0x07F3, 0x0816, 0x0817, 0x0818, 0x0819,
+	0x081B, 0x081C, 0x081D, 0x081E, 0x081F, 0x0820, 0x0821, 0x0822,
+	0x0823, 0x0825, 0x0826, 0x0827, 0x0829, 0x082A, 0x082B, 0x082C,
+	0x082D, 0x0951, 0x0953, 0x0954, 0x0F82, 0x0F83, 0x0F86, 0x0F87,
+	0x135D, 0x135E, 0x135F, 0x17DD, 0x193A, 0x1A17, 0x1A75, 0x1A76,
+	0x1A77, 0x1A78, 0x1A79, 0x1A7A, 0x1A7B, 0x1A7C, 0x1B6B, 0x1B6D,
+	0x1B6E, 0x1B6F, 0x1B70, 0x1B71, 0x1B72, 0x1B73, 0x1CD0, 0x1CD1,
+	0x1CD2, 0x1CDA, 0x1CDB, 0x1CE0, 0x1DC0, 0x1DC1, 0x1DC3, 0x1DC4,
+	0x1DC5, 0x1DC6, 0x1DC7, 0x1DC8, 0x1DC9, 0x1DCB, 0x1DCC, 0x1DD1,
+	0x1DD2, 0x1DD3, 0x1DD4, 0x1DD5, 0x1DD6, 0x1DD7, 0x1DD8, 0x1DD9,
+	0x1DDA, 0x1DDB, 0x1DDC, 0x1DDD, 0x1DDE, 0x1DDF, 0x1DE0, 0x1DE1,
+	0x1DE2, 0x1DE3, 0x1DE4, 0x1DE5, 0x1DE6, 0x1DFE, 0x20D0, 0x20D1,
+	0x20D4, 0x20D5, 0x20D6, 0x20D7, 0x20DB, 0x20DC, 0x20E1, 0x20E7,
+	0x20E9, 0x20F0, 0x2CEF, 0x2CF0, 0x2CF1, 0x2DE0, 0x2DE1, 0x2DE2,
+	0x2DE3, 0x2DE4, 0x2DE5, 0x2DE6, 0x2DE7, 0x2DE8, 0x2DE9, 0x2DEA,
+	0x2DEB, 0x2DEC, 0x2DED, 0x2DEE, 0x2DEF, 0x2DF0, 0x2DF1, 0x2DF2,
+	0x2DF3, 0x2DF4, 0x2DF5, 0x2DF6, 0x2DF7, 0x2DF8, 0x2DF9, 0x2DFA,
+	0x2DFB, 0x2DFC, 0x2DFD, 0x2DFE, 0x2DFF, 0xA66F, 0xA67C, 0xA67D,
+	0xA6F0, 0xA6F1, 0xA8E0, 0xA8E1, 0xA8E2, 0xA8E3, 0xA8E4, 0xA8E5,
+	0xA8E6, 0xA8E7, 0xA8E8, 0xA8E9, 0xA8EA, 0xA8EB, 0xA8EC, 0xA8ED,
+	0xA8EE, 0xA8EF, 0xA8F0, 0xA8F1, 0xAAB0, 0xAAB2, 0xAAB3, 0xAAB7,
+	0xAAB8, 0xAABE, 0xAABF, 0xAAC1, 0xFE20, 0xFE21, 0xFE22, 0xFE23,
+	0xFE24, 0xFE25, 0xFE26, 0x10A0F, 0x10A38, 0x1D185, 0x1D186, 0x1D187,
+	0x1D188, 0x1D189, 0x1D1AA, 0x1D1AB, 0x1D1AC, 0x1D1AD, 0x1D242,
+	0x1D243, 0x1D244,
+}
+
+// diacritic liefert das Diakritikon fuer eine Zeilen-/Spaltennummer
+// (geclampt auf das Tabellenende — mehr als ~250 Zeilen hat kein Bild).
+func diacritic(i int) rune {
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(kittyDiacritics) {
+		i = len(kittyDiacritics) - 1
+	}
+	return kittyDiacritics[i]
+}
+
+// kittyRegistry verwaltet die Temp-PNG-Dateien (t=f-Transmit) und ob
+// ueberhaupt Kitty-Graphics geschrieben wurden — Grundlage fuer Cleanup.
+var kittyRegistry = struct {
+	sync.Mutex
+	files []string
+	used  bool
+}{}
+
+// ImageBlock zeigt ein Diagramm als PNG ueber das Kitty-Grafikprotokoll
+// mit Unicode-Platzhaltern (FR-27) — exakt nach Spezifikation und Referenz
+// (image.nvim), nicht nach Rueckgriff:
 //
-// Zu grosse Diagramme werden auf die _Fit-Hoehe_ (maxRows) herunterskaliert,
-// damit sie auf den Bildschirm passen und nicht laggen; Fokus-Tasten +/-
-// zoomen hinein (Detail) / hinaus (Überblick), t schaltet zwischen Grafik
-// und Roh-Quelltext (Bonus). Der Block bleibt dabei immer reiner Text und
-// ist damit ueber den Pager scrollbar.
+//   - Uebertragung + virtuelles Placement in EINEM kurzen Escape
+//     (a=T, t=f): das Terminal liest die PNG-Datei selbst. Kein
+//     Base64-Blob im Frame (~150 Byte statt ~15 KB je Bild, Metrik 1).
+//   - Die sichtbaren Zellen sind Platzhalter-TEXT: die Vordergrundfarbe
+//     kodiert die Bild-ID (\e[38;5;<id>m), U+10EEEE plus Zeilen-/Spalten-
+//     Diakritika adressieren jeden Rasterplatz. Weil das normale Text-
+//     zellen sind, verschiebt das Terminal das Bild automatisch mit, wenn
+//     der Pager scrollt (Metrik 3) — auch teilweise sichtbar (Metrik 2).
+//   - ViewRange rendert nur die sichtbaren Zeilen und haelt den Transmit-
+//     Escape auf der ERSTEN sichtbaren Zeile: hohe Bilder uebertragen
+//     zuverlaessig, auch wenn der Blockanfang aus dem Fenster gescrollt ist.
+//   - Aspekt aus echten Zellpixeln (CSI 16 t): rowsForTerm rechnet die
+//     Zeilen aus Bildpixeln und CellW/CellH; das virtuelle Placement
+//     (c,r) fuegt das Bild seitenverhaeltnisgetreu ein (Metrik 2).
 type ImageBlock struct {
-	id      int
-	png     []byte
-	ascii   string // Roh-Quelltext (puml/mermaid-Quelle)
-	copyFn  CopyFunc
-	focused bool
-	hover   bool
-	marked  bool
-	th      *render.Theme
-
-	// fitRows begrenzt die gerenderte Hoehe (Zeilen) auf die Chat-Hoehe,
-	// damit sehr grosse Diagramme ohne Lag auf den Schirm passen. 0 = kein
-	// Fit (volle Aufloesung).
-	fitRows int
-	// zoomPct ist ein Zoom-Faktor in Prozent. 0 = Auto-Fit auf fitRows;
-	// >0 zoomen (100 = volle Breite/echte Aufloesung, darueber Detail).
-	zoomPct int
-	// showRaw blendet den Roh-Quelltext statt der Grafik (Bonus-FR).
-	showRaw bool
+	id       int // stabile Block-ID (FR-3)
+	kittyID  int // Terminal-Bild-ID 1..250, codierbar in \e[38;5;N m
+	pngPath  string
+	png      []byte
+	pngW     int
+	pngH     int
+	useImg   bool
+	caps     TermCaps
+	ascii    string
+	fallback CodeBlock
+	copyFn   CopyFunc
+	focused  bool
+	hover    bool
+	marked   bool
+	th       *render.Theme
+	cache    *imgCache
 }
 
-func NewImageBlock(png []byte, ascii string, copyFn CopyFunc, th *render.Theme) ImageBlock {
-	b := ImageBlock{png: png, ascii: ascii, copyFn: copyFn, th: th}
-	if b.png == nil {
-		b.showRaw = true // kein Bild => sicher Roh-Text zeigen
+// imgCache haelt Prefix + Platzhalterzeilen je (cols, rows): View ist
+// dadurch O(1) pro Frame — kein Neu-Aufbau, kein Neu-Kodieren (Metrik 1).
+type imgCache struct {
+	cols, rows int
+	prefix     string
+	lines      []string
+}
+
+// NewImageBlock baut den Bildblock; Dimensionen aus dem IHDR-Chunk. Bei
+// aktiviertem Bildpfad wird das PNG zusaetzlich in einer Temp-Datei
+// gesichert (t=f-Transmit: das Terminal liest die Datei selbst).
+func NewImageBlock(png []byte, ascii string, useImg bool, caps TermCaps, copyFn CopyFunc, th *render.Theme) ImageBlock {
+	w, h, ok := pngDimsFromBytes(png)
+	if !ok {
+		w, h = 400, 300
 	}
-	return b
-}
-
-// WithFitRows setzt die Zeilen-Obergrenze fuer das Auto-Fit (FR-Zoom).
-func (b ImageBlock) WithFitRows(n int) ImageBlock {
-	b.fitRows = n
-	return b
-}
-
-// WithZoom setzt den Zoom explizit (0=Auto-Fit). Fuer Tests.
-func (b ImageBlock) WithZoom(pct int) ImageBlock {
-	if pct < 0 {
-		pct = 0
+	b := ImageBlock{
+		png:      png,
+		pngW:     w,
+		pngH:     h,
+		useImg:   useImg,
+		caps:     caps,
+		ascii:    strings.TrimSuffix(ascii, "\n"),
+		fallback: NewCodeBlock("text", ascii, nil),
+		copyFn:   copyFn,
+		th:       th,
 	}
-	b.zoomPct = pct
+	if b.useImg {
+		if p, err := writeKittyFile(png); err == nil {
+			b.pngPath = p
+		} else {
+			imageLogf("image temp-datei fehlgeschlagen: %v (ASCII-Fallback)", err)
+			b.useImg = false
+		}
+	}
+	b.fallback.th = th
 	return b
 }
 
-// artCacheKey identifiziert die gerenderte Halbblock-Grafik eindeutig:
-// Block-ID plus Spaltenbreite (die von Breite UND Zoom abhaengt).
-type artCacheKey struct {
-	id   int
-	cols int
+// writeKittyFile sichert das PNG in einer Temp-Datei und registriert es
+// fuer KittyCleanup.
+func writeKittyFile(png []byte) (string, error) {
+	f, err := os.CreateTemp("", "heron-img-*.png")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(png); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	kittyRegistry.Lock()
+	kittyRegistry.files = append(kittyRegistry.files, f.Name())
+	kittyRegistry.used = true
+	kittyRegistry.Unlock()
+	return f.Name(), nil
 }
 
-var artCache sync.Map // artCacheKey -> []string
+// pngDimsFromBytes liest Breite/Hoehe aus dem IHDR-Chunk (Header only).
+func pngDimsFromBytes(b []byte) (int, int, bool) {
+	if len(b) < 24 || string(b[:8]) != "\x89PNG\r\n\x1a\n" {
+		return 0, 0, false
+	}
+	w := int(binary.BigEndian.Uint32(b[16:20]))
+	h := int(binary.BigEndian.Uint32(b[20:24]))
+	return w, h, w > 0 && h > 0
+}
 
-// colsFor liefert die Spalten fuer die Halbblock-Grafik: die innere Breite,
-// skaliert mit dem Zoom (0 = Auto-Fit auf fitRows).
+// colsFor begrenzt die Darstellung auf die Blockbreite.
 func (b ImageBlock) colsFor(width int) int {
-	inner := width - 4
-	if inner < 10 {
-		inner = 10
+	c := width - 2
+	if c < 10 {
+		c = 10
 	}
-	if b.zoomPct > 0 {
-		cols := inner * b.zoomPct / 100
-		if cols < 2 {
-			cols = 2
-		}
-		return cols
-	}
-	if b.fitRows > 0 {
-		w, h, ok := render.PNGDims(b.png)
-		if ok && h > 0 {
-			// rows(cols) ≈ h*cols/(2w) <= fitRows  =>  cols <= 2w*fitRows/h
-			cols := 2 * w * b.fitRows / h
-			if cols < 2 {
-				cols = 2
-			}
-			if cols < inner {
-				return cols
-			}
-		}
-	}
-	return inner
+	return c
 }
 
-// artFor liefert die Halbblock-Zeilen (gecached pro id+cols).
-func (b ImageBlock) artFor(width int) []string {
+// rowsForTerm rechnet die Bildhoehe in Zellen — mit echten Zellpixeln aus
+// der Probe (CSI 16 t), sonst 1:2-Schaetzung. Das virtuelle Placement
+// (c=cols, r=rows) fuegt das Bild aspektgetreu ein (FR-27, Metrik 2).
+func rowsForTerm(pngW, pngH, cols, cellW, cellH int) int {
+	if cellW <= 0 || cellH <= 0 {
+		cellW, cellH = 9, 20
+	}
+	rows := pngH * cols * cellW / (pngW * cellH)
+	if rows < 1 {
+		rows = 1
+	}
+	return rows
+}
+
+func (b ImageBlock) rowsFor(width int) int {
+	return rowsForTerm(b.pngW, b.pngH, b.colsFor(width), b.caps.CellW, b.caps.CellH)
+}
+
+// virtualPlacement baut den kombinierten Uebertragungs-/Placement-Escape:
+// a=T (transmit + virtuelles Placement, Spec: "can be combined with a=T"),
+// t=f (Terminal liest die PNG-Datei selbst), U=1, c/r = Zellraster,
+// s/v = Pixelmasse, p=<id> macht das Placement deterministisch —
+// Wiederholung ersetzt statt zu vervielfachen (Resize bleibt billig).
+func (b ImageBlock) virtualPlacement(cols, rows int) string {
+	if b.kittyID < 1 || b.kittyID > 250 || b.pngPath == "" {
+		return ""
+	}
+	payload := base64.StdEncoding.EncodeToString([]byte(b.pngPath))
+	return fmt.Sprintf("\x1b_Ga=T,f=100,t=f,i=%d,p=%d,U=1,c=%d,r=%d,s=%d,v=%d,m=0;%s\x1b\\",
+		b.kittyID, b.kittyID, cols, rows, b.pngW, b.pngH, payload)
+}
+
+// placeholderRow baut Zeile r des Rasters: Vordergrundfarbe kodiert die
+// Bild-ID, dann je Zelle U+10EEEE + Zeilen- + Spalten-Diakritikon. Das
+// Spec-Beispiel (Bild 42, 2x2) ist: \e[38;5;42m\U10EEEE\U0305\U0305 ... —
+// jede Zelle identifiziert ihren Rasterplatz selbst, deshalb zeigt das
+// Terminal beim Scrollen automatisch den richtigen Bildausschnitt.
+func placeholderRow(kittyID, r, cols int) string {
+	var sb strings.Builder
+	sb.WriteString("\x1b[38;5;")
+	sb.WriteString(strconv.Itoa(kittyID))
+	sb.WriteString("m")
+	rd := diacritic(r)
+	for c := 0; c < cols; c++ {
+		sb.WriteString(placeholderChar)
+		sb.WriteRune(rd)
+		sb.WriteRune(diacritic(c))
+	}
+	sb.WriteString("\x1b[39m")
+	return sb.String()
+}
+
+// renderCache baut (und merkt) Prefix + Zeilen fuer (cols, rows).
+func (b *ImageBlock) renderCache(cols, rows int) *imgCache {
+	if b.cache != nil && b.cache.cols == cols && b.cache.rows == rows {
+		return b.cache
+	}
+	c := &imgCache{cols: cols, rows: rows, prefix: b.virtualPlacement(cols, rows)}
+	c.lines = make([]string, rows)
+	for r := 0; r < rows; r++ {
+		c.lines[r] = placeholderRow(b.kittyID, r, cols)
+	}
+	b.cache = c
+	imageLogf("image raster block=%d kitty=%d c=%d r=%d (cell=%dx%d) tx=%d B path=%s",
+		b.id, b.kittyID, cols, rows, b.caps.CellW, b.caps.CellH, len(c.prefix), b.pngPath)
+	return c
+}
+
+// ViewRange rendert die Bildzeilen [from,to) — Transmit-Escape vor der
+// ersten gelieferten Zeile. BlockList ruft das mit dem sichtbaren Fenster,
+// damit hohe Bilder auch uebertragen werden, wenn ihr Anfang heraus-
+// gescrollt ist (Follow-Modus: neue Bloecke erscheinen unten).
+func (b ImageBlock) ViewRange(width, from, to int) string {
+	if !b.useImg || b.kittyID < 1 || b.pngPath == "" {
+		return b.fallback.View(width)
+	}
 	cols := b.colsFor(width)
-	if b.id >= 1 {
-		if v, ok := artCache.Load(artCacheKey{b.id, cols}); ok {
-			return v.([]string)
-		}
+	rows := b.rowsFor(width)
+	if from < 0 {
+		from = 0
 	}
-	lines := render.PNGToANSI(b.png, cols)
-	if lines == nil {
-		lines = []string{}
+	if to > rows {
+		to = rows
 	}
-	if b.id >= 1 {
-		artCache.Store(artCacheKey{b.id, cols}, lines)
+	if from >= to {
+		return ""
 	}
-	return lines
+	c := b.renderCache(cols, rows)
+	out := make([]string, 0, to-from)
+	for r := from; r < to; r++ {
+		out = append(out, c.lines[r])
+	}
+	out[0] = c.prefix + out[0]
+	return strings.Join(out, "\n")
 }
 
-func (b ImageBlock) View(width int) string {
-	if width < 16 {
-		width = 16
-	}
-	if b.showRaw {
-		return b.rawView(width)
-	}
-	art := b.artFor(width)
-	inner := b.colsFor(width)
-	bs := b.th.BorderStyle()
-	label := "bild"
-	if b.zoomPct > 0 {
-		label = "bild " + itoa(b.zoomPct) + "%"
-	}
-	labelW := runewidth.StringWidth(label)
-	dashes := width - 5 - labelW
-	if dashes < 0 {
-		dashes = 0
-	}
-	lines := make([]string, 0, len(art)+2)
-	lines = append(lines, bs.Render("┌─ ")+b.th.ActionStyle().Render(label)+
-		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
-	for _, ln := range art {
-		gap := inner - runewidth.StringWidth(ln)
-		if gap < 0 {
-			gap = 0
-		}
-		lines = append(lines, bs.Render("│")+" "+ln+strings.Repeat(" ", gap)+" "+bs.Render("│"))
-	}
-	lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
-	return strings.Join(lines, "\n")
-}
+// View rendert das komplette Bild (Blockanfang sichtbar, z. B. reveal).
+func (b ImageBlock) View(width int) string { return b.ViewRange(width, 0, 1<<30) }
 
 func (b ImageBlock) Height(width int) int {
-	if b.showRaw {
-		return b.rawHeight(width)
+	if !b.useImg {
+		return b.fallback.Height(width)
 	}
-	return 1 + len(b.artFor(width)) + 1
+	return b.rowsFor(width)
 }
 
-// rawView rendert den Roh-Quelltext in einem einfachen Rahmen (Bonus-FR:
-// Wechsel zwischen Grafik und puml/mermaid-Rohquelle).
-func (b ImageBlock) rawView(width int) string {
-	if width < 16 {
-		width = 16
-	}
-	inner := b.colsFor(width)
-	bs := b.th.BorderStyle()
-	label := "roh"
-	labelW := runewidth.StringWidth(label)
-	dashes := width - 5 - labelW
-	if dashes < 0 {
-		dashes = 0
-	}
-	var body []string
-	for _, ln := range textWrapped(b.ascii, inner) {
-		body = append(body, bs.Render("│")+" "+ln+strings.Repeat(" ", max(0, inner-runewidth.StringWidth(ln)))+" "+bs.Render("│"))
-	}
-	lines := make([]string, 0, len(body)+2)
-	lines = append(lines, bs.Render("┌─ ")+b.th.ActionStyle().Render(label)+
-		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
-	lines = append(lines, body...)
-	lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
-	return strings.Join(lines, "\n")
-}
-
-func (b ImageBlock) rawHeight(width int) int {
-	if width < 16 {
-		width = 16
-	}
-	return 1 + len(textWrapped(b.ascii, b.colsFor(width))) + 1
-}
-
-func (b ImageBlock) Update(msg tea.Msg) (Widget, tea.Cmd) {
-	if km, ok := msg.(tea.KeyMsg); ok && b.focused {
-		switch km.String() {
-		case "+", "=":
-			// Zoom hinein durch die Stufen: 0(auto) -> 50 -> 100 -> 150 -> 200
-			return b.WithZoom(nextZoom(b.zoomPct, true)), nil
-		case "-", "_":
-			// Zoom hinaus zurueck Richtung Auto-Fit (0).
-			return b.WithZoom(nextZoom(b.zoomPct, false)), nil
-		case "t":
-			nb := b
-			nb.showRaw = !nb.showRaw
-			return nb, nil
-		}
-	}
-	return b, nil
-}
-func (b ImageBlock) Focused() bool   { return b.focused }
-func (b ImageBlock) Focusable() bool { return true }
+func (b ImageBlock) Update(msg tea.Msg) (Widget, tea.Cmd) { return b, nil }
+func (b ImageBlock) Focused() bool                        { return b.focused }
+func (b ImageBlock) Focusable() bool                      { return true }
 func (b ImageBlock) SetFocused(f bool) Widget {
 	nb := b
 	nb.focused = f
@@ -232,12 +328,12 @@ func (b ImageBlock) SetMarked(m bool) Widget {
 }
 func (b ImageBlock) Marked() bool { return b.marked }
 
-// Markdown liefert den Roh-Quelltext (FR-29 yank bleibt nutzbar).
-func (b ImageBlock) Markdown() string { return b.ascii }
-func (b ImageBlock) Resize(int) Widget { return b }
+// Markdown liefert den ASCII-/Roh-Text (FR-29 yank bleibt nutzbar).
+func (b ImageBlock) Markdown() string             { return b.ascii }
+func (b ImageBlock) Resize(int) Widget            { return b }
 func (b ImageBlock) HitAction(int, int, int) bool { return false }
 
-// Copy kopiert den Roh-Quelltext in die Zwischenablage (FR-5-Pfad).
+// Copy kopiert den ASCII-/Roh-Text in die Zwischenablage (FR-5-Pfad).
 func (b ImageBlock) Copy() (Widget, tea.Cmd) {
 	if b.copyFn == nil {
 		return b, nil
@@ -251,77 +347,30 @@ func (b ImageBlock) SetID(i int) Widget {
 	return nb
 }
 
-// zoomSteps sind die Zoom-Stufen; 100 = volle (naturale) Aufloesung.
-// Da Halbblock-Bilder nie breiter als die Terminal-Breite sein koennen, ist
-// der sinnvolle Zoom das _Herunterskalieren_: - verkleinert zu grosse
-// Diagramme (Ueberblick), + zoemt zurueck zur vollen Aufloesung.
-var zoomSteps = []int{100, 75, 50, 25, 10}
-
-// nextZoom bewegt current auf der zoomSteps-Leiter. current==0 bedeutet
-// Auto-Fit; "+" springt von dort direkt zur vollen Aufloesung.
-func nextZoom(current int, up bool) int {
-	if up && current == 0 {
-		return 100 // Auto-Fit -> naturale Aufloesung
-	}
-	if !up && current == 0 {
-		return 75 // Auto-Fit -> Ueberblick (Verkleinern)
-	}
-	idx := -1
-	for i, s := range zoomSteps {
-		if s == current {
-			idx = i
-		}
-	}
-	if idx < 0 {
-		return current
-	}
-	if up {
-		if idx > 0 {
-			return zoomSteps[idx-1] // verkleinert -> voller
-		}
-		return current // bereits voll (kann Terminal nicht ueberschreiten)
-	}
-	if idx+1 < len(zoomSteps) {
-		return zoomSteps[idx+1] // voller -> verkleinert
-	}
-	return current
+// SetKittyID setzt die Terminal-Bild-ID (1..250; nur dieser Bereich ist
+// in \e[38;5;N m codierbar). Der Zeilen-Cache verkoerpert die ID.
+func (b ImageBlock) SetKittyID(i int) Widget {
+	nb := b
+	nb.kittyID = i
+	nb.cache = nil
+	return nb
 }
 
-// itoa is a small int->decimal helper (keeps imageblock.go free of fmt).
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
+// KittyCleanup loescht alle uebertragenen Bilder im Terminal (a=d,d=a)
+// und entfernt die Temp-PNGs. RunModel ruft das nach Programmende — es
+// bleibt kein Bildmuell im Terminal zurueck.
+func KittyCleanup() {
+	kittyRegistry.Lock()
+	used := kittyRegistry.used
+	files := kittyRegistry.files
+	kittyRegistry.files = nil
+	kittyRegistry.used = false
+	kittyRegistry.Unlock()
+	if used {
+		os.Stdout.WriteString("\x1b_Ga=d,d=a\x1b\\")
+		imageLogf("cleanup: alle kitty-bilder geloescht, %d temp-dateien entfernt", len(files))
 	}
-	neg := n < 0
-	if neg {
-		n = -n
+	for _, f := range files {
+		os.Remove(f)
 	}
-	var buf [8]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-func clamp(v, lo, hi int) int {
-	return min(max(v, lo), hi)
 }

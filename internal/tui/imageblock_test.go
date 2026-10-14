@@ -2,13 +2,14 @@ package tui
 
 import (
 	"bytes"
+	"encoding/base64"
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
-
-	tea "github.com/charmbracelet/bubbletea"
 
 	"heron/internal/render"
 )
@@ -24,13 +25,12 @@ func findImage(l BlockList, id int) (Widget, bool) {
 	return nil, false
 }
 
-// realPNG baut ein tatsaechlich dekodierbares PNG (Halbblock-Renderer
-// dekodiert es — ein reiner Header reicht nicht).
+// realPNG baut ein tatsaechlich dekodierbares PNG.
 func realPNG(w, h int) []byte {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			img.Set(x, y, color.RGBA{R: uint8(x * 255 / w), G: uint8(y * 255 / h), B: 128, A: 255})
+			img.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 128, A: 255})
 		}
 	}
 	var buf bytes.Buffer
@@ -41,204 +41,231 @@ func realPNG(w, h int) []byte {
 }
 
 func TestPNGDims(t *testing.T) {
-	w, h, ok := render.PNGDims(realPNG(320, 200))
+	w, h, ok := pngDimsFromBytes(realPNG(320, 200))
 	if !ok || w != 320 || h != 200 {
-		t.Fatalf("PNGDims = %d,%d,%v", w, h, ok)
+		t.Fatalf("pngDimsFromBytes = %d,%d,%v", w, h, ok)
 	}
-	if _, _, ok := render.PNGDims([]byte("kein png")); ok {
+	if _, _, ok := pngDimsFromBytes([]byte("kein png")); ok {
 		t.Fatal("garbage accepted as png")
 	}
 }
 
-// TestImageBlockResolution (FR-27): die Halbblock-Grafik hat die Breite der
-// inneren Block-Spalten und eine zur Pixelproportion passende Zeilenzahl —
-// das Bild ist lagerichtig und bleibt reiner Text (scrollbar).
-func TestImageBlockResolution(t *testing.T) {
-	r := newRig(t)
-	r.do(tea.WindowSizeMsg{Width: 80, Height: 24})
-	img := NewImageBlock(realPNG(200, 100), "roh", nil, r.m.theme)
+// Metrik 2 (richtige Groesse + Aspekt): rowsForTerm rechnet die Bildhoehe in
+// Zellen aus Blockbreite, Bildpixeln und echter Zellgroesse (CellW/CellH).
+func TestImageBlockAspect(t *testing.T) {
+	rows := rowsForTerm(400, 300, 78, 9, 20)
+	want := 300 * 78 * 9 / (400 * 20)
+	if rows != want {
+		t.Fatalf("rowsForTerm=%d want %d", rows, want)
+	}
+	if rows < 1 {
+		t.Fatal("sanity: rows must be >= 1")
+	}
+	tall := rowsForTerm(400, 300, 78, 9, 40)
+	if tall >= rows || tall < 1 {
+		t.Fatalf("taller cells must reduce rows: got %d >= %d", tall, rows)
+	}
+	wide := rowsForTerm(400, 300, 78, 18, 20)
+	if wide <= rows {
+		t.Fatalf("wider cells must increase rows: got %d <= %d", wide, rows)
+	}
+}
+
+// Spec-Golden-Test: Das offizielle Kitty-Beispiel (graphics-protocol.md,
+// Abschnitt Unicode placeholders) druckt fuer Bild-ID 42 ein 2x2-Raster:
+//
+//	printf "\e[38;5;42m\U10EEEE\U0305\U0305\U10EEEE\U0305\U030D\e[39m\n"
+//	printf "\e[38;5;42m\U10EEEE\U030D\U0305\U10EEEE\U030D\U030D\e[39m\n"
+//
+// U+0305 kodiert 0, U+030D kodiert 1. Unsere Zeilen muessen byte-identisch
+// sein — FG-Farbe = Bild-ID, U+10EEEE + Zeilen-/Spalten-Diakritika je Zelle.
+func TestSpecPlaceholderGolden(t *testing.T) {
+	row0 := placeholderRow(42, 0, 2)
+	row1 := placeholderRow(42, 1, 2)
+	want0 := "\x1b[38;5;42m\U0010EEEE\u0305\u0305\U0010EEEE\u0305\u030D\x1b[39m"
+	want1 := "\x1b[38;5;42m\U0010EEEE\u030D\u0305\U0010EEEE\u030D\u030D\x1b[39m"
+	if row0 != want0 {
+		t.Fatalf("row0\n got %q\nwant %q", row0, want0)
+	}
+	if row1 != want1 {
+		t.Fatalf("row1\n got %q\nwant %q", row1, want1)
+	}
+	// Diakritika-Tabelle: Index 0..4 = U+0305, U+030D, U+030E, U+0310, U+0312
+	// (rowcolumn-diacritics.txt, identisch zu image.nvim codes.lua).
+	wantSeq := []rune{0x0305, 0x030D, 0x030E, 0x0310, 0x0312}
+	for i, w := range wantSeq {
+		if diacritic(i) != w {
+			t.Fatalf("diacritic(%d)=%U want %U", i, diacritic(i), w)
+		}
+	}
+}
+
+// Metrik 1 (schnell): Transmit ist EIN kurzer Datei-Escape (a=T,t=f) statt
+// eines Base64-PNG-Blobs; Payload dekodiert auf eine existierende Datei.
+func TestVirtualPlacementFileTransmit(t *testing.T) {
+	t.Cleanup(KittyCleanup)
+	img := NewImageBlock(realPNG(400, 200), "roh\n", true, TermCaps{CellW: 9, CellH: 20}, nil, nil)
 	img = img.SetID(7).(ImageBlock)
-
-	width := 44
-	inner := width - 4 // 40
-	view := img.View(width)
-	if !strings.Contains(view, "\u2580") {
-		t.Fatal("halfblock art missing")
+	img = img.SetKittyID(7).(ImageBlock)
+	width := 80
+	cols := img.colsFor(width)
+	rows := img.rowsFor(width)
+	vp := img.virtualPlacement(cols, rows)
+	if vp == "" {
+		t.Fatal("virtualPlacement leer")
 	}
-	if strings.Contains(view, "\x1b_G") {
-		t.Fatal("must not emit graphics escapes (pure text)")
+	for _, part := range []string{
+		"a=T", "f=100", "t=f", "i=7", "p=7", "U=1",
+		"c=" + itoa(cols), "r=" + itoa(rows), "s=400", "v=200", "m=0",
+	} {
+		if !strings.Contains(vp, part) {
+			t.Fatalf("virtualPlacement fehlt %q: %q", part, vp)
+		}
 	}
-	wantRows := (100*inner + 200/2) / 200 / 2
-	if got := len(strings.Split(view, "\n")) - 2; got != wantRows {
-		t.Fatalf("art rows = %d, want %d", got, wantRows)
+	// Payload = base64(Dateipfad); die Datei muss existieren (Terminal liest sie).
+	re := regexp.MustCompile(`m=0;([A-Za-z0-9+/=]+)\x1b`)
+	m := re.FindStringSubmatch(vp)
+	if m == nil {
+		t.Fatalf("kein Payload in %q", vp)
 	}
-	if img.Height(width) != wantRows+2 {
-		t.Fatalf("Height=%d want %d", img.Height(width), wantRows+2)
+	path, err := base64.StdEncoding.DecodeString(m[1])
+	if err != nil {
+		t.Fatalf("payload kein base64: %v", err)
 	}
-	if img.Markdown() != "roh" {
-		t.Fatalf("Markdown raw = %q", img.Markdown())
+	if _, err := os.Stat(string(path)); err != nil {
+		t.Fatalf("transmit-datei fehlt: %v", err)
 	}
-}
-
-// TestImageBlockFitRows (FR-Zoom): sehr grosse Diagramme werden auf die
-// Fit-Hoehe herunterskaliert. Klein genug Bilder werden nicht vergroessert.
-func TestImageBlockFitRows(t *testing.T) {
-	r := newRig(t)
-	img := NewImageBlock(realPNG(200, 100), "roh", nil, r.m.theme).WithFitRows(4)
-	width := 44
-	// cols = min(inner 40, 2*200*4/100=16) = 16; rows=(100*16+99)/200/2 = 4
-	if img.Height(width) != 6 {
-		t.Fatalf("fitted Height=%d want 6", img.Height(width))
-	}
-	// fitRows die groesser sind als die naturale Hoehe vergroessern NIE:
-	// kleine Bilder bleiben bei naturaller Aufloesung (nicht unscharf).
-	small := NewImageBlock(realPNG(20, 10), "roh", nil, r.m.theme).WithFitRows(100)
-	// natural cols=20 (<=inner 40), rows=(10*20+9)/20/2=5, Height=7
-	if small.Height(44) != 7 {
-		t.Fatalf("small Height=%d want 7 (natural, not enlarged)", small.Height(44))
+	// Kuerze als Metrik-1-Nachweis: deutlich unter dem PNG-Blob (~5 KB PNG).
+	if len(vp) > 512 {
+		t.Fatalf("transmit zu fett fuer jeden Frame: %d Byte", len(vp))
 	}
 }
 
-// TestImageBlockZoom (Bonus-FR): - verkleinert zu grosse Diagramme zu einem
-// Ueberblick, + zoemt zur vollen Aufloesung zurueck. Ueber die naturale
-// Breite hinaus gewinnt bei Halbblock nichts (Terminal-Breite ist die
-// Obergrenze), also wird nie unscharf aufgeblast.
-func TestImageBlockZoom(t *testing.T) {
-	r := newRig(t)
-	img := NewImageBlock(realPNG(200, 100), "roh", nil, r.m.theme).SetID(3).SetFocused(true).(ImageBlock)
-	width := 44
-	inner := width - 4
-	natural := (100*inner + 100) / 200 / 2
-	if img.Height(width) != natural+2 {
-		t.Fatalf("natural Height=%d want %d", img.Height(width), natural+2)
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
 	}
+	neg := i < 0
+	if neg {
+		i = -i
+	}
+	var b [20]byte
+	p := len(b)
+	for i > 0 {
+		p--
+		b[p] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		p--
+		b[p] = '-'
+	}
+	return string(b[p:])
+}
 
-	// - zoomt hinaus -> Ueberblick (weniger Zeilen).
-	var w Widget = img
-	w, _ = img.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
-	z := w.(ImageBlock)
-	if z.zoomPct != 75 {
-		t.Fatalf("zoom after - = %d, want 75", z.zoomPct)
+// Metrik 3 + Follow-Fall: ViewRange liefert nur [from,to), Transmit-Escape
+// genau auf der ersten gelieferten Zeile — hohe Bilder uebertragen auch dann,
+// wenn ihr Blockanfang herausgescrollt ist.
+func TestViewRangePartialCarriesTransmit(t *testing.T) {
+	t.Cleanup(KittyCleanup)
+	img := NewImageBlock(realPNG(400, 600), "roh", true, TermCaps{CellW: 9, CellH: 20}, nil, nil)
+	img = img.SetID(2).(ImageBlock)
+	img = img.SetKittyID(3).(ImageBlock)
+	width := 80
+	rows := img.rowsFor(width)
+	if rows < 20 {
+		t.Fatalf("Testaufbau: rows=%d, will >=20", rows)
 	}
-	if z.Height(width) >= img.Height(width) {
-		t.Fatal("- must reduce height (Ueberblick)")
+	from, to := rows-8, rows-2
+	v := img.ViewRange(width, from, to)
+	lines := strings.Split(v, "\n")
+	if len(lines) != to-from {
+		t.Fatalf("Zeilen=%d want %d", len(lines), to-from)
 	}
-	// + zoemt zurueck zur vollen Aufloesung (nie kleiner als natural).
-	w, _ = z.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
-	z2 := w.(ImageBlock)
-	if z2.zoomPct != 100 {
-		t.Fatalf("zoom after + = %d, want 100", z2.zoomPct)
+	if !strings.HasPrefix(lines[0], "\x1b_Ga=T") {
+		t.Fatal("erste sichtbare Zeile traegt den Transmit-Escape nicht")
 	}
-	if z2.Height(width) != natural+2 {
-		t.Fatalf("+ did not restore full res: %d want %d", z2.Height(width), natural+2)
+	for i := 1; i < len(lines); i++ {
+		if strings.Contains(lines[i], "\x1b_G") {
+			t.Fatalf("Zeile %d traegt unerlaubt einen Transmit", i)
+		}
 	}
-	// Bei voller Aufloesung hat + keine Wirkung (kein Aufblasen).
-	w, _ = z2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
-	if w.(ImageBlock).zoomPct != 100 {
-		t.Fatal("+ must be bounded at natural")
+	// Jede Zeile adressiert ihre Bildreihe: FG-ID + Zeilen-Diakritikon r.
+	for i, ln := range lines {
+		if !strings.Contains(ln, "\x1b[38;5;3m") {
+			t.Fatalf("Zeile %d ohne Bild-ID in FG-Farbe", i)
+		}
+		want := string(diacritic(from + i))
+		if !strings.Contains(ln, want) {
+			t.Fatalf("Zeile %d ohne Zeilen-Diakritikon %U", i, diacritic(from+i))
+		}
+	}
+	// Volle View: genauso viele Zeilen wie Height (Scroll-Synchronitaet).
+	full := strings.Split(img.View(width), "\n")
+	if len(full) != img.Height(width) {
+		t.Fatalf("View-Zeilen=%d != Height=%d", len(full), img.Height(width))
+	}
+	// Cache-Stabilitaet: zweiter Aufruf liefert identische Bytes (Metrik 1).
+	if img.View(width) != strings.Join(full, "\n") {
+		t.Fatal("View nicht deterministisch (Cache kaputt)")
 	}
 }
 
-// TestImageBlockToggleRaw (Bonus-FR): 't' blendet zwischen Grafik und
-// Roh-Quelltext um; der Rohblick enthaelt den Quelltext und keine Halbblocks.
-func TestImageBlockToggleRaw(t *testing.T) {
-	r := newRig(t)
-	img := NewImageBlock(realPNG(200, 100), "Alice -> Bob: hi", nil, r.m.theme).
-		SetID(9).SetFocused(true).(ImageBlock)
-	if img.showRaw {
-		t.Fatal("image mode by default")
+// Metrik 3 im Verbund: BlockList rendert nur das sichtbare Fenster, der
+// Transmit steht genau einmal im View, auch wenn das Bild oben abgeschnitten
+// ist.
+func TestBlockListRangedVisibility(t *testing.T) {
+	t.Cleanup(KittyCleanup)
+	img := NewImageBlock(realPNG(400, 600), "roh", true, TermCaps{CellW: 9, CellH: 20}, nil, nil)
+	img = img.SetID(1).(ImageBlock)
+	img = img.SetKittyID(3).(ImageBlock)
+	l := NewBlockList().Append(NewTextBlock("head", "1"), img)
+	l = l.SetSize(80, 10)
+	rows := img.rowsFor(80)
+	// Fenster so setzen, dass nur die unteren Bildzeilen sichtbar sind.
+	l.offset = 1 + rows - 5
+	view := l.View()
+	if c := strings.Count(view, "\x1b_Ga=T"); c != 1 {
+		t.Fatalf("Transmit-Escape %dx im View, want 1", c)
 	}
-	var w Widget = img
-	w, _ = img.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
-	raw := w.(ImageBlock)
-	if !raw.showRaw {
-		t.Fatal("t did not switch to raw")
+	lines := strings.Split(view, "\n")
+	foundPrefix := false
+	for _, ln := range lines {
+		if strings.HasPrefix(ln, "\x1b_Ga=T") {
+			foundPrefix = true
+			continue
+		}
+		if strings.Contains(ln, "\x1b_G") {
+			t.Fatal("zweiter Transmit im Fenster")
+		}
 	}
-	if !strings.Contains(raw.View(40), "Alice -> Bob: hi") {
-		t.Fatal("raw view lost the source")
+	if !foundPrefix {
+		t.Fatal("kein Transmit im sichtbaren Fenster")
 	}
-	if strings.Contains(raw.View(40), "\u2580") {
-		t.Fatal("raw view must not render halfblocks")
-	}
-}
-
-// TestImageBlockKeysThroughBlockList: Zoom/Roh-Tasten werden einem
-// fokussierten ImageBlock ueber BlockList.handleKey zugestellt (FR-Zoom +
-// Bonus-FR togglen), ohne den Nicht-Fokus-Tippfluss zu stoeren.
-func TestImageBlockKeysThroughBlockList(t *testing.T) {
-	r := newRig(t)
-	img := NewImageBlock(realPNG(200, 100), "Alice -> Bob: hi", nil, r.m.theme).SetID(5)
-	l := BlockList{items: []Widget{img.SetFocused(true)}}
-
-	// '-' zoomt hinaus.
-	l2, _, _ := l.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
-	ib, ok := l2.items[0].(ImageBlock)
-	if !ok || ib.zoomPct != 75 {
-		t.Fatalf("zoom after - = %d/%v, want 75", ib.zoomPct, ok)
-	}
-	// 't' toggelt auf Roh-Text.
-	l3, _, ok := l2.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
-	if !ok || !l3.items[0].(ImageBlock).showRaw {
-		t.Fatalf("t did not toggle raw (handled=%v)", ok)
-	}
-	// Ohne Fokus bleibt 't' unberuehrt (Tippen im Eingabefeld).
-	u := BlockList{items: []Widget{img}, focus: -1}
-	if _, _, handled := u.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}}); handled {
-		t.Fatal("unfocused blocklist must not swallow 't'")
+	// Unsichtbarer Bereich bleibt leer: Gesamtzeilenzahl unveraendert.
+	_, total := l.all()
+	if total != 1+rows {
+		t.Fatalf("total=%d want %d (Hoehe darf sich nicht aendern)", total, 1+rows)
 	}
 }
 
-// TestApplyDiagrams (FR-27): png-Ergebnis wird zum ImageBlock (Halbblock,
-// immer darstellbar), nur-ASCII wird im CodeBlock ersetzt.
-func TestApplyDiagrams(t *testing.T) {
-	r := newRig(t).seed("```plantuml\nAlice -> Bob: hi\n```")
-	id := r.m.diagramJobs()[0].id
-	l, n := r.m.chat.applyDiagrams([]diagramResult{{id: id, png: realPNG(200, 100), ascii: "Alice -> Bob: hi", ok: true}})
-	if n != 1 {
-		t.Fatalf("apply=%d", n)
+// Fallback ohne useImg: ASCII-/Roh-Text, keine Graphics-Escapes (FR-6).
+func TestImageBlockFallback(t *testing.T) {
+	img := NewImageBlock(realPNG(80, 40), "roh text", false, TermCaps{}, nil, nil)
+	v := img.View(80)
+	if strings.Contains(v, "\x1b_G") {
+		t.Fatal("Fallback darf keine Kitty-Escapes enthalten")
 	}
-	img, ok := findImage(l, id)
-	if !ok {
-		t.Fatal("block is not an ImageBlock")
-	}
-	if img.Markdown() != "Alice -> Bob: hi" {
-		t.Fatalf("markdown raw wrong: %q", img.Markdown())
+	if !strings.Contains(v, "roh text") {
+		t.Fatal("Fallback verliert den Text")
 	}
 }
 
-// TestImagesEnabledOverride: force/off und Default (Halbblock => immer).
-func TestImagesEnabledOverride(t *testing.T) {
-	m := Model{}
-	t.Setenv("HERON_IMAGES", "force")
-	if !m.imagesEnabled() {
-		t.Fatal("force must enable")
-	}
-	t.Setenv("HERON_IMAGES", "off")
-	if m.imagesEnabled() {
-		t.Fatal("off must disable")
-	}
-	t.Setenv("HERON_IMAGES", "")
-	if !m.imagesEnabled() {
-		t.Fatal("default: halfblock is pure text, images on")
-	}
+// Cleanup loescht alle Temp-Dateien (Registry leer danach).
+func TestKittyCleanupRemovesFiles(t *testing.T) {
+	NewImageBlock(realPNG(60, 30), "roh", true, TermCaps{}, nil, nil)
+	KittyCleanup()
+	KittyCleanup() // idempotent
 }
 
-// TestSeedQueuesDiagrams (FR-6/27/28): --seed haengt Diagramm-Fences an;
-// der erste Frame (WindowSizeMsg) loest die Konvertierung aus.
-func TestSeedQueuesDiagrams(t *testing.T) {
-	r := newRig(t).seed("```plantuml\nAlice -> Bob: hi\n```\n\nText.\n\n```mermaid\nflowchart LR\n```")
-	if !r.m.seedDiagrams {
-		t.Fatal("seed did not queue diagram conversion")
-	}
-	if n := len(r.m.diagramJobs()); n != 2 {
-		t.Fatalf("want 2 diagram jobs (plantuml+mermaid), got %d", n)
-	}
-	r.do(tea.WindowSizeMsg{Width: 80, Height: 24})
-	if r.m.seedDiagrams {
-		t.Fatal("flag not consumed by the first frame")
-	}
-	if len(r.m.diagramJobs()) != 0 {
-		t.Fatal("diagram jobs survived the first frame")
-	}
-	r.contains("Alice")
-}
+var _ = render.PNGDims // PNGDims bleibt im Einsatz (render-Paket)

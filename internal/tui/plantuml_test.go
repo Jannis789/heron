@@ -30,7 +30,7 @@ func TestPlantUMLJobsCollectedOnce(t *testing.T) {
 		t.Fatalf("bad job: %+v", jobs[0])
 	}
 
-	l, n := r.m.chat.applyDiagrams([]diagramResult{{id: jobs[0].id, ok: false}})
+	l, n := r.m.chat.applyDiagrams([]diagramResult{{id: jobs[0].id, ok: false}}, false, TermCaps{})
 	if n != 1 {
 		t.Fatalf("applied=%d want 1", n)
 	}
@@ -47,7 +47,7 @@ func TestPlantUMLApplyReplacesSource(t *testing.T) {
 	id := r.m.diagramJobs()[0].id
 
 	ascii := "+---+     +---+\n| A | --> | B |\n+---+     +---+"
-	l, n := r.m.chat.applyDiagrams([]diagramResult{{id: id, ascii: ascii, ok: true}})
+	l, n := r.m.chat.applyDiagrams([]diagramResult{{id: id, ascii: ascii, ok: true}}, false, TermCaps{})
 	if n != 1 {
 		t.Fatalf("applied=%d want 1", n)
 	}
@@ -91,7 +91,7 @@ func TestPlantUMLFallbackWhenMissing(t *testing.T) {
 		t.Fatalf("expected one failed result, got %+v", done.results)
 	}
 
-	l, n := r.m.chat.applyDiagrams(done.results)
+	l, n := r.m.chat.applyDiagrams(done.results, false, TermCaps{})
 	if n != 1 {
 		t.Fatalf("applied=%d", n)
 	}

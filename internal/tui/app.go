@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -45,9 +46,9 @@ type Model struct {
 	toolStatus string  // last tool label while the turn runs
 
 	// Prompt box chrome (FR-23, minimal).
-	cwd        string    // workspace shown in the top border
-	modelLabel string    // model shown in the bottom border
-	effort     string    // effort level shown next to the model
+	cwd        string // workspace shown in the top border
+	modelLabel string // model shown in the bottom border
+	effort     string // effort level shown next to the model
 
 	// Model/effort picker (FR-20): the input box expands into a searchable
 	// list. pickerKind selects what the list edits.
@@ -55,8 +56,8 @@ type Model struct {
 	effortOptions []string
 	configSet     func(id, value string) error
 	newSession    func() error // /new: fresh goose session (nil = demo)
-	caps          TermCaps // Term-Probe (FR-27): Platzhalter + Zellpixel
-	pickerKind    string // "model" or "effort" while open
+	caps          TermCaps     // Term-Probe (FR-27): Platzhalter + Zellpixel
+	pickerKind    string       // "model" or "effort" while open
 	pickerOpen    bool
 	pickerCursor  int
 	pickerScroll  int
@@ -435,6 +436,7 @@ func (m Model) SeedMarkdown(src string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
+	imageLogf("app open: term=%s images=%v caps=%+v", os.Getenv("TERM"), m.imagesEnabled(), m.caps)
 	// Seeded chats (-seed / demo) can already contain plantuml blocks.
 	if cmd := m.pendingDiagrams(); cmd != nil {
 		return tea.Batch(textarea.Blink, cmd)
@@ -447,6 +449,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		imageLogf("viewport %dx%d Zellen", msg.Width, msg.Height)
 		m.input.SetWidth(msg.Width - 4)
 		m.syncInputSize()
 		// Der Seed haengt Diagramm-Fences an; die Konvertierung braucht das
@@ -656,7 +659,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.closePicker()
 		return m, nil
 	case diagramsDoneMsg:
-		m.chat, _ = m.chat.applyDiagrams(msg.results)
+		m.chat, _ = m.chat.applyDiagrams(msg.results, m.imagesEnabled(), m.caps)
 		return m, nil
 	case replyMsg:
 		// The final text supersedes the live preview (FR-2).
@@ -786,6 +789,9 @@ func RunModel(m Model) error {
 	// from its own goroutine (FR-2). A nil stream is a no-op.
 	m.stream.attach(p)
 	_, err := p.Run()
+	// Alle Terminal-Bilder loeschen und Temp-PNGs entfernen (FR-27): nach
+	// dem Exit bleibt kein Bildmuell im Ghostty/Kitty-Speicher.
+	KittyCleanup()
 	return err
 }
 

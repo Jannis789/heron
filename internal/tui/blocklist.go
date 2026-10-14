@@ -12,14 +12,17 @@ import (
 // mutating in place — the caller must adopt the returned BlockList.
 type BlockList struct {
 	// nextID is the last stable block number handed out (FR-3).
-	nextID   int
-	items    []Widget
-	offset   int
-	width    int
-	height   int
-	focus    int
-	hoverIdx int
-	follow   bool
+	nextID int
+	// nextKittyID vergibt Terminal-Bild-IDs (1..250, FR-27): nur dieser
+	// Bereich ist in \e[38;5;N m codierbar.
+	nextKittyID int
+	items       []Widget
+	offset      int
+	width       int
+	height      int
+	focus       int
+	hoverIdx    int
+	follow      bool
 	// marks selects blocks for the range copy (FR-29); copyFn executes it.
 	marks  map[int]bool
 	copyFn CopyFunc
@@ -145,17 +148,56 @@ func (l BlockList) clamp() BlockList {
 	return l
 }
 
+// rangedWidget kann nur einen Teil seiner Zeilen rendern (ImageBlock:
+// Kitty-Transmit auf der ersten sichtbaren Zeile, FR-27). Ohne das Interface
+// gilt weiterhin die volle View.
+type rangedWidget interface {
+	Widget
+	ViewRange(width, from, to int) string
+}
+
 // all stacks every widget into a full-height line list (with blank padding).
+// Bildbloecke liefern nur ihre sichtbaren Zeilen: Der Transmit-Escape landet
+// auf der ersten sichtbaren Zeile, damit hohe Bilder das Terminal auch dann
+// erreichen, wenn ihr Blockanfang ausserhalb des Fensters liegt (FR-27).
 func (l BlockList) all() (lines []string, total int) {
 	w := l.Width()
+	winL, winR := 0, 0 // sichtbares Fenster im Zeilenraum, nur wenn Hoehe bekannt
+	if l.height > 0 {
+		winL = l.offset
+		if winL < 0 {
+			winL = 0
+		}
+		winR = winL + l.height
+	}
+	start := 0
 	for _, it := range l.items {
 		h := it.Height(w)
-		view := strings.Split(it.View(w), "\n")
-		for len(view) < h {
-			view = append(view, "")
+		blk := make([]string, h)
+		if rw, ok := it.(rangedWidget); ok && h > 0 && winR > winL {
+			from := winL - start
+			to := winR - start
+			if from < 0 {
+				from = 0
+			}
+			if to > h {
+				to = h
+			}
+			if from < to {
+				vs := strings.Split(rw.ViewRange(w, from, to), "\n")
+				for i, s := range vs {
+					if from+i < h {
+						blk[from+i] = s
+					}
+				}
+			}
+		} else {
+			view := strings.Split(it.View(w), "\n")
+			copy(blk, view)
 		}
-		lines = append(lines, view...)
+		lines = append(lines, blk...)
 		total += h
+		start += h
 	}
 	return lines, total
 }

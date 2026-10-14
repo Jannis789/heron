@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -24,6 +25,7 @@ func TestDriveRenderTestEndToEnd(t *testing.T) {
 	if _, err := lookPath("plantuml"); err != nil {
 		t.Skip("plantuml nicht im PATH (nix wrap fehlt)")
 	}
+	t.Setenv("HERON_IMAGES", "force") // rig ohne Probe-Caps -> force
 	r := newRig(t).seed(string(b))
 
 	// Der erste WindowSizeMsg loest die Konvertierung aus (FR-6/27). Wir
@@ -53,16 +55,37 @@ func TestDriveRenderTestEndToEnd(t *testing.T) {
 		t.Fatalf("kein PNG gerendert: %d ascii, %d failed", ascii, failed)
 	}
 
-	_, n := r.m.chat.applyDiagrams(done.results)
+	_, n := r.m.chat.applyDiagrams(done.results, true, TermCaps{CellW: 9, CellH: 20})
 	if n == 0 {
 		t.Fatal("applyDiagrams hat nichts angewendet")
 	}
+	t.Cleanup(KittyCleanup)
+	found := 0
 	for _, it := range r.m.chat.items {
 		if ib, ok := it.(ImageBlock); ok {
+			found++
 			v := ib.View(118)
-			if !strings.Contains(v, "▀") {
-				t.Errorf("ImageBlock id=%d View ohne Halbblock-Zeichen", ib.ID())
+			// FR-27: kombinierte Uebertragung (a=T,t=f) + Platzhalter-Zellen
+			// mit Bild-ID in der FG-Farbe (Spec: Unicode placeholders).
+			if !strings.Contains(v, "\x1b_Ga=T,f=100,t=f,i=") {
+				t.Errorf("ImageBlock id=%d fehlt Datei-Transmit (a=T,t=f)", ib.ID())
+			}
+			if ib.kittyID < 1 || ib.kittyID > 250 {
+				t.Errorf("ImageBlock id=%d kittyID=%d ausserhalb 1..250", ib.ID(), ib.kittyID)
+			}
+			idFG := "38;5;" + strconv.Itoa(ib.kittyID) + "m"
+			if !strings.Contains(v, idFG) {
+				t.Errorf("ImageBlock id=%d: FG-Farbe %q (Bild-ID) fehlt", ib.ID(), idFG)
+			}
+			if !strings.Contains(v, placeholderChar) {
+				t.Errorf("ImageBlock id=%d fehlt Platzhalterzeichen", ib.ID())
+			}
+			if !strings.Contains(v, string(diacritic(0))) {
+				t.Errorf("ImageBlock id=%d fehlt Zeilen-Diakritikon", ib.ID())
 			}
 		}
+	}
+	if found == 0 {
+		t.Fatal("kein ImageBlock nach applyDiagrams")
 	}
 }

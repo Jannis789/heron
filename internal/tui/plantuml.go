@@ -146,7 +146,7 @@ func imageLogf(format string, a ...interface{}) {
 // become ImageBlocks (FR-27), ASCII results replace the source, failures
 // keep the raw source. Either way the block is marked converted so it is
 // never queued again.
-func (l BlockList) applyDiagrams(results []diagramResult) (BlockList, int) {
+func (l BlockList) applyDiagrams(results []diagramResult, useImg bool, caps TermCaps) (BlockList, int) {
 	applied := 0
 	for _, r := range results {
 		for i, it := range l.items {
@@ -155,17 +155,22 @@ func (l BlockList) applyDiagrams(results []diagramResult) (BlockList, int) {
 				continue
 			}
 			if r.png != nil {
-				// Halbblock-Bild ist reiner Text und damit immer renderbar
-				// (FR-27). Der Block wird scroll-freundlich auf die chat-
-				// Hoehe begrenzt, damit sehr grosse Diagramme nicht den
-				// Bildschirm sprengen und trotzdem per Pager blätterbar
-				// bleiben (FR-Zoom).
-				fitRows := l.height - 3
-				if fitRows < 4 {
-					fitRows = 4
+				// Kitty-Platzhalter: nur verwenden, wenn das Terminal sie kann.
+				if !useImg {
+					nb := cb
+					nb.converted = true
+					l.items[i] = nb
+					applied++
+					break
 				}
-				img := NewImageBlock(r.png, strings.TrimSuffix(r.ascii, "\n"), cb.copyFn, cb.th)
-				img = img.SetID(r.id).(ImageBlock).WithFitRows(fitRows)
+				img := NewImageBlock(r.png, strings.TrimSuffix(r.ascii, "\n"), true, caps, cb.copyFn, cb.th)
+				// Terminal-Bild-ID: 1..250, in \e[38;5;N m codierbar (FR-27).
+				l.nextKittyID++
+				if l.nextKittyID > 250 {
+					l.nextKittyID = 1
+				}
+				img = img.SetKittyID(l.nextKittyID).(ImageBlock)
+				img = img.SetID(r.id).(ImageBlock)
 				if cb.focused {
 					img = img.SetFocused(true).(ImageBlock)
 				}
