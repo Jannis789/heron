@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -118,16 +119,37 @@ type ImageBlock struct {
 	hover    bool
 	marked   bool
 	th       *render.Theme
-	cache    *imgCache
 }
 
 // imgCache haelt Prefix + Platzhalterzeilen je (cols, rows): View ist
 // dadurch O(1) pro Frame — kein Neu-Aufbau, kein Neu-Kodieren (Metrik 1).
+// txBuilt/txCount steuern, dass der Transmit-Escape (a=T,t=f) nur kurz bei
+// Erscheinen des Blocks gesendet wird: bubbletea kann gerenderte Frames
+// vor dem Flush verwerfen, deshalb ein kurzes Zeitfenster statt strikt
+// einmal — aber NIE pro Scroll-Schritt (das Terminal muesste die PNG bei
+// jedem Schritt neu lesen/dekodieren -> 1fps, gemessen im Ghostty).
 type imgCache struct {
 	cols, rows int
+	pngPath    string
 	prefix     string
 	lines      []string
+	txBuilt    time.Time
+	txCount    int
 }
+
+// imgCaches haelt die Raster paketweit: ImageBlock ist ein Wertetyp — ein
+// Cache-Feld auf der Struktur wuerde bei jedem Update-Kopieren verworfen
+// und der Raster (inkl. Transmit-Fenster) JEDEN Frame neu gebaut. Der
+// Transmit-Escape ging daraufhin bei jedem Scroll-Schritt erneut raus und
+// das Terminal hat die PNG bei jedem Schritt neu dekodiert (1fps, gemessen).
+type imgCacheKey struct {
+	kittyID, cols, rows int
+}
+
+var (
+	imgCacheMu sync.Mutex
+	imgCaches  = map[imgCacheKey]*imgCache{}
+)
 
 // NewImageBlock baut den Bildblock; Dimensionen aus dem IHDR-Chunk. Bei
 // aktiviertem Bildpfad wird das PNG zusaetzlich in einer Temp-Datei
@@ -254,17 +276,22 @@ func placeholderRow(kittyID, r, cols int) string {
 	return sb.String()
 }
 
-// renderCache baut (und merkt) Prefix + Zeilen fuer (cols, rows).
-func (b *ImageBlock) renderCache(cols, rows int) *imgCache {
-	if b.cache != nil && b.cache.cols == cols && b.cache.rows == rows {
-		return b.cache
+// renderCache liefert den Raster fuer (kittyID, cols, rows) aus der
+// paketweiten Map — so ueberlebt er Update-Kopien (Wertetyp) und damit
+// auch das Transmit-Fenster.
+func (b ImageBlock) renderCache(cols, rows int) *imgCache {
+	key := imgCacheKey{b.kittyID, cols, rows}
+	imgCacheMu.Lock()
+	defer imgCacheMu.Unlock()
+	if c := imgCaches[key]; c != nil && c.pngPath == b.pngPath && len(c.lines) == rows {
+		return c
 	}
-	c := &imgCache{cols: cols, rows: rows, prefix: b.virtualPlacement(cols, rows)}
+	c := &imgCache{cols: cols, rows: rows, pngPath: b.pngPath, txBuilt: time.Now(), prefix: b.virtualPlacement(cols, rows)}
 	c.lines = make([]string, rows)
 	for r := 0; r < rows; r++ {
 		c.lines[r] = placeholderRow(b.kittyID, r, cols)
 	}
-	b.cache = c
+	imgCaches[key] = c
 	imageLogf("image raster block=%d kitty=%d c=%d r=%d (cell=%dx%d) tx=%d B path=%s",
 		b.id, b.kittyID, cols, rows, b.caps.CellW, b.caps.CellH, len(c.prefix), b.pngPath)
 	return c
@@ -294,7 +321,15 @@ func (b ImageBlock) ViewRange(width, from, to int) string {
 	for r := from; r < to; r++ {
 		out = append(out, c.lines[r])
 	}
-	out[0] = c.prefix + out[0]
+	// Transmit nur kurz nach Erscheinen des Rasters senden (Flush-Fenster,
+	// max. 5x) — NICHT bei jedem Scroll-Schritt: a=T,t=f liesse das
+	// Terminal die PNG sonst wiederholt neu lesen und dekodieren, was im
+	// Ghostty die Scroll-FPS auf ~1 kollabieren liess (Metrik 1+3).
+	if c.txCount < 5 && time.Since(c.txBuilt) < 750*time.Millisecond {
+		out[0] = c.prefix + out[0]
+		c.txCount++
+		imageLogf("image tx block=%d kitty=%d (%d. mal, fenster)", b.id, b.kittyID, c.txCount)
+	}
 	return strings.Join(out, "\n")
 }
 
@@ -352,7 +387,6 @@ func (b ImageBlock) SetID(i int) Widget {
 func (b ImageBlock) SetKittyID(i int) Widget {
 	nb := b
 	nb.kittyID = i
-	nb.cache = nil
 	return nb
 }
 
@@ -366,6 +400,9 @@ func KittyCleanup() {
 	kittyRegistry.files = nil
 	kittyRegistry.used = false
 	kittyRegistry.Unlock()
+	imgCacheMu.Lock()
+	imgCaches = map[imgCacheKey]*imgCache{}
+	imgCacheMu.Unlock()
 	if used {
 		os.Stdout.WriteString("\x1b_Ga=d,d=a\x1b\\")
 		imageLogf("cleanup: alle kitty-bilder geloescht, %d temp-dateien entfernt", len(files))
