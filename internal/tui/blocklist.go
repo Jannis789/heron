@@ -239,26 +239,36 @@ func (l BlockList) Update(msg tea.Msg) (BlockList, tea.Cmd, bool) {
 func (l BlockList) handleKey(k tea.KeyMsg) (BlockList, tea.Cmd, bool) {
 	switch k.String() {
 	case "up":
+		before := l.offset
 		l.offset--
 		l.follow = false
-		return l.clamp(), nil, true
+		l = l.clamp()
+		perfScroll("key-up", before, l.offset)
+		return l, nil, true
 	case "down":
+		before := l.offset
 		l.offset++
 		l = l.clamp()
 		if l.height > 0 && l.offset >= l.totalLines()-l.height {
 			l.follow = true
 		}
+		perfScroll("key-down", before, l.offset)
 		return l, nil, true
 	case "pgup":
+		before := l.offset
 		l.offset -= max(l.height, 1)
 		l.follow = false
-		return l.clamp(), nil, true
+		l = l.clamp()
+		perfScroll("key-pgup", before, l.offset)
+		return l, nil, true
 	case "pgdown":
+		before := l.offset
 		l.offset += max(l.height, 1)
 		l = l.clamp()
 		if l.height > 0 && l.offset >= l.totalLines()-l.height {
 			l.follow = true
 		}
+		perfScroll("key-pgdown", before, l.offset)
 		return l, nil, true
 	case "tab":
 		return l.focusNext(), nil, true
@@ -453,15 +463,20 @@ func (l BlockList) handleMouse(msg tea.MouseMsg) (BlockList, tea.Cmd, bool) {
 			return nl, nil, true
 		}
 	case tea.MouseButtonWheelUp:
+		before := l.offset
 		l.offset--
 		l.follow = false
-		return l.clamp(), nil, true
+		l = l.clamp()
+		perfScroll("wheel-up", before, l.offset)
+		return l, nil, true
 	case tea.MouseButtonWheelDown:
+		before := l.offset
 		l.offset++
 		l = l.clamp()
 		if l.height > 0 && l.offset >= l.totalLines()-l.height {
 			l.follow = true
 		}
+		perfScroll("wheel-down", before, l.offset)
 		return l, nil, true
 	}
 	return l, nil, false

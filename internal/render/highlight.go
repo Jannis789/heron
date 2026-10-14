@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"strings"
+	"sync"
 
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
@@ -51,8 +52,40 @@ func Highlight(lang, source string) string {
 // HighlightLines highlights source and returns it already wrapped to w cells
 // per line. It returns exactly one entry per rendered row, which is what the
 // code block needs to size its frame and its footer correctly.
+//
+// Das Ergebnis ist gecacht: Height() und View() der CodeBloecke rufen diese
+// Funktion JEDESMAL pro Frame auf, und lexers.Get() macht intern ein
+// filepath.Match ueber die Muster aller ~250 Chroma-Lexer — ein CPU-Profil
+// des Demos wies 91% der Zeit genau dort nach (path/filepath.matchChunk).
+// Quellcode aendert sich nie, also ist (lang, source, w) ein stabiler Key.
+// Die zurueckgegebene Slice ist geteilt und darf nicht veraendert werden.
+type hlKey struct {
+	lang string
+	src  string
+	w    int
+}
+
+var hlCache = struct {
+	sync.RWMutex
+	m map[hlKey][]string
+}{m: map[hlKey][]string{}}
+
 func HighlightLines(lang, source string, w int) []string {
-	return WrapANSI(Highlight(lang, source), w)
+	key := hlKey{strings.ToLower(strings.TrimSpace(lang)), source, w}
+	hlCache.RLock()
+	v, ok := hlCache.m[key]
+	hlCache.RUnlock()
+	if ok {
+		return v
+	}
+	lines := WrapANSI(Highlight(lang, source), w)
+	hlCache.Lock()
+	if len(hlCache.m) > 8192 {
+		hlCache.m = map[hlKey][]string{} // Hartes Limit gegen Auswuchs
+	}
+	hlCache.m[key] = lines
+	hlCache.Unlock()
+	return lines
 }
 
 // WrapANSI wraps ANSI-coloured text to w cells per row, one entry per

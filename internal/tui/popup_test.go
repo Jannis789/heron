@@ -123,7 +123,7 @@ func TestModelPickerSwitchesBackToActive(t *testing.T) {
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
 	// The cursor starts on the active model — cursor arrow AND active ✓.
 	r.contains("▸ glm-5.3 ✓")
-	r.contains("glm-5.3-flash")   // the full list is in the window
+	r.contains("glm-5.3-flash") // the full list is in the window
 	r.contains("glm-5.3-flashx")
 
 	r.do(tea.KeyMsg{Type: tea.KeyEnter}) // applies the highlighted (active)

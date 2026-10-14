@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+	"runtime/pprof"
 
 	"heron/internal/render"
 )
@@ -725,6 +727,16 @@ func (m Model) statusLine() string {
 }
 
 func (m Model) View() string {
+	vt0 := time.Now()
+	var tChat time.Duration
+	defer func() {
+		d := time.Since(vt0)
+		if d > 20*time.Millisecond {
+			imageLogf("view slow: total=%.1fms chat=%.1fms fill=0.0ms blocks=%d win=%dx%d",
+				float64(d.Microseconds())/1000, float64(tChat.Microseconds())/1000, len(m.chat.items), m.width, m.height)
+		}
+		perfView(d, m.width, m.height)
+	}()
 	var top strings.Builder
 	top.WriteString(lipgloss.NewStyle().Bold(true).Render("heron · goose acp"))
 	top.WriteString("\n")
@@ -733,7 +745,10 @@ func (m Model) View() string {
 	if m.chat.Empty() {
 		top.WriteString("(no messages yet — type below)\n")
 	}
-	top.WriteString(m.chat.View())
+	tc0 := time.Now()
+	chatView := m.chat.View()
+	tChat = time.Since(tc0)
+	top.WriteString(chatView)
 
 	// The prompt box belongs to the bottom of the screen. Padding the gap
 	// after it — what a plain full-screen fill does — left the box floating
@@ -766,6 +781,7 @@ func (m Model) View() string {
 func (m Model) fillScreen(s string) string {
 	seq := m.theme.BackgroundSeq()
 	if m.width <= 0 || seq == "" {
+		perfBytes(len(s))
 		return s
 	}
 	lines := strings.Split(s, "\n")
@@ -778,11 +794,24 @@ func (m Model) fillScreen(s string) string {
 	for len(lines) < m.height {
 		lines = append(lines, seq+strings.Repeat(" ", m.width))
 	}
-	return strings.Join(lines, "\n")
+	out := strings.Join(lines, "\n")
+	perfBytes(len(out))
+	return out
 }
 
 // RunModel starts the TUI with a prepared model (all-motion mouse: hover).
 func RunModel(m Model) error {
+	// CPU-Profil bei HERON_CPU_PROF=1 (Diagnose, s. perflog.go): zeigt,
+	// wo Render-Zeit wirklich verbracht wird, statt zu raten.
+	if strings.EqualFold(os.Getenv("HERON_CPU_PROF"), "1") {
+		if f, err := os.Create("/tmp/heron.prof"); err == nil {
+			defer f.Close()
+			if err := pprof.StartCPUProfile(f); err == nil {
+				defer pprof.StopCPUProfile()
+				imageLogf("cpu-profil: /tmp/heron.prof")
+			}
+		}
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	// Hand the runtime to the stream so the backend can publish live updates
 	// from its own goroutine (FR-2). A nil stream is a no-op.
