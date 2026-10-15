@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -104,8 +105,9 @@ var kittyRegistry = struct {
 //     Zeilen aus Bildpixeln und CellW/CellH; das virtuelle Placement
 //     (c,r) fuegt das Bild seitenverhaeltnisgetreu ein (Metrik 2).
 type ImageBlock struct {
-	id       int // stabile Block-ID (FR-3)
-	kittyID  int // Terminal-Bild-ID 1..250, codierbar in \e[38;5;N m
+	id       int    // stabile Block-ID (FR-3)
+	kittyID  int    // Terminal-Bild-ID 1..250, codierbar in \e[38;5;N m
+	svg      []byte // Vektor-Quelle (plantuml -tsvg): bei Resize neu rasern
 	pngPath  string
 	png      []byte
 	pngW     int
@@ -130,7 +132,9 @@ type ImageBlock struct {
 // jedem Schritt neu lesen/dekodieren -> 1fps, gemessen im Ghostty).
 type imgCache struct {
 	cols, rows int
-	pngPath    string
+	own        bool   // pngPath wurde von renderCache gerastert (Temp-Datei)
+	src        string // pngPath des Blocks, aus dem der Raster gebaut wurde
+	pngPath    string // effektive Transmit-Datei (bei SVG: die gerasterte)
 	prefix     string
 	lines      []string
 	txBuilt    time.Time
@@ -143,7 +147,7 @@ type imgCache struct {
 // Transmit-Escape ging daraufhin bei jedem Scroll-Schritt erneut raus und
 // das Terminal hat die PNG bei jedem Schritt neu dekodiert (1fps, gemessen).
 type imgCacheKey struct {
-	kittyID, cols, rows int
+	blockID, kittyID, cols, rows int
 }
 
 var (
@@ -170,7 +174,7 @@ func NewImageBlock(png []byte, ascii string, useImg bool, caps TermCaps, copyFn 
 		copyFn:   copyFn,
 		th:       th,
 	}
-	if b.useImg {
+	if b.useImg && len(png) > 0 {
 		if p, err := writeKittyFile(png); err == nil {
 			b.pngPath = p
 		} else {
@@ -247,18 +251,18 @@ func (b ImageBlock) rowsFor(width int) int {
 // t=f (Terminal liest die PNG-Datei selbst), U=1, c/r = Zellraster,
 // s/v = Pixelmasse, p=<id> macht das Placement deterministisch —
 // Wiederholung ersetzt statt zu vervielfachen (Resize bleibt billig).
-func (b ImageBlock) virtualPlacement(cols, rows int) string {
-	if b.kittyID < 1 || b.kittyID > 250 || b.pngPath == "" {
+func (b ImageBlock) virtualPlacement(cols, rows int, path string, pw, ph int) string {
+	if b.kittyID < 1 || b.kittyID > 250 || path == "" {
 		return ""
 	}
-	payload := base64.StdEncoding.EncodeToString([]byte(b.pngPath))
+	payload := base64.StdEncoding.EncodeToString([]byte(path))
 	// q=2: Terminal-Antworten komplett unterdruecken (Spec). Ohne q antwortet
 	// das Terminal auf JEEDEN a=T mit ESC_Gi=N,p=N;OK ESC\ auf stdin —
 	// bubbletea kann APC-Antworten nicht parsen, sie landeten als Muell-
 	// Tasten auf dem Bildschirm und desynchronisierten daneben auch die
 	// SGR-Maus-Reports ([<65;37;69M-Fragmente).
 	return fmt.Sprintf("\x1b_Ga=T,f=100,t=f,i=%d,p=%d,U=1,q=2,c=%d,r=%d,s=%d,v=%d,m=0;%s\x1b\\",
-		b.kittyID, b.kittyID, cols, rows, b.pngW, b.pngH, payload)
+		b.kittyID, b.kittyID, cols, rows, pw, ph, payload)
 }
 
 // placeholderRow baut Zeile r des Rasters: Vordergrundfarbe kodiert die
@@ -284,22 +288,73 @@ func placeholderRow(kittyID, r, cols int) string {
 // renderCache liefert den Raster fuer (kittyID, cols, rows) aus der
 // paketweiten Map — so ueberlebt er Update-Kopien (Wertetyp) und damit
 // auch das Transmit-Fenster.
-func (b ImageBlock) renderCache(cols, rows int) *imgCache {
-	key := imgCacheKey{b.kittyID, cols, rows}
+func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
+	key := imgCacheKey{b.id, b.kittyID, cols, rows}
 	imgCacheMu.Lock()
 	defer imgCacheMu.Unlock()
-	if c := imgCaches[key]; c != nil && c.pngPath == b.pngPath && len(c.lines) == rows {
-		return c
+	if c := imgCaches[key]; c != nil && c.src == b.pngPath && len(c.lines) == rows {
+		return c, true
 	}
-	c := &imgCache{cols: cols, rows: rows, pngPath: b.pngPath, txBuilt: time.Now(), prefix: b.virtualPlacement(cols, rows)}
+	path, pw, ph := b.pngPath, b.pngW, b.pngH
+	own := false
+	if b.svg != nil {
+		// Vektorpfad: auf die exakte Zielgroesse rasern — cols*cellW x
+		// rows*cellH, also 0x Terminal-Skalierung (Metrik 2). Kappung bei
+		// 8192 px/s Achse schuetzt vor absurden Fensterlingen.
+		cellW, cellH := b.caps.CellW, b.caps.CellH
+		if cellW <= 0 || cellH <= 0 {
+			cellW, cellH = 9, 20
+		}
+		tw, th := cols*cellW, rows*cellH
+		if tw > 8192 {
+			tw = 8192
+		}
+		if th > 8192 {
+			th = 8192
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		png, err := render.ResvgToPNG(ctx, b.svg, tw, th)
+		cancel()
+		if err != nil {
+			imageLogf("svg-raster block=%d ziel=%dx%d fehlgeschlagen: %v", b.id, tw, th, err)
+			return nil, false
+		}
+		p, ferr := writeKittyFile(png)
+		if ferr != nil {
+			imageLogf("svg-raster temp-datei block=%d: %v", b.id, ferr)
+			return nil, false
+		}
+		// s=/v= tragen die ECHTEN Raster-Masse (resvg haelt Aspekt, kann
+		// um ~2% neben der Zellbox liegen) — der Transmit beschreibt damit
+		// exakt die Datei, die das Terminal liest.
+		path = p
+		if aw, ah, aok := pngDimsFromBytes(png); aok {
+			pw, ph = aw, ah
+		} else {
+			pw, ph = tw, th
+		}
+		own = true
+	}
+	c := &imgCache{cols: cols, rows: rows, own: own, src: b.pngPath, pngPath: path, txBuilt: time.Now(), prefix: b.virtualPlacement(cols, rows, path, pw, ph)}
 	c.lines = make([]string, rows)
 	for r := 0; r < rows; r++ {
 		c.lines[r] = placeholderRow(b.kittyID, r, cols)
 	}
+	// Raster-Aufruestung: alte Eintraege DESSELBEN Blocks entfernen (andere
+	// Groesse nach Resize) — sonst haeuften sich bei jedem Resize neue
+	// Temp-Dateien an.
+	for k, old := range imgCaches {
+		if k.blockID == b.id {
+			if old.own && old.pngPath != "" {
+				os.Remove(old.pngPath)
+			}
+			delete(imgCaches, k)
+		}
+	}
 	imgCaches[key] = c
-	imageLogf("image raster block=%d kitty=%d c=%d r=%d (cell=%dx%d) tx=%d B path=%s",
-		b.id, b.kittyID, cols, rows, b.caps.CellW, b.caps.CellH, len(c.prefix), b.pngPath)
-	return c
+	imageLogf("image raster block=%d kitty=%d c=%d r=%d (cell=%dx%d) ziel=%dx%d tx=%d B path=%s",
+		b.id, b.kittyID, cols, rows, b.caps.CellW, b.caps.CellH, pw, ph, len(c.prefix), path)
+	return c, true
 }
 
 // ViewRange rendert die Bildzeilen [from,to) — Transmit-Escape vor der
@@ -307,7 +362,7 @@ func (b ImageBlock) renderCache(cols, rows int) *imgCache {
 // damit hohe Bilder auch uebertragen werden, wenn ihr Anfang heraus-
 // gescrollt ist (Follow-Modus: neue Bloecke erscheinen unten).
 func (b ImageBlock) ViewRange(width, from, to int) string {
-	if !b.useImg || b.kittyID < 1 || b.pngPath == "" {
+	if !b.useImg || b.kittyID < 1 || (b.pngPath == "" && b.svg == nil) {
 		return b.fallback.View(width)
 	}
 	cols := b.colsFor(width)
@@ -321,7 +376,10 @@ func (b ImageBlock) ViewRange(width, from, to int) string {
 	if from >= to {
 		return ""
 	}
-	c := b.renderCache(cols, rows)
+	c, ok := b.renderCache(cols, rows)
+	if !ok {
+		return b.fallback.View(width)
+	}
 	out := make([]string, 0, to-from)
 	for r := from; r < to; r++ {
 		out = append(out, c.lines[r])
@@ -392,6 +450,20 @@ func (b ImageBlock) SetID(i int) Widget {
 func (b ImageBlock) SetKittyID(i int) Widget {
 	nb := b
 	nb.kittyID = i
+	return nb
+}
+
+// SetSVG haelt die Vektor-Quelle (plantuml -tsvg) und setzt die Bildmasse
+// auf die intrinsische SVG-Groesse: sie bestimmen das Seitenverhaeltnis
+// (rowsFor), und renderCache rastert auf die EXAKTE Terminal-Zielgroesse —
+// das Terminal skaliert 0x (Metrik 2). Bei Resize wird aus dem SVG neu
+// gerastert (Millisekunden) statt neu konvertiert (~500 ms Java).
+func (b ImageBlock) SetSVG(svg []byte) Widget {
+	nb := b
+	nb.svg = svg
+	if w, h, ok := render.SvgDims(svg); ok {
+		nb.pngW, nb.pngH = w, h
+	}
 	return nb
 }
 

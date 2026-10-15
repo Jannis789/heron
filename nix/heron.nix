@@ -1,4 +1,4 @@
-{ lib, buildGoModule, makeWrapper, plantuml, wl-clipboard }:
+{ lib, buildGoModule, makeWrapper, plantuml, wl-clipboard, resvg }:
 
 buildGoModule {
   pname = "heron";
@@ -7,17 +7,19 @@ buildGoModule {
   src = ../.;
 
   # Ignoriere Test-/Doku-Dateien, nur Go-Quellen bauen.
-  buildInputs = [ plantuml wl-clipboard ];
+  buildInputs = [ plantuml wl-clipboard resvg ];
   nativeBuildInputs = [ makeWrapper ];
 
   # Der committete vendor/-Baum ist die Quelle (go mod vendor haelt ihn
   # konsistent) — kein Vendor-Fetch-Derivation, kein Hash-Pflege.
   vendorHash = null;
 
-  # plantuml/wl-clipboard sind Laufzeit-Werkzeuge (FR-6/FR-5), nicht nur
-  # Build-Inputs — ohne Wrap fehlen sie im PATH von "nix run".
+  # plantuml/wl-clipboard/resvg sind Laufzeit-Werkzeuge (FR-6/FR-5/FR-27),
+  # nicht nur Build-Inputs — ohne Wrap fehlen sie im PATH von "nix run".
+  # resvg rastert die PlantUML-Vektoren auf die exakte Terminalgroesse
+  # (0x Skalierung = scharf, Metrik 2).
   postFixup = ''
-    wrapProgram $out/bin/heron --prefix PATH : ${lib.makeBinPath [ plantuml wl-clipboard ]}
+    wrapProgram $out/bin/heron --prefix PATH : ${lib.makeBinPath [ plantuml wl-clipboard resvg ]}
   '';
 
   meta = with lib; {

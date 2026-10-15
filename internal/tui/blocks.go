@@ -192,7 +192,7 @@ func (b TextBlock) SetMarked(m bool) Widget {
 func (b TextBlock) Marked() bool { return b.marked }
 
 // Markdown returns the stored text — plain, without ANSI (FR-29).
-func (b TextBlock) Markdown() string { return b.text }
+func (b TextBlock) Markdown() string                     { return b.text }
 func (b TextBlock) Update(msg tea.Msg) (Widget, tea.Cmd) { return b, nil }
 func (b TextBlock) Focused() bool                        { return false }
 func (b TextBlock) Focusable() bool                      { return false }
@@ -201,8 +201,8 @@ func (b TextBlock) SetHover(bool) Widget                 { return b }
 func (b TextBlock) Resize(width int) Widget              { return b }
 func (b TextBlock) HitAction(width, x, y int) bool       { return false }
 func (b TextBlock) Copy() (Widget, tea.Cmd)              { return b, nil }
-func (b TextBlock) ID() int                             { return b.id }
-func (b TextBlock) SetID(i int) Widget                  { nb := b; nb.id = i; return nb }
+func (b TextBlock) ID() int                              { return b.id }
+func (b TextBlock) SetID(i int) Widget                   { nb := b; nb.id = i; return nb }
 
 // ---- CodeBlock -------------------------------------------------------------
 
@@ -348,6 +348,7 @@ func (b CodeBlock) HitAction(width, x, y int) bool {
 	start, end := render.ActionRange(width, labelAt(n), actionWidth(b.copied, b.marked))
 	return x >= start && x < end
 }
+
 // Action: clicking COPY copies, identical to the keyboard copy path (FR-5).
 func (b CodeBlock) Action() (Widget, tea.Cmd) { return b.Copy() }
 
@@ -651,8 +652,8 @@ func (b ThinkBlock) Update(msg tea.Msg) (Widget, tea.Cmd) {
 	}
 	return b, nil
 }
-func (b ThinkBlock) Focused() bool    { return b.focused }
-func (b ThinkBlock) Focusable() bool  { return true }
+func (b ThinkBlock) Focused() bool   { return b.focused }
+func (b ThinkBlock) Focusable() bool { return true }
 func (b ThinkBlock) SetFocused(f bool) Widget {
 	nb := b
 	nb.focused = f
@@ -703,7 +704,7 @@ func (b ThinkBlock) Action() (Widget, tea.Cmd) {
 	nb.expanded = !b.expanded
 	return nb, nil
 }
-func (b ThinkBlock) ID() int                 { return b.id }
+func (b ThinkBlock) ID() int { return b.id }
 func (b ThinkBlock) SetID(i int) Widget {
 	nb := b
 	nb.id = i

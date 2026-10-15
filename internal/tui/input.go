@@ -170,7 +170,7 @@ func (m Model) inputView() string {
 		}
 		options := m.pickerOptions()
 		if len(options) == 0 {
-			lines = append(lines, row("  " + ls.Render("no options")))
+			lines = append(lines, row("  "+ls.Render("no options")))
 		}
 		rows := m.pickerVisibleRows()
 		end := min(m.pickerScroll+rows, len(options))

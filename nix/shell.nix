@@ -5,6 +5,7 @@ pkgs.mkShell {
     go
     plantuml
     wl-clipboard
+    resvg
   ];
 
   GOTOOLCHAIN = "local";

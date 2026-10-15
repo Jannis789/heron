@@ -35,6 +35,7 @@ type diagramResult struct {
 	lang  string
 	ascii string
 	png   []byte
+	svg   []byte // Vektor-Quelle (FR-27, Metrik 2): bei Resize neu rasern
 	ok    bool
 }
 
@@ -91,9 +92,22 @@ func (m Model) pendingDiagrams() tea.Cmd {
 				// experimentellen force-Modus mit bildfaehigem Terminal
 				// (FR-27, s. ImageBlock).
 				if m.imagesEnabled() {
-					if png, err := render.PlantUMLToPNG(ctx, j.code); err == nil {
-						res.png = png
-						res.ok = true
+					// Vektor zuerst: SVG + resvg rastert spaeter auf die
+					// exakte Terminal-Zielgroesse (0x Skalierung). Ohne
+					// resvg bleibt der bewaehrte -tpng-Pfad.
+					if render.ResvgAvailable() {
+						if svg, err := render.PlantUMLToSVG(ctx, j.code); err == nil {
+							res.svg = svg
+							res.ok = true
+						} else {
+							imageLogf("convert %s id=%d svg-fehler: %v", j.lang, j.id, err)
+						}
+					}
+					if res.svg == nil {
+						if png, err := render.PlantUMLToPNG(ctx, j.code); err == nil {
+							res.png = png
+							res.ok = true
+						}
 					}
 				}
 				if res.png == nil {
@@ -103,7 +117,9 @@ func (m Model) pendingDiagrams() tea.Cmd {
 					}
 				}
 			}
-			if res.png != nil {
+			if res.svg != nil {
+				imageLogf("convert %s id=%d ok svg=%d bytes (%.1fms)", j.lang, j.id, len(res.svg), float64(time.Since(t0).Microseconds())/1000.0)
+			} else if res.png != nil {
 				imageLogf("convert %s id=%d ok png=%d bytes (%.1fms)", j.lang, j.id, len(res.png), float64(time.Since(t0).Microseconds())/1000.0)
 			} else if res.ascii != "" && res.ascii != j.code {
 				imageLogf("convert %s id=%d ok ascii (%d bytes, %.1fms)", j.lang, j.id, len(res.ascii), float64(time.Since(t0).Microseconds())/1000.0)
@@ -154,7 +170,7 @@ func (l BlockList) applyDiagrams(results []diagramResult, useImg bool, caps Term
 			if !ok || cb.id != r.id {
 				continue
 			}
-			if r.png != nil {
+			if r.png != nil || r.svg != nil {
 				// Kitty-Platzhalter: nur verwenden, wenn das Terminal sie kann.
 				if !useImg {
 					nb := cb
@@ -165,6 +181,9 @@ func (l BlockList) applyDiagrams(results []diagramResult, useImg bool, caps Term
 				}
 				img := NewImageBlock(r.png, strings.TrimSuffix(r.ascii, "\n"), true, caps, cb.copyFn, cb.th)
 				// Terminal-Bild-ID: 1..250, in \e[38;5;N m codierbar (FR-27).
+				if r.svg != nil {
+					img = img.SetSVG(r.svg).(ImageBlock)
+				}
 				l.nextKittyID++
 				if l.nextKittyID > 250 {
 					l.nextKittyID = 1

@@ -110,7 +110,7 @@ func TestVirtualPlacementFileTransmit(t *testing.T) {
 	width := 80
 	cols := img.colsFor(width)
 	rows := img.rowsFor(width)
-	vp := img.virtualPlacement(cols, rows)
+	vp := img.virtualPlacement(cols, rows, img.pngPath, img.pngW, img.pngH)
 	if vp == "" {
 		t.Fatal("virtualPlacement leer")
 	}
@@ -261,6 +261,53 @@ func TestImageBlockFallback(t *testing.T) {
 	}
 }
 
+// Metrik 2 (Vektorpfad, FR-27): ein SVG-Block wird auf die EXAKTE
+// Terminal-Zielgroesse gerastert (cols*cellW x rows*cellH) — das Transmit-
+// Escape traegt diese Masse (s=/v=), das Terminal skaliert also 0x.
+func TestImageBlockSVGRasterExactTarget(t *testing.T) {
+	if !render.ResvgAvailable() {
+		t.Skip("resvg nicht im PATH (nix wrap fehlt)")
+	}
+	t.Cleanup(KittyCleanup)
+	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="251px" height="218px" viewBox="0 0 251 218"><rect x="0" y="0" width="251" height="218" fill="#123456"/></svg>`)
+	img := NewImageBlock(nil, "roh", true, TermCaps{CellW: 9, CellH: 20}, nil, nil)
+	img = img.SetID(31).(ImageBlock)
+	img = img.SetSVG(svg).(ImageBlock)
+	img = img.SetKittyID(31).(ImageBlock)
+	width := 80
+	cols := img.colsFor(width)
+	rows := img.rowsFor(width)
+	v := img.View(width)
+	// Die gerasterte Datei muss existieren; s=/v= im Transmit MUESSEN ihre
+	// echten Masse tragen. resvg haelt das Seitenverhaeltnis und passt in
+	// die Box, liegt also ~2% neben der Zellbox (gemessen 691 statt 702) —
+	// das Terminal skaliert dann <2%, visuell irrelevant (Metrik 2).
+	re := regexp.MustCompile("m=0;([A-Za-z0-9+/=]+)\\x1b")
+	m := re.FindStringSubmatch(v)
+	if m == nil {
+		t.Fatal("kein transmit-payload")
+	}
+	pathB, err := base64.StdEncoding.DecodeString(m[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	png, err := os.ReadFile(string(pathB))
+	if err != nil {
+		t.Fatalf("raster-datei fehlt: %v", err)
+	}
+	w, h, ok := pngDimsFromBytes(png)
+	if !ok {
+		t.Fatal("raster ohne gueltige masse")
+	}
+	if !strings.Contains(v, "s="+itoa(w)) || !strings.Contains(v, "v="+itoa(h)) {
+		t.Fatalf("transmit s/v beschreibt nicht die echte raster-groesse %dx%d", w, h)
+	}
+	boxW, boxH := cols*9, rows*20
+	if dabs(w-boxW) > boxW/25+4 || dabs(h-boxH) > boxH/25+4 {
+		t.Fatalf("raster %dx%d weicht >2%% von zellbox %dx%d ab", w, h, boxW, boxH)
+	}
+}
+
 // Cleanup loescht alle Temp-Dateien (Registry leer danach).
 func TestKittyCleanupRemovesFiles(t *testing.T) {
 	NewImageBlock(realPNG(60, 30), "roh", true, TermCaps{}, nil, nil)
@@ -269,3 +316,11 @@ func TestKittyCleanupRemovesFiles(t *testing.T) {
 }
 
 var _ = render.PNGDims // PNGDims bleibt im Einsatz (render-Paket)
+
+// dabs ist der Betrags-Helfer fuer die Toleranz-Pruefungen.
+func dabs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}

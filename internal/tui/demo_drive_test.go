@@ -42,7 +42,7 @@ func TestDriveRenderTestEndToEnd(t *testing.T) {
 	failed := 0
 	for _, res := range done.results {
 		switch {
-		case res.png != nil:
+		case res.png != nil || res.svg != nil:
 			imgs++
 		case res.ok && strings.TrimSpace(res.ascii) != "":
 			ascii++
