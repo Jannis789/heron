@@ -356,7 +356,10 @@ func imgRowPctVal() int {
 // s/v = Pixelmasse, p=<id> macht das Placement deterministisch —
 // Wiederholung ersetzt statt zu vervielfachen (Resize bleibt billig).
 func (b ImageBlock) virtualPlacement(cols, rows int, path string, pw, ph int) string {
-	if b.kittyID < 1 || b.kittyID > 250 || path == "" {
+	// ID-Grenze 2^24: die Platzhalterzellen kodieren die ID in 24-Bit-
+	// Truecolor-Farbe (s. placeholderRow, Referenz timg) — nicht mehr auf
+	// 1..250 begrenzt wie mit e[38;5;N.
+	if b.kittyID < 1 || b.kittyID > kittyIDMax || path == "" {
 		return ""
 	}
 	payload := base64.StdEncoding.EncodeToString([]byte(path))
@@ -374,16 +377,38 @@ func (b ImageBlock) virtualPlacement(cols, rows int, path string, pw, ph int) st
 // Spec-Beispiel (Bild 42, 2x2) ist: \e[38;5;42m\U10EEEE\U0305\U0305 ... —
 // jede Zelle identifiziert ihren Rasterplatz selbst, deshalb zeigt das
 // Terminal beim Scrollen automatisch den richtigen Bildausschnitt.
+// kittyIDMax ist die groesste Bild-ID: 24 Bit passen in die Truecolor-FG
+// (Referenz timg src/kitty-canvas.cc: "\e[38:2:%u:%u:%um" + MSB-Diakritikon).
+const kittyIDMax = 1<<24 - 1
+
+// placeholderRow baut Zeile r des Rasters: die Vordergrundfarbe kodiert die
+// Bild-ID, dann je Zelle U+10EEEE + Zeilen- + Spalten-Diakritikon. Jede Zelle
+// adressiert ihren Rasterplatz selbst, deshalb zeigt das Terminal beim
+// Scrollen automatisch den richtigen Bildausschnitt (Spec: Unicode
+// placeholders).
+//
+// Truecolor statt 256-Farbe: \e[38;5;N kann nur IDs bis 255, und ein Chat
+// ueberschreitet das (jede Konvertierung braucht eine freie ID). timg kodiert
+// die ID seit Jahren als 24-Bit-Truecolor mit optionalem MSB-Diakritikon —
+// von dort uebernommen.
 func placeholderRow(kittyID, r, cols int) string {
 	var sb strings.Builder
-	sb.WriteString("\x1b[38;5;")
-	sb.WriteString(strconv.Itoa(kittyID))
+	sb.WriteString("\x1b[38:2:")
+	sb.WriteString(strconv.Itoa((kittyID >> 16) & 0xff))
+	sb.WriteString(":")
+	sb.WriteString(strconv.Itoa((kittyID >> 8) & 0xff))
+	sb.WriteString(":")
+	sb.WriteString(strconv.Itoa(kittyID & 0xff))
 	sb.WriteString("m")
 	rd := diacritic(r)
+	msb := (kittyID >> 24) & 0xff
 	for c := 0; c < cols; c++ {
 		sb.WriteString(placeholderChar)
 		sb.WriteRune(rd)
 		sb.WriteRune(diacritic(c))
+		if msb != 0 {
+			sb.WriteRune(diacritic(int(msb)))
+		}
 	}
 	sb.WriteString("\x1b[39m")
 	return sb.String()
@@ -589,7 +614,9 @@ func KittyCleanup() {
 	imgCacheMu.Lock()
 	imgCaches = map[imgCacheKey]*imgCache{}
 	imgCacheMu.Unlock()
-	if used {
+	// Im Inline-Modell (timg) bleiben die Bilder im Scrollback — ein
+	// a=d,d=a wuerde sie dort loeschen, wo der Nutzer sie noch sieht.
+	if used && !inlineActive.Load() {
 		os.Stdout.WriteString("\x1b_Ga=d,d=a,q=2\x1b\\")
 		imageLogf("cleanup: alle kitty-bilder geloescht, %d temp-dateien entfernt", len(files))
 	}

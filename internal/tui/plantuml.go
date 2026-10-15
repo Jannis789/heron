@@ -197,7 +197,7 @@ func (l BlockList) applyDiagrams(results []diagramResult, useImg bool, caps Term
 					img = img.SetSVG(r.svg).(ImageBlock)
 				}
 				l.nextKittyID++
-				if l.nextKittyID > 250 {
+				if l.nextKittyID > kittyIDMax {
 					l.nextKittyID = 1
 				}
 				img = img.SetKittyID(l.nextKittyID).(ImageBlock)

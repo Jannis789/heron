@@ -20,6 +20,7 @@ type BlockList struct {
 	offset      int
 	width       int
 	height      int
+	inline      bool // timg-Modell: kein Viewport-Slice, Terminal scrollt nativ
 	focus       int
 	hoverIdx    int
 	follow      bool
@@ -34,6 +35,12 @@ func NewBlockList() BlockList {
 
 // SetCopy wires the clipboard command used by the selection copy (FR-29).
 func (l BlockList) SetCopy(fn CopyFunc) BlockList { l.copyFn = fn; return l }
+
+// SetInline schaltet das timg-Modell (HERON_INLINE): alle Zeilen rendern,
+// das Scrollen uebernimmt der Terminal-Scrollback. Die Fensterhoehe bleibt
+// gesetzt, damit der Zeilen-Cap der Bilder weiter greift (ein Diagramm soll
+// nicht eine ganze Bildschirmseite fuellen).
+func (l BlockList) SetInline(on bool) BlockList { l.inline = on; return l }
 
 func (l BlockList) Empty() bool   { return len(l.items) == 0 }
 func (l BlockList) Focused() bool { return l.focus >= 0 && l.focus < len(l.items) }
@@ -188,7 +195,7 @@ type rangedWidget interface {
 func (l BlockList) all() (lines []string, total int) {
 	w := l.Width()
 	winL, winR := 0, 0 // sichtbares Fenster im Zeilenraum, nur wenn Hoehe bekannt
-	if l.height > 0 {
+	if l.height > 0 && !l.inline {
 		winL = l.offset
 		if winL < 0 {
 			winL = 0
@@ -232,7 +239,8 @@ func (l BlockList) View() string {
 	if total == 0 {
 		return ""
 	}
-	if l.height <= 0 {
+	if l.height <= 0 || l.inline {
+		// timg-Modell: alles rendern, der Terminal-Scrollback scrollt.
 		return strings.Join(lines, "\n")
 	}
 	left := l.offset

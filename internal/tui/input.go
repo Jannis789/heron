@@ -74,6 +74,13 @@ func (m *Model) relayout() {
 	if h < 1 {
 		h = 1
 	}
+	if m.inline {
+		// timg-Modell: alle Zeilen rendern (kein Slice), Terminal scrollt
+		// nativ — die Fensterhoehe bleibt gesetzt, damit der Zeilen-Cap
+		// der Bilder weiter greift.
+		m.chat = m.chat.SetSize(m.width, h).SetInline(true)
+		return
+	}
 	m.chat = m.chat.SetSize(m.width, h)
 }
 

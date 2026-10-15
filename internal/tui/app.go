@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 	"runtime/pprof"
+	"sync/atomic"
 
 	"heron/internal/render"
 )
@@ -36,6 +37,7 @@ type Model struct {
 	copyFn CopyFunc
 	width  int
 	height int
+	inline bool // timg-Modell: Primärscreen statt Alt-Screen (HERON_INLINE)
 
 	seedDiagrams bool // Seed enthaelt plantuml/mermaid: einmalige Konvertierung
 
@@ -78,6 +80,23 @@ type Model struct {
 	cmdDismissed bool
 }
 
+// inlineEnabled schaltet das timg-Modell (HERON_INLINE=1): kein Alt-Screen,
+// kein eigener Pager-Viewport — das Terminal-Scrollback uebernimmt das
+// Scrollen. Grund: im Alt-Screen ist der Viewport fix (52 Zeilen), und fuenf
+// Diagramme a 30 Zeilen verdraengen jeden Text aus dem sichtbaren Bereich
+// (gemessen: 50 Bildzeilen gegen 7 Textzeilen bei 337x59). timg kennt kein
+// Alt-Screen (grep ueber den kompletten Quellcode: null Treffer) und hat
+// dieses Problem deshalb nicht — Text und Bilder stehen im selben Fluss.
+func inlineEnabled() bool {
+	v := strings.ToLower(os.Getenv("HERON_INLINE"))
+	return v == "1" || v == "true"
+}
+
+// inlineActive waehrend eines Inline-Programms gesetzt: KittyCleanup loescht
+// dann keine Bilder — die sollen im Scrollback bleiben (timg tut es auch
+// nicht), ein a=d,d=a wuerde den Scrollback leeren.
+var inlineActive atomic.Bool
+
 func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
 	ta := textarea.New()
 	// Hints live in the placeholder: they are only useful before the first
@@ -95,7 +114,7 @@ func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
 	// newline signal bubbletea v1 can tell apart from Enter (keyCR).
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	ta.Focus()
-	return Model{input: ta, chat: NewBlockList().SetCopy(copyFn), send: send, theme: th, copyFn: copyFn}
+	return Model{input: ta, chat: NewBlockList().SetCopy(copyFn), send: send, theme: th, copyFn: copyFn, inline: inlineEnabled()}
 }
 
 // WithStream wires the live-update bridge used by the backend to push chunk,
@@ -756,6 +775,15 @@ func (m Model) View() string {
 	// near the top whenever the chat was short, i.e. always on an empty chat.
 	// So the spare rows go between chat and prompt, never below it.
 	prompt := m.inputView()
+	if m.inline {
+		// Kein fillScreen: das streckt jede Zeile auf Fuellbreite und
+		// fuellt den Scrollback mit Leerzeilen. Der Frame endet nach dem
+		// Footer; der Terminal scrollt, wenn es ueber die Fensterhoehe
+		// hinauswaechst — genau das Modell von timg.
+		out := top.String() + "\n" + prompt + "\n" + m.footerView()
+		perfBytes(len(out))
+		return out
+	}
 	if m.height <= 0 {
 		// No terminal size known yet (tests, first paint): render as-is
 		// instead of squeezing the frame into an unknown height, which cut
@@ -842,7 +870,17 @@ func RunModel(m Model) error {
 			}
 		}
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion(), tea.WithFilter(kittyResponseFilter))
+	opts := []tea.ProgramOption{tea.WithFilter(kittyResponseFilter)}
+	if m.inline {
+		// Kein Alt-Screen, kein Mouse-Reporting: der Terminal scrollt
+		// nativ — damit entfaellt auch die Klasse der SGR-Maus-Leaks,
+		// weil keine Reports mehr erzeugt werden.
+		inlineActive.Store(true)
+		defer inlineActive.Store(false)
+	} else {
+		opts = append(opts, tea.WithAltScreen(), tea.WithMouseAllMotion())
+	}
+	p := tea.NewProgram(m, opts...)
 	// Hand the runtime to the stream so the backend can publish live updates
 	// from its own goroutine (FR-2). A nil stream is a no-op.
 	m.stream.attach(p)

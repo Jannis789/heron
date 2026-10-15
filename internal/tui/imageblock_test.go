@@ -83,8 +83,11 @@ func TestImageBlockAspect(t *testing.T) {
 func TestSpecPlaceholderGolden(t *testing.T) {
 	row0 := placeholderRow(42, 0, 2)
 	row1 := placeholderRow(42, 1, 2)
-	want0 := "\x1b[38;5;42m\U0010EEEE\u0305\u0305\U0010EEEE\u0305\u030D\x1b[39m"
-	want1 := "\x1b[38;5;42m\U0010EEEE\u030D\u0305\U0010EEEE\u030D\u030D\x1b[39m"
+	// Spec-Beispiel nutzt 8-Bit-IDs (\e[38;5;42m). Wir folgen timg und
+	// kodieren 24-Bit-Truecolor — fuer ID 42 ist das 38:2:0:0:42, die
+	// Rastergeometrie (Diakritika-Reihenfolge) bleibt byte-identisch.
+	want0 := "\x1b[38:2:0:0:42m\U0010EEEE\u0305\u0305\U0010EEEE\u0305\u030D\x1b[39m"
+	want1 := "\x1b[38:2:0:0:42m\U0010EEEE\u030D\u0305\U0010EEEE\u030D\u030D\x1b[39m"
 	if row0 != want0 {
 		t.Fatalf("row0\n got %q\nwant %q", row0, want0)
 	}
@@ -193,7 +196,7 @@ func TestViewRangePartialCarriesTransmit(t *testing.T) {
 	}
 	// Jede Zeile adressiert ihre Bildreihe: FG-ID + Zeilen-Diakritikon r.
 	for i, ln := range lines {
-		if !strings.Contains(ln, "\x1b[38;5;3m") {
+		if !strings.Contains(ln, "\x1b[38:2:0:0:3m") {
 			t.Fatalf("Zeile %d ohne Bild-ID in FG-Farbe", i)
 		}
 		want := string(diacritic(from + i))

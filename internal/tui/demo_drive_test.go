@@ -70,10 +70,11 @@ func TestDriveRenderTestEndToEnd(t *testing.T) {
 			if !strings.Contains(v, "\x1b_Ga=T,f=100,t=f,i=") {
 				t.Errorf("ImageBlock id=%d fehlt Datei-Transmit (a=T,t=f)", ib.ID())
 			}
-			if ib.kittyID < 1 || ib.kittyID > 250 {
-				t.Errorf("ImageBlock id=%d kittyID=%d ausserhalb 1..250", ib.ID(), ib.kittyID)
+			if ib.kittyID < 1 || ib.kittyID > kittyIDMax {
+				t.Errorf("ImageBlock id=%d kittyID=%d ausserhalb 1..%d", ib.ID(), ib.kittyID, kittyIDMax)
 			}
-			idFG := "38;5;" + strconv.Itoa(ib.kittyID) + "m"
+			idFG := "38:2:" + strconv.Itoa((ib.kittyID>>16)&0xff) + ":" +
+				strconv.Itoa((ib.kittyID>>8)&0xff) + ":" + strconv.Itoa(ib.kittyID&0xff) + "m"
 			if !strings.Contains(v, idFG) {
 				t.Errorf("ImageBlock id=%d: FG-Farbe %q (Bild-ID) fehlt", ib.ID(), idFG)
 			}

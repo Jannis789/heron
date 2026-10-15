@@ -14,7 +14,7 @@ var (
 	escB     = []byte{0x1b}
 	escStr   = string(escB)
 	dcsTerm  = string([]byte{0x1b, 0x5c}) // ESC backslash
-	fgIDMark = escStr + "[38;5;"
+	fgIDMark = escStr + "[38:2:"
 	transmit = escStr + "_Ga=T"
 )
 
