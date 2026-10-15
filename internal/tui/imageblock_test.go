@@ -222,7 +222,12 @@ func TestBlockListRangedVisibility(t *testing.T) {
 	img = img.SetKittyID(3).(ImageBlock)
 	l := NewBlockList().Append(NewTextBlock("head", "1"), img)
 	l = l.SetSize(80, 10)
-	rows := img.rowsFor(80)
+	// Der Cap wird erst beim SetSize gesetzt — die Geometrie MUSS vom
+	// Listen-Item kommen, nicht vom lokalen (ungecappten) Block.
+	rows := l.items[1].Height(80)
+	if rows >= img.rowsFor(80) {
+		t.Fatalf("cap greift nicht: listen-rows=%d uncapped=%d", rows, img.rowsFor(80))
+	}
 	// Fenster so setzen, dass nur die unteren Bildzeilen sichtbar sind.
 	l.offset = 1 + rows - 5
 	view := l.View()
@@ -342,6 +347,40 @@ func TestColsForIntrinsicCap(t *testing.T) {
 		t.Fatalf("ungueltiger scale fallt nicht zurueck: %d", got)
 	}
 	imageScaleOnce, imageScaleVal = sync.Once{}, 0
+}
+
+// Metrik 2 + Text-Sichtbarkeit: ein hohes Portrait-Diagramm darf das
+// Chat-Fenster NICHT fuellen — der Zeilen-Cap wird getroffen und die
+// Spalten werden zurueckgerechnet, damit der Aspekt exakt bleibt.
+func TestImageBlockRowCapPreservesAspect(t *testing.T) {
+	t.Cleanup(KittyCleanup)
+	// 377x598 bei 9x20-Zellen, Fenster 337 breit: ohne Cap 59 Zeilen.
+	img := NewImageBlock(realPNG(377, 598), "roh", true, TermCaps{CellW: 9, CellH: 20}, nil, nil)
+	img = img.SetID(41).(ImageBlock)
+	img = img.SetKittyID(41).(ImageBlock)
+	full := img.rowsFor(337)
+	if full < 55 {
+		t.Fatalf("Testaufbau: ohne Cap sollen ~59 Zeilen sein, got %d", full)
+	}
+	capped := img.SetMaxRows(30).(ImageBlock)
+	cols, rows := capped.dims(337)
+	if rows > 30 {
+		t.Fatalf("cap verletzt: rows=%d will <=30", rows)
+	}
+	// Aspekt: cols/rows muss dem Pixelverhaeltnis folgen (9x20-Zellen).
+	wantCols := 30 * 377 * 20 / (598 * 9)
+	if cols != wantCols {
+		t.Fatalf("cols=%d will %d (zurueckgerechnet, aspekt-exakt)", cols, wantCols)
+	}
+	// Height() meldet die GEKAPPTEN Zeilen, sonst rechnet der Pager falsch.
+	h := capped.Height(337)
+	if h != rows {
+		t.Fatalf("Height=%d != dims-rows=%d", h, rows)
+	}
+	// View liefert genau Height Zeilen (Scroll-Synchronitaet).
+	if v := len(strings.Split(capped.View(337), "\n")); v != h {
+		t.Fatalf("view-zeilen=%d != height=%d", v, h)
+	}
 }
 
 var _ = render.PNGDims // PNGDims bleibt im Einsatz (render-Paket)

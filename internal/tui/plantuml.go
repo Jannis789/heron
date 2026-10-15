@@ -202,6 +202,14 @@ func (l BlockList) applyDiagrams(results []diagramResult, useImg bool, caps Term
 				}
 				img = img.SetKittyID(l.nextKittyID).(ImageBlock)
 				img = img.SetID(r.id).(ImageBlock)
+				// Wandelt man den Cap erst beim naechsten SetSize an, ist
+				// das Bild bis dahin so hoch wie das ganze Fenster (kein
+				// Text sichtbar) — also sofort begrenzen.
+				cap := l.imgRowCap()
+				imageLogf("cap block=%d chat-hoehe=%d cap=%d", r.id, l.height, cap)
+				if cap > 0 {
+					img = img.SetMaxRows(cap).(ImageBlock)
+				}
 				if cb.focused {
 					img = img.SetFocused(true).(ImageBlock)
 				}

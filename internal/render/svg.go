@@ -150,13 +150,14 @@ func ResvgToPNG(ctx context.Context, svg []byte, w, h int) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("resvg: keine gueltige PNG-Ausgabe")
 	}
-	// resvg haelt das Seitenverhaeltnis und passt in die Box — die Ausgabe
-	// weicht daher um Rundungsprozente von (w,h) ab (gemessen: 691 statt
-	// 702 bei 78x30 Zellen). Das Terminal skaliert dann <2% — visuell
-	// irrelevant. Nur grobe Abweichungen sind ein Fehler; die ECHTEN Masse
-	// gehen zurueck und werden im Transmit (s=/v=) verwendet.
-	if abs(gw-w) > w/25+4 || abs(gh-h) > h/25+4 {
-		return nil, fmt.Errorf("resvg: falsche Ausgabe %dx%d (will %dx%d)", gw, gh, w, h)
+	// resvg haelt das Seitenverhaeltnis und passt die Zeichnung IN die Box
+	// ein — die Ausgabe kann daher schmaler/hoeher sein als angefordert
+	// (gemessen: Box 918x360 -> 875x360). Das ist korrekt, kein Fehler:
+	// der Caller rechnet die Zellzeilen aus den ECHTEN Pixeln, das
+	// Terminal skaliert dann exakt auf die Box. Abgelehnt wird nur noch
+	// grober Murks (> 40% neben der Box), der auf ein kaputtes SVG deutet.
+	if gw > w+w/2 || gh > h+h/2 || gw*3 < w || gh*3 < h {
+		return nil, fmt.Errorf("resvg: ausserhalb der box %dx%d (will %dx%d)", gw, gh, w, h)
 	}
 	return png, nil
 }

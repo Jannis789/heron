@@ -114,12 +114,37 @@ func (l BlockList) copyByID(n int) (BlockList, tea.Cmd, bool) {
 	return l, nil, false
 }
 
+// heightCap ist optional fuer Bloecke, die ihre Zeilenzahl nach der
+// Fensterhoehe richten (ImageBlock, FR-27): ohne Cap fuellt ein hohes
+// Portrait-Diagramm den ganzen Schirm und fuer Text bleibt kein Platz.
+type heightCap interface {
+	SetMaxRows(int) Widget
+}
+
+// imgRowCap: Zeilen, die ein Bild maximal belegen darf (Anteil der
+// Fensterhoehe, s. imgRowPctVal). 0 ohne Fensterhoehe.
+func (l BlockList) imgRowCap() int {
+	if l.height <= 0 {
+		return 0
+	}
+	c := l.height * imgRowPctVal() / 100
+	if c < 3 {
+		c = 3
+	}
+	return c
+}
+
 // SetSize stores the viewport size and lets every widget rebuild its layout
 // cache for the new width (dynamic re-flow on terminal resize).
 func (l BlockList) SetSize(w, h int) BlockList {
 	l.width, l.height = w, h
+	cap := l.imgRowCap()
 	for i, it := range l.items {
-		l.items[i] = it.Resize(w)
+		it = it.Resize(w)
+		if hc, ok := it.(heightCap); ok && cap > 0 {
+			it = hc.SetMaxRows(cap)
+		}
+		l.items[i] = it
 	}
 	return l.clamp()
 }

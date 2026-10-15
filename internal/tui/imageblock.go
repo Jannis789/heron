@@ -112,6 +112,7 @@ type ImageBlock struct {
 	png      []byte
 	pngW     int
 	pngH     int
+	maxRows  int // Zeilen-Obergrenze (Anteil des Chat-Fensters), 0 = frei
 	useImg   bool
 	caps     TermCaps
 	ascii    string
@@ -286,7 +287,67 @@ func rowsForTerm(pngW, pngH, cols, cellW, cellH int) int {
 }
 
 func (b ImageBlock) rowsFor(width int) int {
-	return rowsForTerm(b.pngW, b.pngH, b.colsFor(width), b.caps.CellW, b.caps.CellH)
+	_, rows := b.dims(width)
+	return rows
+}
+
+// dims liefert (cols, rows) unter Beachtung ALLER Grenzen: Fensterbreite,
+// intrinsische Breite x imageScale UND die Zeilen-Obergrenze des Chat-
+// Fensters. Trifft die Zeilengrenze, werden die Spalten zurueckgerechnet —
+// der Aspekt bleibt exakt (Terminal skaliert 0x, Metrik 2), statt dass ein
+// Portrait-Diagramm (377x598 -> 59 Zeilen bei 59 Zeilen Fenster) das ganze
+// Fenster fuellt und fuer Text kein Platz mehr bleibt.
+func (b ImageBlock) dims(width int) (int, int) {
+	cols := b.colsFor(width)
+	rows := rowsForTerm(b.pngW, b.pngH, cols, b.caps.CellW, b.caps.CellH)
+	if b.maxRows <= 0 || rows <= b.maxRows {
+		return cols, rows
+	}
+	cellW, cellH := b.caps.CellW, b.caps.CellH
+	if cellW <= 0 || cellH <= 0 {
+		cellW, cellH = 9, 20
+	}
+	capped := b.maxRows * b.pngW * cellH / (b.pngH * cellW)
+	if capped < 1 {
+		capped = 1
+	}
+	if capped < cols {
+		cols = capped
+	}
+	rows = rowsForTerm(b.pngW, b.pngH, cols, b.caps.CellW, b.caps.CellH)
+	if rows > b.maxRows {
+		rows = b.maxRows // Rundungsrest; das Placement fuegt aspektgetreu ein
+	}
+	return cols, rows
+}
+
+// SetMaxRows begrenzt die Zeilenzahl auf einen Anteil des Chat-Fensters,
+// damit neben dem Bild immer Platz fuer Text bleibt (heightCap in
+// blocklist.go).
+func (b ImageBlock) SetMaxRows(n int) Widget {
+	nb := b
+	nb.maxRows = n
+	return nb
+}
+
+// imgRowPct: Anteil der Fensterhoehe, den ein Bild belegen darf (Prozent).
+// 60% ist die Vorgabe — bei 59 Zeilen sind das 35 Zeilen Bild, 24 Zeilen
+// Text. HERON_IMAGE_ROWS uebersteuert ohne Rebuild.
+const imgRowPct = 60
+
+var imgRowOnce sync.Once
+var imgRowVal int
+
+func imgRowPctVal() int {
+	imgRowOnce.Do(func() {
+		imgRowVal = imgRowPct
+		if s := os.Getenv("HERON_IMAGE_ROWS"); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n >= 10 && n <= 100 {
+				imgRowVal = n
+			}
+		}
+	})
+	return imgRowVal
 }
 
 // virtualPlacement baut den kombinierten Uebertragungs-/Placement-Escape:
@@ -369,9 +430,13 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 			imageLogf("svg-raster temp-datei block=%d: %v", b.id, ferr)
 			return nil, false
 		}
-		// s=/v= tragen die ECHTEN Raster-Masse (resvg haelt Aspekt, kann
-		// um ~2% neben der Zellbox liegen) — der Transmit beschreibt damit
-		// exakt die Datei, die das Terminal liest.
+		// resvg passt die Zeichnung aspektgetreu in die Box; die echten
+		// Pixel koennen kleiner sein (gemessen 875 statt 918 Breite).
+		// s=/v= tragen die ECHTEN Masse, damit das Terminal sie korrekt in
+		// das Placement-Rechteck (c,r) einpasst — die Spec fuegt das Bild
+		// dort aspekterhaltend ein, also bleibt es bei ~0x Skalierung und
+		// einem minimalen Rand. Die Zellgeometrie (cols,rows) bleibt von
+		// dims() unabhaengig, damit Cache-Key und Zeilenzahl konsistent sind.
 		path = p
 		if aw, ah, aok := pngDimsFromBytes(png); aok {
 			pw, ph = aw, ah
@@ -410,8 +475,7 @@ func (b ImageBlock) ViewRange(width, from, to int) string {
 	if !b.useImg || b.kittyID < 1 || (b.pngPath == "" && b.svg == nil) {
 		return b.fallback.View(width)
 	}
-	cols := b.colsFor(width)
-	rows := b.rowsFor(width)
+	cols, rows := b.dims(width)
 	if from < 0 {
 		from = 0
 	}
