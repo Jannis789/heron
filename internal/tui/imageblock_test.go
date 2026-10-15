@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"heron/internal/render"
@@ -313,6 +314,34 @@ func TestKittyCleanupRemovesFiles(t *testing.T) {
 	NewImageBlock(realPNG(60, 30), "roh", true, TermCaps{}, nil, nil)
 	KittyCleanup()
 	KittyCleanup() // idempotent
+}
+
+// Metrik 2 (Obergrenze): ein 251-px-Diagramm darf bei 337 Spalten NICHT
+// auf 335 Zellen (3015 px = 6-MP-Raster, Schirm voll, 158 kB/Frame)
+// gestreckt werden — colsFor kapppt auf intrinsisch x imageScale.
+func TestColsForIntrinsicCap(t *testing.T) {
+	img := NewImageBlock(realPNG(251, 218), "roh", false, TermCaps{CellW: 9, CellH: 20}, nil, nil)
+	got := img.colsFor(337)
+	want := 251 * imageScale / 9
+	if got != want {
+		t.Fatalf("colsFor(337)=%d will %d (intrinsische obergrenze)", got, want)
+	}
+	// schmales fenster: fensterbreite begrenzt zuerst, cap greift nicht.
+	if n := img.colsFor(40); n != 38 {
+		t.Fatalf("colsFor(40)=%d will 38 (fensterbreite)", n)
+	}
+	// HERON_IMAGE_SCALE uebersteuert den Default-Faktor (Env-Knob).
+	t.Setenv("HERON_IMAGE_SCALE", "1")
+	imageScaleOnce, imageScaleVal = sync.Once{}, 0
+	if got := img.colsFor(337); got != 251/9 {
+		t.Fatalf("scale=1 colsFor(337)=%d will %d", got, 251/9)
+	}
+	t.Setenv("HERON_IMAGE_SCALE", "99") // ausserhalb 1..8 -> default
+	imageScaleOnce, imageScaleVal = sync.Once{}, 0
+	if got := img.colsFor(337); got != 251*imageScale/9 {
+		t.Fatalf("ungueltiger scale fallt nicht zurueck: %d", got)
+	}
+	imageScaleOnce, imageScaleVal = sync.Once{}, 0
 }
 
 var _ = render.PNGDims // PNGDims bleibt im Einsatz (render-Paket)

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -97,6 +98,9 @@ func printableForLog(s string) string {
 	return r
 }
 
+// cellSizeRe matcht die XTWINOPS-16t-Zellpixel-Antwort ESC[6;h;wt.
+var cellSizeRe = regexp.MustCompile(string([]byte{0x1b}) + `\[6;(\d+);(\d+)t`)
+
 // imagesEnabled entscheidet, ob das Terminal echte Bilder zeigt (FR-27).
 // HERON_IMAGES=force/off uebersteuert; sonst braucht es Placeholder- und
 // Graphics-Unterstuetzung aus der Probe (ohne Platzhalter ASCII-Fallback).
@@ -119,17 +123,17 @@ func parseTermCaps(s string) TermCaps {
 	if strings.Contains(s, "i=32;OK") {
 		caps.Placeholders = true
 	}
-	if i := strings.Index(s, "\x1b[6;"); i >= 0 {
-		rest := strings.TrimPrefix(s[i+4:], "6;")
-		if end := strings.IndexAny(rest, "R"); end >= 0 {
-			parts := strings.Split(rest[:end], ";")
-			if len(parts) == 2 {
-				h, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-				w, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-				if err1 == nil && err2 == nil && h > 0 && w > 0 {
-					caps.CellH, caps.CellW = h, w
-				}
-			}
+	// Zellpixel: die XTWINOPS-16t-Antwort ist ESC[6;HOEHE;BREITEt — sie
+	// endet mit 't', NICHT mit dem 'R' der CPR-Antwort. Der alte Parser
+	// suchte 'R' als Trenner, bekam "9t<G…" und Atoi schlug fehl, sodass
+	// CellW/CellH in ECHTEN Terminals nie gesetzt wurden (immer 0x0 ->
+	// Fallback 9x20 -> Bilder auf Fensterbreite gestreckt). Regex auf das
+	// 't'-Terminator liest height (m1) und width (m2) korrekt.
+	if m := cellSizeRe.FindStringSubmatch(s); m != nil {
+		h, e1 := strconv.Atoi(m[1])
+		w, e2 := strconv.Atoi(m[2])
+		if e1 == nil && e2 == nil && h > 0 && w > 0 {
+			caps.CellH, caps.CellW = h, w
 		}
 	}
 	return caps

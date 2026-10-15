@@ -219,11 +219,54 @@ func pngDimsFromBytes(b []byte) (int, int, bool) {
 	return w, h, w > 0 && h > 0
 }
 
-// colsFor begrenzt die Darstellung auf die Blockbreite.
+// imageScale: Default-Faktor, um den ein Diagramm ueber seine intrinsische
+// Vektorbreite hinaus gezeigt wird. 2x = Retina-Puffer — scharf (1:1-Pixel)
+// und groesser als nativ, ohne ein 251-px-Diagramm auf 3015 px zu strecken.
+const imageScale = 2
+
+// imageScaleFactor liest den Anzeige-Faktor (HERON_IMAGE_SCALE, Default 2).
+// Das ist ein Geschmacks-Konflikt, den der Nutzer entscheidet, nicht der
+// Code: 1 = kompakt (Text bleibt NEBEN dem Bild sichtbar), 2 = groesser und
+// trotzdem 1:1-scharf (portrait Diagramme fuellen dann das Fenster), 3+ =
+// ueberdimensioniert. Per Env ohne Rebuild abstimmbar.
+var imageScaleOnce sync.Once
+var imageScaleVal int
+
+func imageScaleFactor() int {
+	imageScaleOnce.Do(func() {
+		imageScaleVal = imageScale
+		if s := os.Getenv("HERON_IMAGE_SCALE"); s != "" {
+			if n, err := strconv.Atoi(s); err == nil && n >= 1 && n <= 8 {
+				imageScaleVal = n
+			}
+		}
+	})
+	return imageScaleVal
+}
+
+// colsFor begrenzt die Darstellung auf die Blockbreite — UND auf die
+// intrinsische Bildgroesse x imageScale. Ohne diese Obergrenze wurde ein
+// kleines Diagramm auf die ganze Fensterbreite gestreckt: 6-Megapixel-
+// Raster, der Schirm voll Bild (kein Text sichtbar), 158 kB Output pro
+// Frame (laggy). Mit Obergrenze rastert renderCache auf ~0x Terminal-
+// Skalierung (scharf) und das Bild laesst Platz fuer Text (FR-27 Metrik 2).
 func (b ImageBlock) colsFor(width int) int {
 	c := width - 2
 	if c < 10 {
 		c = 10
+	}
+	cellW := b.caps.CellW
+	if cellW <= 0 {
+		cellW = 9 // gleicher Fallback wie rowsForTerm
+	}
+	if b.pngW > 0 {
+		maxCols := b.pngW * imageScaleFactor() / cellW
+		if maxCols < 10 {
+			maxCols = 10
+		}
+		if c > maxCols {
+			c = maxCols
+		}
 	}
 	return c
 }
@@ -312,9 +355,11 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 		if th > 8192 {
 			th = 8192
 		}
+		rt0 := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		png, err := render.ResvgToPNG(ctx, b.svg, tw, th)
 		cancel()
+		perfRastered(float64(time.Since(rt0).Microseconds()) / 1000.0)
 		if err != nil {
 			imageLogf("svg-raster block=%d ziel=%dx%d fehlgeschlagen: %v", b.id, tw, th, err)
 			return nil, false

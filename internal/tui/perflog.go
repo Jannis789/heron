@@ -19,6 +19,10 @@ var perf = struct {
 	lastSum    time.Time
 	lastScroll time.Time
 	scrolls    int
+	// Raster-Zahler: wie oft resvg IM Render-Pfad laeuft (soll 0 sein —
+	// 28 ms pro Aufruf im View sind die Lag-Quelle, FR-27 Metrik 1).
+	rasterN  int
+	rasterMs float64
 }{}
 
 // perfView erfasst eine View-Dauer und loggt pro Sekunde eine Zeile.
@@ -40,12 +44,24 @@ func perfView(d time.Duration, w, h int) {
 		}
 		fps := float64(perf.nView) / el.Seconds()
 		kb := perf.sumBytes / 1024
+		if perf.rasterN > 0 {
+			imageLogf("perf: raster IM render-pfad %dx (%.0f ms gesamt)", perf.rasterN, perf.rasterMs)
+		}
+		perf.rasterN, perf.rasterMs = 0, 0
 		imageLogf("perf: %.0f frames/s | view avg=%.1fms max=%.1fms | %d kB/s | scrolls=%d | win %dx%d",
 			fps, float64(avg.Microseconds())/1000, float64(perf.maxView.Microseconds())/1000, kb, perf.scrolls, w, h)
 		perf.nView, perf.sumView, perf.maxView, perf.sumBytes = 0, 0, 0, 0
 		perf.scrolls = 0
 		perf.lastSum = time.Now()
 	}
+}
+
+// perfRastered bucht einen resvg-Aufruf, der im Render-Pfad stattfand.
+func perfRastered(ms float64) {
+	perf.Lock()
+	perf.rasterN++
+	perf.rasterMs += ms
+	perf.Unlock()
 }
 
 // perfBytes erfasst die Framegroesse (wenn View sie kennt).

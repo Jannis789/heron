@@ -144,13 +144,25 @@ func imageDebugOn() bool {
 // HERON_IMAGE_DEBUG=1 (s. imageDebugOn). Threadsafe ueber den Mutex.
 var imageLogMu sync.Mutex
 
+// imageLogPath ist der Pfad des Diagnose-Logs. HERON_IMAGE_LOG uebersteuert
+// ihn — ohne das koennen zwei gleichzeitige heron-Laufe (z. B. der echte
+// Nutzer-Terminal und ein automatisierter Test) in dieselbe Datei schreiben
+// und ihre Messwerte vermischen sich (gemessen: "win 337x59" und "win 80x24"
+// in EINEM Log, dazu fremde kB/s-Zahlen). Getrennte Pfade = gueltige Messung.
+func imageLogPath() string {
+	if p := os.Getenv("HERON_IMAGE_LOG"); p != "" {
+		return p
+	}
+	return "/tmp/heron-images.log"
+}
+
 func imageLogf(format string, a ...interface{}) {
 	if !imageDebugOn() {
 		return
 	}
 	imageLogMu.Lock()
 	defer imageLogMu.Unlock()
-	f, err := os.OpenFile("/tmp/heron-images.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(imageLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return
 	}
