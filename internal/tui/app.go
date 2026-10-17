@@ -30,14 +30,15 @@ type replyMsg struct {
 // Model is the heron TUI state: a chat block list plus a prompt input.
 // Everything flows through Update — state is never mutated in place.
 type Model struct {
-	input  textarea.Model
-	chat   BlockList
-	send   Sender
-	theme  *render.Theme
-	copyFn CopyFunc
-	width  int
-	height int
-	inline bool // timg-Modell: Primärscreen statt Alt-Screen (HERON_INLINE)
+	input       textarea.Model
+	chat        BlockList
+	send        Sender
+	theme       *render.Theme
+	copyFn      CopyFunc
+	width       int
+	height      int
+	inline      bool // timg-Modell: Primärscreen statt Alt-Screen (HERON_INLINE)
+	printedUpTo int  // Inline: Index des ersten noch nicht append-only gedruckten Blocks
 
 	seedDiagrams bool // Seed enthaelt plantuml/mermaid: einmalige Konvertierung
 
@@ -477,9 +478,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// laufende Programm — der erste Frame loest sie aus (FR-6/27/28).
 		if m.seedDiagrams {
 			m.seedDiagrams = false
-			return m, m.pendingDiagrams()
+			// Der Flush druckt alle non-pending Seed-Bloecke sofort; die
+			// Diagramm-Bloecke druckt diagramsDoneMsg nach der Konvertierung.
+			return m, tea.Batch(m.pendingDiagrams(), m.flushPrinted())
 		}
-		return m, nil
+		return m, m.flushPrinted()
 	case tea.MouseMsg:
 		// The [ modell · effort ] footer chip toggles the popup; clicks
 		// inside the open popup select, outside close it (FR-20-lite).
@@ -583,7 +586,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chat = m.chat.Append(NewTextBlock("Unbekannter Befehl: "+prompt, "1"))
 				m.input.SetValue("")
 				m.syncInputSize()
-				return m, nil
+				return m, m.flushPrinted()
 			}
 			m.chat = m.chat.Append(NewUserBlock(prompt))
 			m.input.SetValue("")
@@ -596,7 +599,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				text, err := send(prompt)
 				return replyMsg{text: text, err: err}
 			}
-			return m, sendCmd
+			// User-Block append-only echoen (timg-Modell), Versand parallel.
+			return m, tea.Batch(sendCmd, m.flushPrinted())
 		case "up", "down", "pgup", "pgdown", "tab":
 			var cmd tea.Cmd
 			var handled bool
@@ -681,7 +685,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case diagramsDoneMsg:
 		m.chat, _ = m.chat.applyDiagrams(msg.results, m.imagesEnabled(), m.caps)
-		return m, nil
+		// Jetzt sind die Bloecke final (Bild oder Fallback-Text): drucken.
+		return m, m.flushPrinted()
 	case replyMsg:
 		// The final text supersedes the live preview (FR-2).
 		m.endTurn()
@@ -698,8 +703,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chat = m.chat.Append(BuildWidgets(nodes, m.theme, m.copyFn)...)
 			}
 		}
-		// PlantUML blocks in the fresh reply convert in the background (FR-6).
-		return m, m.pendingDiagrams()
+		// PlantUML blocks in the fresh reply convert in the background
+		// (FR-6); die finalen Bloecke druckt der Flush append-only.
+		return m, tea.Batch(m.pendingDiagrams(), m.flushPrinted())
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -728,6 +734,50 @@ func blockNumFromKey(s string) int {
 		}
 	}
 	return 0
+}
+
+// flushPrinted druckt im Inline-Modus alle abgeschlossenen Bloecke
+// append-only ueber die Live-Region (tea.Println): einmal schreiben, nie
+// wieder anfassen — das timg-Modell. Queued Lines schreibt der Renderer
+// VOR dem Frame und fasst sie nie wieder an, also kann nichts ueber der
+// Fensterhoehe verworfen werden. (Vorher: ganzer Chat im View — der
+// non-alt-Renderer trimmt auf die letzten height Zeilen, Seed-Text und
+// Bilder wurden nie geschrieben; gemessen tx-direct 5x Log, 0x a=T Output.)
+// Der Druck stoppt an Blockern: Diagramm-Konvertierung anstehend (drucken
+// erst nach applyDiagrams), Stream-Vorschau (lebt in der Live-Region) und
+// ThinkBlock waehrend des Laufs (mutiert noch).
+func (m *Model) flushPrinted() tea.Cmd {
+	if !m.inline {
+		return nil
+	}
+	pending := make(map[int]bool, 4)
+	for _, j := range m.diagramJobs() {
+		pending[j.id] = true
+	}
+	var cmds []tea.Cmd
+	for m.printedUpTo < len(m.chat.items) {
+		it := m.chat.items[m.printedUpTo]
+		id := it.ID()
+		if pending[id] {
+			break
+		}
+		if id <= StreamBlockID && id > StreamBlockID-streamIDRange {
+			break
+		}
+		if _, ok := it.(ThinkBlock); ok && m.running {
+			break
+		}
+		for _, line := range strings.Split(it.View(m.width), "\n") {
+			cmds = append(cmds, tea.Println(line))
+		}
+		m.printedUpTo++
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	// Sequence haelt die Reihenfolge: Bild-Escape und seine Leerzeilen
+	// gehoeren zusammen und duerfen nicht vertauscht werden.
+	return tea.Sequence(cmds...)
 }
 
 // statusLine is the fixed line under the title: tool activity (FR-2). Keeping
@@ -765,9 +815,14 @@ func (m Model) View() string {
 	if m.chat.Empty() {
 		top.WriteString("(no messages yet — type below)\n")
 	}
-	tc0 := time.Now()
-	chatView := m.chat.View()
-	tChat = time.Since(tc0)
+	var chatView string
+	if !m.inline {
+		// Inline: der Chat ist append-only gedruckt, nicht Teil des Views —
+		// hier wuerde er nur Render-Kosten ohne sichtbaren Effekt machen.
+		tc0 := time.Now()
+		chatView = m.chat.View()
+		tChat = time.Since(tc0)
+	}
 	top.WriteString(chatView)
 
 	// The prompt box belongs to the bottom of the screen. Padding the gap
@@ -776,11 +831,27 @@ func (m Model) View() string {
 	// So the spare rows go between chat and prompt, never below it.
 	prompt := m.inputView()
 	if m.inline {
-		// Kein fillScreen: das streckt jede Zeile auf Fuellbreite und
-		// fuellt den Scrollback mit Leerzeilen. Der Frame endet nach dem
-		// Footer; der Terminal scrollt, wenn es ueber die Fensterhoehe
-		// hinauswaechst — genau das Modell von timg.
-		out := top.String() + "\n" + prompt + "\n" + m.footerView()
+		// timg-Modell: History ist append-only gedruckt (flushPrinted), der
+		// View enthaelt NUR die kleine Live-Region — sie passt immer ins
+		// Fenster, also kann der Renderer nichts mehr verwerfen. (Vorher:
+		// ganzer Chat im View -> Trim auf die letzten height Zeilen -> Seed-
+		// Text und Bilder wurden NIE geschrieben, s. Renderer-Quelle.)
+		var live strings.Builder
+		live.WriteString(lipgloss.NewStyle().Bold(true).Render("heron · goose acp"))
+		live.WriteString("\n")
+		sl := m.statusLine()
+		if sl == "" && m.running {
+			sl = lipgloss.NewStyle().Faint(true).Render("▸ Antwort läuft …")
+		}
+		live.WriteString(sl)
+		live.WriteString("\n")
+		if m.chat.Empty() {
+			live.WriteString("(no messages yet — type below)\n")
+		}
+		live.WriteString(prompt)
+		live.WriteString("\n")
+		live.WriteString(m.footerView())
+		out := live.String()
 		perfBytes(len(out))
 		return out
 	}
