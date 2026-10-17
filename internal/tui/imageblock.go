@@ -367,7 +367,12 @@ func (b ImageBlock) transmitDirect(cols, rows int, path string, pw, ph int) stri
 		return ""
 	}
 	payload := base64.StdEncoding.EncodeToString([]byte(path))
-	return fmt.Sprintf("\x1b_Ga=T,f=100,t=f,i=%d,q=2,c=%d,r=%d,s=%d,v=%d,m=0;%s\x1b\\",
+	// C=1: der Cursor bewegt sich nach dem Platzieren NICHT — bubbleteas
+	// eigene \r\n + die Auffuellzeilen steuern das Layout, und die
+	// Zeilen-Abrechnung des Renderers stimmt exakt mit den Terminal-Zeilen
+	// ueberein (Spec: nach a=T rueckt der Cursor sonst um c Spalten und
+	// r Zeilen — das wuerde die Abrechnung verstellen).
+	return fmt.Sprintf("\x1b_Ga=T,f=100,t=f,i=%d,q=2,C=1,c=%d,r=%d,s=%d,v=%d,m=0;%s\x1b\\",
 		b.kittyID, cols, rows, pw, ph, payload)
 }
 
@@ -489,11 +494,15 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 	inl := inlineActive.Load()
 	c := &imgCache{cols: cols, rows: rows, inline: inl, own: own, src: b.pngPath, pngPath: path, txBuilt: time.Now()}
 	if inl {
-		// timg-Hauptpfad: EINE View-Zeile mit dem Direkt-Escape — das
-		// Terminal reserviert die r Zeilen selbst (Cursor-Rueck-Politik),
-		// keine Platzhalter-Zeilen, die Text-Layout sprengen koennten.
+		// timg-Hauptpfad: Escape auf Zeile 0, rows-1 LEERE Zeilen danach.
+		// Der Cursor bewegt sich nicht (C=1), also landen die Leerzeilen
+		// IN der Bildflaeche — unsichtbar, und EraseLineRight loescht laut
+		// Spec KEINE Grafiken ("commands to erase text must have no effect
+		// on graphics"). So zaehlt bubbletea genau r Zeilen und der
+		// Cursor-up-Repaint geht nicht daneben.
 		c.prefix = b.transmitDirect(cols, rows, path, pw, ph)
-		c.lines = []string{""}
+		c.lines = make([]string, rows)
+		c.lines[0] = c.prefix
 	} else {
 		c.prefix = b.virtualPlacement(cols, rows, path, pw, ph)
 		c.lines = make([]string, rows)
@@ -534,16 +543,22 @@ func (b ImageBlock) ViewRange(width, from, to int) string {
 		if !ok {
 			return b.fallback.View(width)
 		}
-		// Immer den Escape liefern (KEIN tx-Fenster): die Zeile ist
-		// statisch, bubbleteas Zeilen-Diff ueberspringt identische Zeilen.
-		// Ein Rueckfall auf "" wuerde die Zeile aendern, bubbletea neu
-		// schreiben (inkl. EraseLineRight) und koennte das direkt
-		// platzierte Bild in seinen Zellen loeschen.
+		// Zeile 0 traegt den Escape (statisch — der Zeilen-Diff
+		// ueberspringt identische Zeilen, kein Re-Transmit pro Frame).
 		if c.txCount == 0 {
 			c.txCount = 1
 			imageLogf("image tx-direct block=%d kitty=%d c=%d r=%d", b.id, b.kittyID, cols, rows)
 		}
-		return c.prefix
+		if from >= rows || to > rows {
+			return ""
+		}
+		if from < 0 {
+			from = 0
+		}
+		if to < from {
+			to = from
+		}
+		return strings.Join(c.lines[from:to], "\n")
 	}
 	cols, rows := b.dims(width)
 	if from < 0 {
@@ -583,7 +598,10 @@ func (b ImageBlock) Height(width int) int {
 		return b.fallback.Height(width)
 	}
 	if inlineActive.Load() {
-		return 1 // timg-Modell: das Terminal reserviert die Bildzeilen selbst
+		// timg-Modell: die ECHTEN Zeilen — C=1 haelt den Cursor, die
+		// Leerzeilen-Auffuellung deckt die Bildflaeche, also stimmt die
+		// Zeilen-Abrechnung des Renderers exakt.
+		return b.rowsFor(width)
 	}
 	return b.rowsFor(width)
 }
