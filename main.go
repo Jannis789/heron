@@ -28,6 +28,31 @@ func main() {
 	seedFile := flag.String("seed", "", "markdown file to seed into the chat on startup")
 	contextWindow := flag.Int("context-window", 200000, "context window tokens for the footer bar")
 	flag.Parse()
+
+	// HERON_PRINT=1: reiner Text-Modus fuer die Fehler-Bisektion — GANZ
+	// FRUEH, bevor irgendeine goose-Session/Prewarm startet (der Prewarm
+	// hat vorher die Session trotzdem gespawnt; beim Exit brach deren Pipe:
+	// "Broken pipe (os error 32)"). Kein TUI, kein Renderer: den Seed
+	// einmal gerendert auf stdout, dann Ende.
+	if os.Getenv("HERON_PRINT") == "1" {
+		if *seedFile == "" {
+			log.Fatalf("HERON_PRINT braucht --seed")
+		}
+		b, err := os.ReadFile(*seedFile)
+		if err != nil {
+			log.Fatalf("seed %s: %v", *seedFile, err)
+		}
+		w := 80
+		if f := os.Getenv("HERON_PRINT_W"); f != "" {
+			if n, err := strconv.Atoi(f); err == nil && n > 40 {
+				w = n
+			}
+		}
+		if err := tui.PrintOnly(string(b), w); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	wd, _ := os.Getwd()
 
 	var th *render.Theme
@@ -195,26 +220,6 @@ func main() {
 		}
 		seedText = string(b)
 		model = model.SeedMarkdown(seedText)
-	}
-
-	// HERON_PRINT=1: reiner Text-Modus fuer die Fehler-Bisektion — kein
-	// TUI, kein Renderer; den Seed einmal gerendert auf stdout, dann Ende.
-	// Zeigt der Text hier, sind Pipeline und Terminal gesund und das Thema
-	// ist die TUI-Sichtbarkeit, nicht die Uebertragung (FR-27).
-	if os.Getenv("HERON_PRINT") == "1" {
-		if seedText == "" {
-			log.Fatalf("HERON_PRINT braucht --seed")
-		}
-		w := 80
-		if f := os.Getenv("HERON_PRINT_W"); f != "" {
-			if n, err := strconv.Atoi(f); err == nil && n > 40 {
-				w = n
-			}
-		}
-		if err := tui.PrintOnly(seedText, w); err != nil {
-			log.Fatal(err)
-		}
-		return
 	}
 
 	if err := tui.RunModel(model); err != nil {
