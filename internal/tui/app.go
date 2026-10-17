@@ -16,6 +16,8 @@ import (
 	"runtime/pprof"
 	"sync/atomic"
 
+	"golang.org/x/term"
+
 	"heron/internal/render"
 )
 
@@ -463,7 +465,27 @@ func (m Model) Init() tea.Cmd {
 	// Seeded Diagramme konvertiert der WindowSizeMsg-Handler (seedDiagrams,
 	// FR-6/27/28) — hier NICHT nochmal triggern: doppelter Start hat jede
 	// Konvertierung doppelt ausgefuehrt (doppelte Wartezeit, s. Debug-Log).
+	if m.inline {
+		// Ohne Frame-Renderer (WithoutRenderer) holt bubbletea die Fenster-
+		// groesse nicht mehr selbst — die haengt intern am Terminal-Renderer
+		// (gemessen: win 0x0, kein WindowSizeMsg, der Flush kam nie los).
+		// Der Inline-Modus sendet die Groesse deshalb als eigenen Cmd.
+		return tea.Batch(textarea.Blink, m.windowSizeProbe())
+	}
 	return textarea.Blink
+}
+
+// windowSizeProbe liest die Terminal-Groesse per ioctl (TIOCGWINSZ) und
+// liefert sie als tea.WindowSizeMsg — der Inline-Ersatz fuer die interne
+// Renderer-Groessenabfrage.
+func (m Model) windowSizeProbe() tea.Cmd {
+	return func() tea.Msg {
+		w, h, err := term.GetSize(int(os.Stdout.Fd()))
+		if err != nil {
+			w, h = 100, 40 // kein Terminal (Tests): sinnvolle Fallback-Breite
+		}
+		return tea.WindowSizeMsg{Width: w, Height: h}
+	}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -737,15 +759,13 @@ func blockNumFromKey(s string) int {
 }
 
 // flushPrinted druckt im Inline-Modus alle abgeschlossenen Bloecke
-// append-only ueber die Live-Region (tea.Println): einmal schreiben, nie
-// wieder anfassen — das timg-Modell. Queued Lines schreibt der Renderer
-// VOR dem Frame und fasst sie nie wieder an, also kann nichts ueber der
-// Fensterhoehe verworfen werden. (Vorher: ganzer Chat im View — der
-// non-alt-Renderer trimmt auf die letzten height Zeilen, Seed-Text und
-// Bilder wurden nie geschrieben; gemessen tx-direct 5x Log, 0x a=T Output.)
-// Der Druck stoppt an Blockern: Diagramm-Konvertierung anstehend (drucken
-// erst nach applyDiagrams), Stream-Vorschau (lebt in der Live-Region) und
-// ThinkBlock waehrend des Laufs (mutiert noch).
+// direkt auf stdout — die timg-Logik: Zeilen GENAU EINMAL schreiben und
+// nie wieder anfassen. Der Renderer ist im Inline-Modus komplett abge-
+// schaltet (tea.WithoutRenderer), also gibt es kein Frame, kein CursorUp,
+// kein EL und kein Rerender, das den Strom verstellen koennte. Der Druck
+// stoppt an Blockern: Diagramm-Konvertierung anstehend (drucken erst
+// nach applyDiagrams), Stream-Vorschau (mutiert noch) und ThinkBlock
+// waehrend des Laufs.
 func (m *Model) flushPrinted() tea.Cmd {
 	if !m.inline {
 		return nil
@@ -754,7 +774,7 @@ func (m *Model) flushPrinted() tea.Cmd {
 	for _, j := range m.diagramJobs() {
 		pending[j.id] = true
 	}
-	var cmds []tea.Cmd
+	var bld strings.Builder
 	for m.printedUpTo < len(m.chat.items) {
 		it := m.chat.items[m.printedUpTo]
 		id := it.ID()
@@ -767,17 +787,19 @@ func (m *Model) flushPrinted() tea.Cmd {
 		if _, ok := it.(ThinkBlock); ok && m.running {
 			break
 		}
-		for _, line := range strings.Split(it.View(m.width), "\n") {
-			cmds = append(cmds, tea.Println(line))
-		}
+		bld.WriteString(it.View(m.width))
+		bld.WriteByte('\n')
 		m.printedUpTo++
 	}
-	if len(cmds) == 0 {
+	if bld.Len() == 0 {
 		return nil
 	}
-	// Sequence haelt die Reihenfolge: Bild-Escape und seine Leerzeilen
-	// gehoeren zusammen und duerfen nicht vertauscht werden.
-	return tea.Sequence(cmds...)
+	n, err := os.Stdout.WriteString(bld.String())
+	perfBytes(n)
+	if err != nil {
+		imageLogf("stdout-fehler nach %d bytes: %v", n, err)
+	}
+	return nil
 }
 
 // statusLine is the fixed line under the title: tool activity (FR-2). Keeping
@@ -831,29 +853,11 @@ func (m Model) View() string {
 	// So the spare rows go between chat and prompt, never below it.
 	prompt := m.inputView()
 	if m.inline {
-		// timg-Modell: History ist append-only gedruckt (flushPrinted), der
-		// View enthaelt NUR die kleine Live-Region — sie passt immer ins
-		// Fenster, also kann der Renderer nichts mehr verwerfen. (Vorher:
-		// ganzer Chat im View -> Trim auf die letzten height Zeilen -> Seed-
-		// Text und Bilder wurden NIE geschrieben, s. Renderer-Quelle.)
-		var live strings.Builder
-		live.WriteString(lipgloss.NewStyle().Bold(true).Render("heron · goose acp"))
-		live.WriteString("\n")
-		sl := m.statusLine()
-		if sl == "" && m.running {
-			sl = lipgloss.NewStyle().Faint(true).Render("▸ Antwort läuft …")
-		}
-		live.WriteString(sl)
-		live.WriteString("\n")
-		if m.chat.Empty() {
-			live.WriteString("(no messages yet — type below)\n")
-		}
-		live.WriteString(prompt)
-		live.WriteString("\n")
-		live.WriteString(m.footerView())
-		out := live.String()
-		perfBytes(len(out))
-		return out
+		// timg-Modus: der Frame-Renderer ist abgeschaltet (WithoutRenderer),
+		// der View bleibt leer — die gesamte Ausgabe macht flushPrinted.
+		_ = prompt
+		perfBytes(0)
+		return ""
 	}
 	if m.height <= 0 {
 		// No terminal size known yet (tests, first paint): render as-is
@@ -948,6 +952,12 @@ func RunModel(m Model) error {
 		// weil keine Reports mehr erzeugt werden.
 		inlineActive.Store(true)
 		defer inlineActive.Store(false)
+		// timg-Logik (FR-27): KEIN Frame-Renderer im Inline-Modus. Die
+		// Ausgabe macht flushPrinted als direkte stdout-Writes — nichts
+		// rerendert, nichts wird ueberschrieben, keine Cursor-Spiele. Die
+		// interaktive Live-Anzeige (Eingabebox) kommt erst zurueck, wenn
+		// der Text-Render auf echten Terminals belegt ist.
+		opts = append(opts, tea.WithoutRenderer())
 	} else {
 		opts = append(opts, tea.WithAltScreen(), tea.WithMouseAllMotion())
 	}
