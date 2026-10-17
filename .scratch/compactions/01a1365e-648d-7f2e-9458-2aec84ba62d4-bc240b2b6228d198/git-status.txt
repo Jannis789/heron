@@ -1,0 +1,3 @@
+ M internal/tui/imageblock.go
+?? .scratch/
+?? internal/tui/trunc_test.go

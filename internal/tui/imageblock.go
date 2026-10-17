@@ -133,6 +133,7 @@ type ImageBlock struct {
 // jedem Schritt neu lesen/dekodieren -> 1fps, gemessen im Ghostty).
 type imgCache struct {
 	cols, rows int
+	png        []byte // gerasterte Pixel (Inline-Base64 wie timg)
 	inline     bool   // timg-Hauptpfad: nur der Direkt-Escape, keine Platzhalter
 	own        bool   // pngPath wurde von renderCache gerastert (Temp-Datei)
 	src        string // pngPath des Blocks, aus dem der Raster gebaut wurde
@@ -356,24 +357,46 @@ func imgRowPctVal() int {
 // t=f (Terminal liest die PNG-Datei selbst), U=1, c/r = Zellraster,
 // s/v = Pixelmasse, p=<id> macht das Placement deterministisch —
 // Wiederholung ersetzt statt zu vervielfachen (Resize bleibt billig).
-// transmitDirect ist der timg-HAUPTPFAD (src/kitty-canvas.cc): a=T ohne
-// U=1 und ohne p= — laut timg-Quelle sind Unicode-Platzhalter nur "a hack
-// around tmux refusing to work with graphics". Das Terminal platziert das
-// Bild am Cursor selbst in den Zellraster (c/r/s/v geben die Groesse), der
-// Cursor rueckt danach. Keine exotischen U+10EEEE-Cluster mehr im Text —
-// genau deshalb stehen bei timg Bild und Text stabil nebeneinander.
-func (b ImageBlock) transmitDirect(cols, rows int, path string, pw, ph int) string {
-	if b.kittyID < 1 || b.kittyID > kittyIDMax || path == "" {
+// transmitDirectChunks ist der timg-Hauptpfad, BYTE-GETREU nachgebaut aus
+// einem echten PTY-Mitschnitt von timg 1.6.3 (-pk):
+//
+//	\x1b_Ga=T,i=ID,q=2,f=100,m=1;<chunk>\x1b\   (erster Chunk)
+//	\x1b_Gq=2,m=1;<chunk>\x1b\                  (Fortsetzung)
+//	\x1b_Gq=2,m=0;<chunk>\x1b\                  (letzter Chunk)
+//
+// KEIN t=f (Datei-Medium), KEIN C=1, keine c/r/s/v-Keys: jedes zusaetzliche
+// Key ist ein Kandidat fuer stille Ablehnung (q=2 unterdrueckt die Fehler-
+// antwort!). timg beweist seit Jahren, dass genau diese Form laeuft. Die
+// Anzeige-Groesse kommt aus den Pixeln des PNG — die Skalierung macht
+// resvg VOR der Uebertragung.
+func transmitDirectChunks(kittyID int, png []byte) string {
+	if kittyID < 1 || kittyID > kittyIDMax || len(png) == 0 {
 		return ""
 	}
-	payload := base64.StdEncoding.EncodeToString([]byte(path))
-	// C=1: der Cursor bewegt sich nach dem Platzieren NICHT — bubbleteas
-	// eigene \r\n + die Auffuellzeilen steuern das Layout, und die
-	// Zeilen-Abrechnung des Renderers stimmt exakt mit den Terminal-Zeilen
-	// ueberein (Spec: nach a=T rueckt der Cursor sonst um c Spalten und
-	// r Zeilen — das wuerde die Abrechnung verstellen).
-	return fmt.Sprintf("\x1b_Ga=T,f=100,t=f,i=%d,q=2,C=1,c=%d,r=%d,s=%d,v=%d,m=0;%s\x1b\\",
-		b.kittyID, cols, rows, pw, ph, payload)
+	enc := base64.StdEncoding.EncodeToString(png)
+	var bld strings.Builder
+	first := true
+	for {
+		chunk := enc
+		if len(chunk) > 4096 {
+			chunk = chunk[:4096]
+		}
+		enc = enc[len(chunk):]
+		more := 0
+		if len(enc) > 0 {
+			more = 1
+		}
+		if first {
+			fmt.Fprintf(&bld, "\x1b_Ga=T,i=%d,q=2,f=100,m=%d;%s\x1b\\", kittyID, more, chunk)
+			first = false
+		} else {
+			fmt.Fprintf(&bld, "\x1b_Gq=2,m=%d;%s\x1b\\", more, chunk)
+		}
+		if len(enc) == 0 {
+			break
+		}
+	}
+	return bld.String()
 }
 
 func (b ImageBlock) virtualPlacement(cols, rows int, path string, pw, ph int) string {
@@ -447,6 +470,7 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 	}
 	path, pw, ph := b.pngPath, b.pngW, b.pngH
 	own := false
+	var rasterPng []byte
 	if b.svg != nil {
 		// Vektorpfad: auf die exakte Zielgroesse rasern — cols*cellW x
 		// rows*cellH, also 0x Terminal-Skalierung (Metrik 2). Kappung bei
@@ -484,6 +508,7 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 		// einem minimalen Rand. Die Zellgeometrie (cols,rows) bleibt von
 		// dims() unabhaengig, damit Cache-Key und Zeilenzahl konsistent sind.
 		path = p
+		rasterPng = png
 		if aw, ah, aok := pngDimsFromBytes(png); aok {
 			pw, ph = aw, ah
 		} else {
@@ -492,7 +517,7 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 		own = true
 	}
 	inl := inlineActive.Load()
-	c := &imgCache{cols: cols, rows: rows, inline: inl, own: own, src: b.pngPath, pngPath: path, txBuilt: time.Now()}
+	c := &imgCache{cols: cols, rows: rows, png: rasterPng, inline: inl, own: own, src: b.pngPath, pngPath: path, txBuilt: time.Now()}
 	if inl {
 		// timg-Hauptpfad: Escape auf Zeile 0, rows-1 LEERE Zeilen danach.
 		// Der Cursor bewegt sich nicht (C=1), also landen die Leerzeilen
@@ -500,7 +525,11 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 		// Spec KEINE Grafiken ("commands to erase text must have no effect
 		// on graphics"). So zaehlt bubbletea genau r Zeilen und der
 		// Cursor-up-Repaint geht nicht daneben.
-		c.prefix = b.transmitDirect(cols, rows, path, pw, ph)
+		src := c.png
+		if src == nil {
+			src = b.png
+		}
+		c.prefix = transmitDirectChunks(b.kittyID, src)
 		c.lines = make([]string, rows)
 		c.lines[0] = c.prefix
 	} else {
@@ -549,14 +578,14 @@ func (b ImageBlock) ViewRange(width, from, to int) string {
 			c.txCount = 1
 			imageLogf("image tx-direct block=%d kitty=%d c=%d r=%d", b.id, b.kittyID, cols, rows)
 		}
-		if from >= rows || to > rows {
-			return ""
-		}
 		if from < 0 {
 			from = 0
 		}
-		if to < from {
-			to = from
+		if to > rows {
+			to = rows // View() ruft mit 1<<30 — klemmen, nicht verwerfen!
+		}
+		if from >= to {
+			return ""
 		}
 		return strings.Join(c.lines[from:to], "\n")
 	}

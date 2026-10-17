@@ -1,0 +1,12 @@
+{
+  "path": "/home/jannis/workspace/heron/.scratch/compactions/01a1365e-648d-7f2e-9458-2aec84ba62d4-bc240b2b6228d198/git-snapshot.json",
+  "statusPath": "/home/jannis/workspace/heron/.scratch/compactions/01a1365e-648d-7f2e-9458-2aec84ba62d4-bc240b2b6228d198/git-status.txt",
+  "diffStatPath": "/home/jannis/workspace/heron/.scratch/compactions/01a1365e-648d-7f2e-9458-2aec84ba62d4-bc240b2b6228d198/git-diff-stat.txt",
+  "diffChunkPaths": [
+    "/home/jannis/workspace/heron/.scratch/compactions/01a1365e-648d-7f2e-9458-2aec84ba62d4-bc240b2b6228d198/git-diff-full-001.patch"
+  ],
+  "diffSha256": "ce957e67b9aee77ca7f500f868e274a21da9ebb57347d569aaa4de5d68e8c2b5",
+  "diffBytes": 11351,
+  "fullDiffPreserved": true,
+  "fullDiffComplete": true
+}
