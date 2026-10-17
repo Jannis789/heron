@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -960,6 +961,34 @@ func RunModel(m Model) error {
 	// Alle Terminal-Bilder loeschen und Temp-PNGs entfernen (FR-27): nach
 	// dem Exit bleibt kein Bildmuell im Ghostty/Kitty-Speicher.
 	KittyCleanup()
+	return err
+}
+
+// PrintOnly rendert einen Seed als REINEN Text direkt auf stdout — kein
+// bubbletea, kein Renderer, kein TUI, keine Tastatur (FR-27 Diagnose):
+// die haerteste Bisektionsstufe fuer "kommt Text ueberhaupt an?". Wie cat
+// docs/render-test.md, nur mit den echten Block-Views. Bild-Bloecke
+// erscheinen als ihre ASCII-Fallback-Zeilen + Marker.
+func PrintOnly(src string, w int) error {
+	m := New(nil, nil, nil).SeedMarkdown(src)
+	m.width = w
+	var out strings.Builder
+	for i, it := range m.chat.items {
+		if i > 0 {
+			out.WriteString("\n")
+		}
+		if img, ok := it.(ImageBlock); ok {
+			out.WriteString("⟦Diagramm " + strconv.Itoa(img.ID()) + " — in der TUI als Kitty-Bild (HERON_INLINE)⟧\n")
+			if img.ascii != "" {
+				out.WriteString(img.ascii)
+				out.WriteString("\n")
+			}
+			continue
+		}
+		out.WriteString(it.View(w))
+	}
+	out.WriteString("\n")
+	_, err := os.Stdout.WriteString(out.String())
 	return err
 }
 
