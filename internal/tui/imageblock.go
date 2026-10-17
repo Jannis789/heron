@@ -133,6 +133,7 @@ type ImageBlock struct {
 // jedem Schritt neu lesen/dekodieren -> 1fps, gemessen im Ghostty).
 type imgCache struct {
 	cols, rows int
+	inline     bool   // timg-Hauptpfad: nur der Direkt-Escape, keine Platzhalter
 	own        bool   // pngPath wurde von renderCache gerastert (Temp-Datei)
 	src        string // pngPath des Blocks, aus dem der Raster gebaut wurde
 	pngPath    string // effektive Transmit-Datei (bei SVG: die gerasterte)
@@ -355,6 +356,21 @@ func imgRowPctVal() int {
 // t=f (Terminal liest die PNG-Datei selbst), U=1, c/r = Zellraster,
 // s/v = Pixelmasse, p=<id> macht das Placement deterministisch —
 // Wiederholung ersetzt statt zu vervielfachen (Resize bleibt billig).
+// transmitDirect ist der timg-HAUPTPFAD (src/kitty-canvas.cc): a=T ohne
+// U=1 und ohne p= — laut timg-Quelle sind Unicode-Platzhalter nur "a hack
+// around tmux refusing to work with graphics". Das Terminal platziert das
+// Bild am Cursor selbst in den Zellraster (c/r/s/v geben die Groesse), der
+// Cursor rueckt danach. Keine exotischen U+10EEEE-Cluster mehr im Text —
+// genau deshalb stehen bei timg Bild und Text stabil nebeneinander.
+func (b ImageBlock) transmitDirect(cols, rows int, path string, pw, ph int) string {
+	if b.kittyID < 1 || b.kittyID > kittyIDMax || path == "" {
+		return ""
+	}
+	payload := base64.StdEncoding.EncodeToString([]byte(path))
+	return fmt.Sprintf("\x1b_Ga=T,f=100,t=f,i=%d,q=2,c=%d,r=%d,s=%d,v=%d,m=0;%s\x1b\\",
+		b.kittyID, cols, rows, pw, ph, payload)
+}
+
 func (b ImageBlock) virtualPlacement(cols, rows int, path string, pw, ph int) string {
 	// ID-Grenze 2^24: die Platzhalterzellen kodieren die ID in 24-Bit-
 	// Truecolor-Farbe (s. placeholderRow, Referenz timg) — nicht mehr auf
@@ -421,7 +437,7 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 	key := imgCacheKey{b.id, b.kittyID, cols, rows}
 	imgCacheMu.Lock()
 	defer imgCacheMu.Unlock()
-	if c := imgCaches[key]; c != nil && c.src == b.pngPath && len(c.lines) == rows {
+	if c := imgCaches[key]; c != nil && c.inline == inlineActive.Load() && c.src == b.pngPath && (c.inline || len(c.lines) == rows) {
 		return c, true
 	}
 	path, pw, ph := b.pngPath, b.pngW, b.pngH
@@ -470,10 +486,20 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 		}
 		own = true
 	}
-	c := &imgCache{cols: cols, rows: rows, own: own, src: b.pngPath, pngPath: path, txBuilt: time.Now(), prefix: b.virtualPlacement(cols, rows, path, pw, ph)}
-	c.lines = make([]string, rows)
-	for r := 0; r < rows; r++ {
-		c.lines[r] = placeholderRow(b.kittyID, r, cols)
+	inl := inlineActive.Load()
+	c := &imgCache{cols: cols, rows: rows, inline: inl, own: own, src: b.pngPath, pngPath: path, txBuilt: time.Now()}
+	if inl {
+		// timg-Hauptpfad: EINE View-Zeile mit dem Direkt-Escape — das
+		// Terminal reserviert die r Zeilen selbst (Cursor-Rueck-Politik),
+		// keine Platzhalter-Zeilen, die Text-Layout sprengen koennten.
+		c.prefix = b.transmitDirect(cols, rows, path, pw, ph)
+		c.lines = []string{""}
+	} else {
+		c.prefix = b.virtualPlacement(cols, rows, path, pw, ph)
+		c.lines = make([]string, rows)
+		for r := 0; r < rows; r++ {
+			c.lines[r] = placeholderRow(b.kittyID, r, cols)
+		}
 	}
 	// Raster-Aufruestung: alte Eintraege DESSELBEN Blocks entfernen (andere
 	// Groesse nach Resize) — sonst haeuften sich bei jedem Resize neue
@@ -499,6 +525,25 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 func (b ImageBlock) ViewRange(width, from, to int) string {
 	if !b.useImg || b.kittyID < 1 || (b.pngPath == "" && b.svg == nil) {
 		return b.fallback.View(width)
+	}
+	if inlineActive.Load() {
+		// timg-Hauptpfad: eine Zeile, nur der Escape (im tx-Fenster),
+		// sonst leer — das Bild ist schon uebertragen und steht im Fluss.
+		cols, rows := b.dims(width)
+		c, ok := b.renderCache(cols, rows)
+		if !ok {
+			return b.fallback.View(width)
+		}
+		// Immer den Escape liefern (KEIN tx-Fenster): die Zeile ist
+		// statisch, bubbleteas Zeilen-Diff ueberspringt identische Zeilen.
+		// Ein Rueckfall auf "" wuerde die Zeile aendern, bubbletea neu
+		// schreiben (inkl. EraseLineRight) und koennte das direkt
+		// platzierte Bild in seinen Zellen loeschen.
+		if c.txCount == 0 {
+			c.txCount = 1
+			imageLogf("image tx-direct block=%d kitty=%d c=%d r=%d", b.id, b.kittyID, cols, rows)
+		}
+		return c.prefix
 	}
 	cols, rows := b.dims(width)
 	if from < 0 {
@@ -536,6 +581,9 @@ func (b ImageBlock) View(width int) string { return b.ViewRange(width, 0, 1<<30)
 func (b ImageBlock) Height(width int) int {
 	if !b.useImg {
 		return b.fallback.Height(width)
+	}
+	if inlineActive.Load() {
+		return 1 // timg-Modell: das Terminal reserviert die Bildzeilen selbst
 	}
 	return b.rowsFor(width)
 }
