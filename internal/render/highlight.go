@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
@@ -11,10 +12,24 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// highlightStyle is the chroma style used for fenced code. Catppuccin Mocha
-// is the same family as the border and action colours of the default theme
-// (themes/default.json), so highlighted code sits in the same palette.
-const highlightStyle = "catppuccin-mocha"
+// lightBG merkt sich einen HELLEN Terminal-Hintergrund (OSC 11, FR-27):
+// dann wird die dunkle Chroma-Palette verwendet, sonst ist der Code
+// hell-auf-hell unsichtbar (gemessen: #CDD6F4-Serie auf hellem Grund).
+var lightBG atomic.Bool
+
+// SetLightBG schaltet die Palette fuer einen hellen Terminal-Hintergrund um.
+func SetLightBG(on bool) { lightBG.Store(on) }
+
+// LightBG berichtet, ob ein heller Terminal-Hintergrund erkannt wurde.
+func LightBG() bool { return lightBG.Load() }
+
+// highlightStyleFor liefert die Chroma-Palette passend zur Terminal-Helligkeit.
+func highlightStyleFor() string {
+	if lightBG.Load() {
+		return "catppuccin-latte"
+	}
+	return "catppuccin-mocha"
+}
 
 // Highlight renders source as ANSI-coloured text for a fence tag. An unknown
 // tag falls back to plain text, so a mistyped language never breaks the chat.
@@ -34,7 +49,7 @@ func Highlight(lang, source string) string {
 	if formatter == nil {
 		formatter = formatters.Fallback
 	}
-	style := styles.Get(highlightStyle)
+	style := styles.Get(highlightStyleFor())
 	if style == nil {
 		style = styles.Fallback
 	}

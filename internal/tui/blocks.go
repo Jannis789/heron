@@ -144,7 +144,11 @@ func NewTextBlock(text, color string) TextBlock {
 
 // NewUserBlock renders the user's own typed prompt (highlighted).
 func NewUserBlock(text string) TextBlock {
-	return TextBlock{id: -1, text: text, style: lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)}
+	ec := "12"
+	if render.LightBG() {
+		ec = "4" // Hellgrund -> dunkles Blau (FR-27)
+	}
+	return TextBlock{id: -1, text: text, style: lipgloss.NewStyle().Foreground(lipgloss.Color(ec)).Bold(true)}
 }
 
 // textGutter indents prose blocks so answers breathe next to the framed

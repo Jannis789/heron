@@ -205,9 +205,14 @@ func main() {
 		cwd = "~" + strings.TrimPrefix(cwd, home)
 	}
 
-	// Term-Faehigkeiten abfragen (Kitty-Graphics/Platzhalter, Zellpixel),
-	// bevor bubbletea stdin uebernimmt (FR-27).
+	// Term-Faehigkeiten abfragen (Kitty-Graphics/Platzhalter, Zellpixel,
+	// Hintergrund-Helligkeit via OSC 11), bevor bubbletea stdin uebernimmt
+	// (FR-27). Heller Grund -> dunkle Textpalette, sonst unsichtbar.
 	caps := tui.ProbeTerminal()
+	render.SetLightBG(caps.LightBG)
+	if caps.LightBG {
+		th = th.Light()
+	}
 	model := tui.New(sender, th, copyFn).WithStream(stream).WithCancel(cancel).
 		WithConfigSet(configSet).WithNewSession(resetSession).
 		WithContextWindow(*contextWindow).WithTermCaps(caps).

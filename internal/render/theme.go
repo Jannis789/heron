@@ -45,6 +45,18 @@ func DefaultTheme() (*Theme, error) {
 	return LoadTheme(bytes.NewReader(defaultThemeJSON))
 }
 
+// Light liefert eine Kopie des Themes mit DUNKLEN Farben fuer HELLE
+// Terminal-Hintergruende (OSC-11-Erkennung, FR-27): die Dark-Palette
+// (#D9D4EC etc.) ist auf hellem Grund hell-auf-hell unsichtbar.
+func (t *Theme) Light() *Theme {
+	c := *t
+	c.Text.Color = "#3B4252"
+	c.Border.Color = "#5E81AC"
+	c.Action.Color = "#6C47C8"
+	c.Background = "#FFFFFF"
+	return &c
+}
+
 // TextStyle returns the lipgloss style for plain text of this theme.
 func (t *Theme) TextStyle() lipgloss.Style {
 	s := lipgloss.NewStyle()

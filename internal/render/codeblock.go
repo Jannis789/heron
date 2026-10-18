@@ -14,7 +14,12 @@ func CodeBlockView(lang, code string, index int) string {
 	if head == "" {
 		head = "code"
 	}
-	header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render(
+	// Hellgrund -> dunkles ANSI-Blau (4) statt hellem (12), sonst unsichtbar.
+	headerCol := "12"
+	if LightBG() {
+		headerCol = "4"
+	}
+	header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(headerCol)).Render(
 		"┌ " + head + " " + strings.Repeat("─", 3) + " [copy " + fmt.Sprint(index) + "] ┐",
 	)
 	body := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).Render(code)

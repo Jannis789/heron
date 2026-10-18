@@ -82,7 +82,7 @@ func parseSessionInfo(sres []byte) sessionInfo {
 		SessionID     string `json:"sessionId"`
 		ConfigOptions []struct {
 			ID           string `json:"id"`
-			CurrentValue string   `json:"currentValue"`
+			CurrentValue string `json:"currentValue"`
 			Options      []struct {
 				Value string `json:"value"`
 			} `json:"options"`
