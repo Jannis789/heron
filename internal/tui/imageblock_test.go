@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"heron/internal/render"
 )
 
@@ -394,4 +396,122 @@ func dabs(n int) int {
 		return -n
 	}
 	return n
+}
+
+// t-Switch (Bonus-FR): Bild ist Standard, t am fokussierten Block zeigt den
+// rohen Diagramm-Quelltext als vollstaendigen CodeBlock (Rahmen, Label mit
+// stabiler ID, COPY-Action), t zurueck zum Bild. In der Quelltext-Ansicht
+// kopiert enter/c den QUELLTEXT, nicht die ASCII-Grafik.
+func TestImageBlockSourceSwitch(t *testing.T) {
+	t.Cleanup(KittyCleanup)
+	var got string
+	copyFn := func(s string) tea.Cmd { got = s; return nil }
+	src := "@startuml\nA --> B : Test\n@enduml"
+	b := NewImageBlock(realPNG(80, 40), "ascii-art", true, TermCaps{Graphics: true, Placeholders: true, CellW: 9, CellH: 18}, copyFn, nil)
+	b = b.SetSource("plantuml", src).(ImageBlock)
+	b = b.SetID(4).(ImageBlock)
+	b = b.SetFocused(true).(ImageBlock)
+
+	if b.showSrc {
+		t.Fatal("Bild muss Standard sein, nicht Quelltext")
+	}
+	hImg := b.Height(80)
+
+	// t: Bild -> Quelltext
+	w, _ := b.Update(keyOf("t"))
+	sb, ok := w.(ImageBlock)
+	if !ok || !sb.showSrc {
+		t.Fatalf("t hat nicht auf Quelltext umgeschaltet: %T", w)
+	}
+	v := sb.View(80)
+	if !strings.Contains(v, "@startuml") || !strings.Contains(v, "A --> B : Test") {
+		t.Fatal("Quelltext-Ansicht zeigt den Zaun-Quelltext nicht")
+	}
+	if !strings.Contains(v, "plantuml #4") {
+		t.Fatal("Label verliert Sprache/stabile ID")
+	}
+	if sb.Height(80) == hImg && !strings.Contains(v, "│") {
+		t.Fatal("Quelltext-Ansicht hat keinen CodeBlock-Rahmen")
+	}
+
+	// Fokus muss im srcBlock ankommen (enter/c-Pfad des CodeBlock).
+	if !sb.srcBlock.Focused() {
+		t.Fatal("Fokus wurde nicht in die Quelltext-Ansicht propagiert")
+	}
+	// c in der Quelltext-Ansicht: CodeBlock-Pfad kopiert den QUELLTEXT.
+	nw, _ := sb.Update(keyOf("c"))
+	if got != src {
+		t.Fatalf("c in Quelltext-Ansicht kopiert %q, will den Quelltext", got)
+	}
+	if !nw.(ImageBlock).srcBlock.copied {
+		t.Fatal("Copy-Bestaetigung des CodeBlock fehlt")
+	}
+
+	// t zurueck: Bild wieder Standard, gleiche Hoehe wie vorher.
+	w2, _ := sb.Update(keyOf("t"))
+	ib, ok := w2.(ImageBlock)
+	if !ok || ib.showSrc {
+		t.Fatal("t hat nicht zurueck aufs Bild geschaltet")
+	}
+	if ib.Height(80) != hImg {
+		t.Fatalf("Bild-Hoehe nach zurueckschalten %d, will %d", ib.Height(80), hImg)
+	}
+
+	// Ohne SetSource ist t ein No-Op (z. B. reine PNG-Bloecke ohne Zaun).
+	plain := NewImageBlock(realPNG(80, 40), "x", true, TermCaps{}, nil, nil)
+	w3, _ := plain.Update(keyOf("t"))
+	if w3.(ImageBlock).showSrc {
+		t.Fatal("t ohne Quelltext darf nicht umschalten")
+	}
+
+	// c im BILD-Modus kopiert die ASCII-Grafik (Markdown-Payload).
+	got = ""
+	w4, _ := b.Update(keyOf("c"))
+	if got != "ascii-art" {
+		t.Fatalf("c im Bild-Modus kopiert %q, will die ASCII-Grafik", got)
+	}
+	if w4.(ImageBlock).showSrc {
+		t.Fatal("c darf nicht umschalten")
+	}
+}
+
+// BlockList reicht t an den fokussierten ImageBlock durch (Bonus-FR): TAB
+// fokussiert, t schaltet um — Quelltext-Ansicht wird Teil der Zeilen-
+// Abrechnung (Height), damit Scrollen/Clamp stimmen.
+func TestBlockListRoutesSourceSwitch(t *testing.T) {
+	t.Cleanup(KittyCleanup)
+	l := NewBlockList()
+	l = l.SetSize(80, 24)
+	l = l.Append(NewTextBlock("hallo", "#fff"))
+	cb := NewCodeBlock("plantuml", "@startuml\nA --> B\n@enduml", nil)
+	cb = cb.SetID(1).(CodeBlock)
+	l = l.Append(cb)
+	img := NewImageBlock(realPNG(80, 40), "art", true, TermCaps{}, nil, nil)
+	img = img.SetID(2).(ImageBlock)
+	img = img.SetSource("plantuml", "@startuml\nA --> B\n@enduml").(ImageBlock)
+	l = l.Append(img)
+
+	// TAB bis der ImageBlock fokussiert ist.
+	for i := 0; i < 5 && !(l.Focused() && l.items[l.focus].ID() == 2); i++ {
+		l, _, _ = l.Update(keyOf("tab"))
+	}
+	if !l.Focused() || l.items[l.focus].ID() != 2 {
+		t.Fatal("TAB hat den ImageBlock nicht fokussiert")
+	}
+	hImg := l.items[l.focus].Height(80)
+
+	l, _, ok := l.Update(keyOf("t"))
+	if !ok {
+		t.Fatal("t wurde nicht als konsumiert gemeldet")
+	}
+	it, isImg := findImage(l, 2)
+	if !isImg || !it.(ImageBlock).showSrc {
+		t.Fatal("t ueber BlockList hat nicht umgeschaltet")
+	}
+	if it.Height(80) == hImg {
+		t.Fatal("Hoehe muendet nicht in der Quelltext-Ansicht")
+	}
+	if !strings.Contains(l.View(), "@startuml") {
+		t.Fatal("Quelltext erscheint nicht in der gerenderten Liste")
+	}
 }

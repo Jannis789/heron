@@ -117,6 +117,13 @@ type ImageBlock struct {
 	caps     TermCaps
 	ascii    string
 	fallback CodeBlock
+	// Roh-Quelltext des Diagramms (Bonus-FR): BlockList reicht t an den
+	// fokussierten Block, showSrc schaltet zwischen Bild (Standard) und
+	// Quelltext-Ansicht um. srcBlock ist die Code-Ansicht des Quelltexts —
+	// voller CodeBlock: Rahmen, Zeilen-Label, COPY-Action, Fokus-Stil.
+	src      string
+	srcBlock CodeBlock
+	showSrc  bool
 	copyFn   CopyFunc
 	focused  bool
 	hover    bool
@@ -561,6 +568,9 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 // damit hohe Bilder auch uebertragen werden, wenn ihr Anfang heraus-
 // gescrollt ist (Follow-Modus: neue Bloecke erscheinen unten).
 func (b ImageBlock) ViewRange(width, from, to int) string {
+	if b.showSrc {
+		return b.srcViewRange(width, from, to)
+	}
 	if !b.useImg || b.kittyID < 1 || (b.pngPath == "" && b.svg == nil) {
 		return b.fallback.View(width)
 	}
@@ -623,6 +633,9 @@ func (b ImageBlock) ViewRange(width, from, to int) string {
 func (b ImageBlock) View(width int) string { return b.ViewRange(width, 0, 1<<30) }
 
 func (b ImageBlock) Height(width int) int {
+	if b.showSrc {
+		return b.srcBlock.Height(width)
+	}
 	if !b.useImg {
 		return b.fallback.Height(width)
 	}
@@ -635,22 +648,61 @@ func (b ImageBlock) Height(width int) int {
 	return b.rowsFor(width)
 }
 
-func (b ImageBlock) Update(msg tea.Msg) (Widget, tea.Cmd) { return b, nil }
+// Update wertet Tasten des fokussierten Blocks — BlockList reicht enter/c
+// und +,-,t durch (Bonus-FR): t schaltet zwischen Bild (Standard) und
+// rohem Quelltext um. In der Quelltext-Ansicht geht alles ausser t an den
+// CodeBlock: enter/c kopieren dort den QUELLTEXT samt Bestaetigungs-Flash,
+// der Rahmen zeigt Fokus und die COPY-Action wie bei jedem Codeblock.
+// +/- (Zoom) sind noch ohne Funktion — Bewegung/Zoom im Bild kommt spaeter.
+func (b ImageBlock) Update(msg tea.Msg) (Widget, tea.Cmd) {
+	k, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return b, nil
+	}
+	switch k.String() {
+	case "t":
+		if b.src == "" {
+			return b, nil
+		}
+		nb := b
+		nb.showSrc = !b.showSrc
+		return nb, nil
+	case "c", "enter":
+		// Copy im Bild-Modus: die ASCII-Grafik (Markdown-Payload des Blocks).
+		// Im Quelltext-Modus greift unten die Weiterleitung an den CodeBlock,
+		// die den QUELLTEXT samt Bestaetigungs-Flash kopiert.
+		if !b.showSrc {
+			return b.Copy()
+		}
+	}
+	if b.showSrc {
+		w, cmd := b.srcBlock.Update(msg)
+		if cb, ok := w.(CodeBlock); ok {
+			nb := b
+			nb.srcBlock = cb
+			return nb, cmd
+		}
+	}
+	return b, nil
+}
 func (b ImageBlock) Focused() bool                        { return b.focused }
 func (b ImageBlock) Focusable() bool                      { return true }
 func (b ImageBlock) SetFocused(f bool) Widget {
 	nb := b
 	nb.focused = f
+	nb.srcBlock.focused = f
 	return nb
 }
 func (b ImageBlock) SetHover(h bool) Widget {
 	nb := b
 	nb.hover = h
+	nb.srcBlock.hover = h
 	return nb
 }
 func (b ImageBlock) SetMarked(m bool) Widget {
 	nb := b
 	nb.marked = m
+	nb.srcBlock.marked = m
 	return nb
 }
 func (b ImageBlock) Marked() bool { return b.marked }
@@ -671,6 +723,7 @@ func (b ImageBlock) ID() int { return b.id }
 func (b ImageBlock) SetID(i int) Widget {
 	nb := b
 	nb.id = i
+	nb.srcBlock.id = i
 	return nb
 }
 
@@ -680,6 +733,40 @@ func (b ImageBlock) SetKittyID(i int) Widget {
 	nb := b
 	nb.kittyID = i
 	return nb
+}
+
+// SetSource haelt den rohen Diagramm-Quelltext fuer den t-Switch (Bonus-FR):
+// applyDiagrams ruft das direkt nach der Konvertierung — bis dahin war der
+// Zaun-Quelltext nur im fluechtigen CodeBlock und ging beim Uebergang ins
+// Bild verloren (Markdown()/Copy() lieferten die ASCII-Grafik). Der
+// srcBlock erbt ID/Fokus/Hover/Markierung, damit Kopieren und Rahmen stimmen.
+func (b ImageBlock) SetSource(lang, src string) Widget {
+	nb := b
+	nb.src = strings.TrimSuffix(src, "\n")
+	cb := NewCodeBlock(lang, nb.src, b.copyFn)
+	cb.th = b.th
+	cb.id = b.id
+	cb.focused = b.focused
+	cb.hover = b.hover
+	cb.marked = b.marked
+	nb.srcBlock = cb
+	return nb
+}
+
+// srcViewRange liefert die Quelltext-Zeilen from..to — ViewRange-Semantik
+// wie beim Bild, damit BlockList.all() den Block auch angeschnitten rendert.
+func (b ImageBlock) srcViewRange(width, from, to int) string {
+	vs := strings.Split(b.srcBlock.View(width), "\n")
+	if from < 0 {
+		from = 0
+	}
+	if to > len(vs) {
+		to = len(vs)
+	}
+	if from >= to {
+		return ""
+	}
+	return strings.Join(vs[from:to], "\n")
 }
 
 // SetSVG haelt die Vektor-Quelle (plantuml -tsvg) und setzt die Bildmasse

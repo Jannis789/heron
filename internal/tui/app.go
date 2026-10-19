@@ -619,7 +619,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if handled {
 				return m, cmd
 			}
-		case "c", "esc":
+		case "c", "esc", "t", "+", "=", "-", "_":
+			// Block-Aktionen am fokussierten Block: c/esc wie gehabt; t
+			// schaltet einen Diagramm-Block zwischen Bild (Standard) und
+			// rohem Quelltext um, +/- sind fuer Zoom reserviert (Bonus-FR).
+			// Ohne Fokus faellt alles durch und tippt normal ins Eingabefeld.
 			if m.chat.Focused() {
 				var cmd tea.Cmd
 				var handled bool
@@ -627,8 +631,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if handled {
 					return m, cmd
 				}
-			}
-		}
+			}		}
 	case chunkMsg:
 		// The answer grows in place under the chat while it streams (FR-2):
 		// prose as raw preview, in-progress tables re-layout per row.

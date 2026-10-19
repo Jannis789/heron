@@ -36,7 +36,12 @@ type diagramResult struct {
 	ascii string
 	png   []byte
 	svg   []byte // Vektor-Quelle (FR-27, Metrik 2): bei Resize neu rasern
-	ok    bool
+	// src ist der rohe Zaun-Quelltext — er ueberlebt die Konvertierung und
+	// landet im ImageBlock (SetSource): t schaltet dort zwischen Bild
+	// (Standard) und Quelltext um. Ohne das Feld blieb nach der Konvertierung
+	// nur die ASCII-Grafik (ascii) uebrig.
+	src string
+	ok  bool
 }
 
 // diagramsDoneMsg carries every result of one conversion batch, keyed by the
@@ -74,7 +79,7 @@ func (m Model) pendingDiagrams() tea.Cmd {
 		defer cancel()
 		results := make([]diagramResult, 0, len(jobs))
 		for _, j := range jobs {
-			res := diagramResult{id: j.id, lang: j.lang, ascii: j.code}
+			res := diagramResult{id: j.id, lang: j.lang, ascii: j.code, src: j.code}
 			t0 := time.Now()
 			switch j.lang {
 			case "mermaid":
@@ -192,6 +197,11 @@ func (l BlockList) applyDiagrams(results []diagramResult, useImg bool, caps Term
 					break
 				}
 				img := NewImageBlock(r.png, strings.TrimSuffix(r.ascii, "\n"), true, caps, cb.copyFn, cb.th)
+			// Roh-Quelltext fuer den t-Switch (Bild <-> Text) mitgeben,
+			// bevor ID/Fokus gesetzt werden — SetID/Focused propagieren.
+			if r.src != "" {
+				img = img.SetSource(r.lang, r.src).(ImageBlock)
+			}
 				// Terminal-Bild-ID: 1..250, in \e[38;5;N m codierbar (FR-27).
 				if r.svg != nil {
 					img = img.SetSVG(r.svg).(ImageBlock)
