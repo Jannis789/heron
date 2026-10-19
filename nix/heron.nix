@@ -1,4 +1,4 @@
-{ lib, buildGoModule, makeWrapper, plantuml, wl-clipboard, resvg }:
+{ lib, buildGoModule, makeWrapper, plantuml, wl-clipboard, resvg, dejavu_fonts }:
 
 buildGoModule {
   pname = "heron";
@@ -18,8 +18,17 @@ buildGoModule {
   # nicht nur Build-Inputs — ohne Wrap fehlen sie im PATH von "nix run".
   # resvg rastert die PlantUML-Vektoren auf die exakte Terminalgroesse
   # (0x Skalierung = scharf, Metrik 2).
+  # Fonts fuer resvg (Fix "Diagramm ohne Text"): resvgs Font-DB findet auf
+  # NixOS keine Systemschriften (kein /usr/share/fonts), die PlantUML-SVGs
+  # wurden ohne Text-Glyphen gerastert. HERON_RESVG_FONTS + HERON_RESVG_FONT
+  # (s. internal/render/svg.go resvgFontArgs) laden DejaVu und mappen die
+  # generischen Familien — plantuml schreibt font-family="sans-serif", das
+  # resvg sonst auf das fehlende "Arial" mapped.
   postFixup = ''
-    wrapProgram $out/bin/heron --prefix PATH : ${lib.makeBinPath [ plantuml wl-clipboard resvg ]}
+    wrapProgram $out/bin/heron \
+      --prefix PATH : ${lib.makeBinPath [ plantuml wl-clipboard resvg ]} \
+      --set HERON_RESVG_FONTS ${dejavu_fonts}/share/fonts \
+      --set HERON_RESVG_FONT "DejaVu Sans"
   '';
 
   meta = with lib; {

@@ -3,6 +3,7 @@ package render
 import (
 	"context"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,34 @@ func TestSvgDimsViewBox(t *testing.T) {
 func TestSvgDimsGarbage(t *testing.T) {
 	if _, _, ok := SvgDims([]byte("kein svg")); ok {
 		t.Fatal("Muell als SVG-Dims akzeptiert")
+	}
+}
+
+func TestResvgFontArgs(t *testing.T) {
+	t.Setenv("HERON_RESVG_FONTS", "")
+	t.Setenv("HERON_RESVG_FONT", "")
+	if args := resvgFontArgs(); len(args) != 0 {
+		t.Fatalf("ohne env duerfen keine Font-Flags entstehen: %v", args)
+	}
+
+	t.Setenv("HERON_RESVG_FONTS", "/a:/b:")
+	got := resvgFontArgs()
+	want := []string{"--use-fonts-dir", "/a", "--use-fonts-dir", "/b"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fonts-dirs = %v, will %v (leere Eintraege ignoriert)", got, want)
+	}
+
+	t.Setenv("HERON_RESVG_FONTS", "")
+	t.Setenv("HERON_RESVG_FONT", "DejaVu Sans")
+	got = resvgFontArgs()
+	want = []string{
+		"--font-family", "DejaVu Sans",
+		"--serif-family", "DejaVu Sans",
+		"--sans-serif-family", "DejaVu Sans",
+		"--monospace-family", "DejaVu Sans",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("font-familie = %v, will %v", got, want)
 	}
 }
 

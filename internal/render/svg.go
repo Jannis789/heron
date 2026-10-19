@@ -116,6 +116,38 @@ func ResvgAvailable() bool {
 	return resvgPath != ""
 }
 
+// resvgFontArgs liefert die Font-Flags fuer den resvg-Aufruf (Fix fuer
+// "Diagramm ohne Text" auf NixOS/Containern): resvgs eingebaute Font-DB
+// scannt nur klassische Pfade wie /usr/share/fonts — auf NixOS existieren
+// die nicht, resvg warnt "No match for 'sans-serif' font-family", beendet
+// sich aber mit Exit 0. Das PNG hatte dann KEINE Text-Glyphen mehr, obwohl
+// heron den Raster als Erfolg verbuchte (timg mit librsvg+fontconfig zeigte
+// dieselbe SVG dagegen mit Text).
+//
+// HERON_RESVG_FONTS: ':'-getrennte Font-Verzeichnisse -> --use-fonts-dir.
+// HERON_RESVG_FONT:  Familienname fuer die generischen Familien — noetig,
+//                    weil plantuml font-family="sans-serif" schreibt, resvg
+//                    das auf "Arial" mapped und Arial nicht geladen ist.
+func resvgFontArgs() []string {
+	var args []string
+	if dirs := os.Getenv("HERON_RESVG_FONTS"); dirs != "" {
+		for _, d := range filepath.SplitList(dirs) {
+			if d != "" {
+				args = append(args, "--use-fonts-dir", d)
+			}
+		}
+	}
+	if fam := os.Getenv("HERON_RESVG_FONT"); fam != "" {
+		args = append(args,
+			"--font-family", fam,
+			"--serif-family", fam,
+			"--sans-serif-family", fam,
+			"--monospace-family", fam,
+		)
+	}
+	return args
+}
+
 // ResvgToPNG rasterizes SVG to PNG at the EXACT pixel size (w,h) — the
 // terminal then performs zero scaling and the image is pixel-sharp
 // (FR-27, Metrik 2). Font warnings on stderr are tolerated (exit 0 = ok);
@@ -138,7 +170,8 @@ func ResvgToPNG(ctx context.Context, svg []byte, w, h int) ([]byte, error) {
 		return nil, err
 	}
 	out := filepath.Join(dir, "diagram.png")
-	cmd := exec.CommandContext(ctx, resvgPath, "--width", strconv.Itoa(w), "--height", strconv.Itoa(h), in, out)
+	args := append(resvgFontArgs(), "--width", strconv.Itoa(w), "--height", strconv.Itoa(h), in, out)
+	cmd := exec.CommandContext(ctx, resvgPath, args...)
 	if o, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("resvg: %w: %s", err, o)
 	}
