@@ -369,7 +369,7 @@ func imgRowPctVal() int {
 // antwort!). timg beweist seit Jahren, dass genau diese Form laeuft. Die
 // Anzeige-Groesse kommt aus den Pixeln des PNG — die Skalierung macht
 // resvg VOR der Uebertragung.
-func transmitDirectChunks(kittyID int, png []byte) string {
+func transmitDirectChunks(kittyID int, png []byte, cols, rows int) string {
 	if kittyID < 1 || kittyID > kittyIDMax || len(png) == 0 {
 		return ""
 	}
@@ -387,7 +387,7 @@ func transmitDirectChunks(kittyID int, png []byte) string {
 			more = 1
 		}
 		if first {
-			fmt.Fprintf(&bld, "\x1b_Ga=T,i=%d,q=2,f=100,m=%d;%s\x1b\\", kittyID, more, chunk)
+			fmt.Fprintf(&bld, "\x1b_Ga=T,i=%d,c=%d,r=%d,q=2,f=100,m=%d;%s\x1b\\", kittyID, cols, rows, more, chunk)
 			first = false
 		} else {
 			fmt.Fprintf(&bld, "\x1b_Gq=2,m=%d;%s\x1b\\", more, chunk)
@@ -529,7 +529,7 @@ func (b ImageBlock) renderCache(cols, rows int) (*imgCache, bool) {
 		if src == nil {
 			src = b.png
 		}
-		c.prefix = transmitDirectChunks(b.kittyID, src)
+		c.prefix = transmitDirectChunks(b.kittyID, src, cols, rows)
 		c.lines = make([]string, rows)
 		c.lines[0] = c.prefix
 	} else {

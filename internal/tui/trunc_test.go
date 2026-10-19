@@ -13,7 +13,7 @@ import (
 // druckbar (abschneiden -> Bilddaten zerstoert)?
 func TestTruncateDCS(t *testing.T) {
 	png := make([]byte, 3000) // ~4kB base64
-	line := transmitDirectChunks(77, png)
+	line := transmitDirectChunks(77, png, 21, 12)
 	if !strings.HasPrefix(line, "\x1b_Ga=T") {
 		t.Fatalf("kein timg-header: %q", line[:30])
 	}
