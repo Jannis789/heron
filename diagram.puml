@@ -1,0 +1,46 @@
+@startuml Klassendiagramm
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam class {
+    BackgroundColor #FDF6E3
+    BorderColor #586E75
+    ArrowColor #268BD2
+}
+
+abstract class Tier {
+    # name : String
+    # alter : int
+    + gibLaut() : void
+    + {abstract} bewegeDich() : void
+}
+
+class Hund {
+    + bewegeDich() : void
+    + apportieren() : void
+}
+
+class Katze {
+    + bewegeDich() : void
+    + schnurren() : void
+}
+
+class Besitzer {
+    - adresse : String
+    + fuettern(t : Tier) : void
+}
+
+class Tierarzt {
+    - praxisName : String
+    + untersuche(t : Tier) : void
+}
+
+Tier <|-- Hund
+Tier <|-- Katze
+Besitzer "1" o-- "0..*" Tier : besitzt
+Tierarzt "1" ..> "0..*" Tier : behandelt
+
+note right of Tier
+  Abstrakte Basisklasse
+  für alle Haustiere
+end note
+@enduml

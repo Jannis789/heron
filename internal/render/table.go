@@ -34,10 +34,42 @@ func detectWidth() int {
 // nodeText collects the plain (unstyled) text under a node.
 func nodeText(n ast.Node, src []byte) string {
 	var b strings.Builder
+	inCode := false
 	ast.Walk(n, func(c ast.Node, entering bool) (ast.WalkStatus, error) {
-		if entering {
-			if t, ok := c.(*ast.Text); ok && !t.SoftLineBreak() {
-				b.Write(t.Text(src))
+		if !entering {
+			if _, ok := c.(*ast.CodeSpan); ok {
+				inCode = false
+			}
+			return ast.WalkContinue, nil
+		}
+		switch t := c.(type) {
+		case *ast.CodeSpan:
+			// Inline-Code: Backslash-Escapes sind darin literal (CommonMark).
+			inCode = true
+		case *ast.Text:
+			// Text IMMER schreiben (Soft-Break warf frueher den Knotentext
+			// weg); der Umbruch selbst wird hier zum Leerzeichen —
+			// Ueberschriften/Zellen/Listeneintraege sind einzeilig. Ausserhalb
+			// von Code-Spans Backslash-Escapes aufloesen (\* -> *).
+			seg := t.Text(src)
+			if !inCode {
+				seg = unescapeBackslash(seg)
+			}
+			b.Write(seg)
+			if t.SoftLineBreak() || t.HardLineBreak() {
+				b.WriteByte(' ')
+			}
+		case *ast.AutoLink:
+			// AutoLink traegt die URL in einem privaten Feld (kein Text-Kind
+			// im Walk) — ohne Label waere sie komplett verschwunden.
+			b.Write(t.Label(src))
+		case *extast.TaskCheckBox:
+			// Der Parser frisst "[x]"/"[ ]" aus dem Quelltext — ohne
+			// Zurueckschreiben verschwanden Checkboxen aus Listen.
+			if t.IsChecked {
+				b.WriteString("[x] ")
+			} else {
+				b.WriteString("[ ] ")
 			}
 		}
 		return ast.WalkContinue, nil
@@ -94,7 +126,10 @@ func WrapWords(s string, w int) []string {
 			}
 		}
 		for _, word := range words {
-			ww := runewidth.StringWidth(word)
+			// lipgloss misst Emoji-Praesentation (⚠️/☺️ = 2 Zellen),
+			// runewidth nicht — WrapWords faellt sonst eine Zelle zu kurz
+			// und die Zeile schiebt sich unter dem Terminalrand durch.
+			ww := lipgloss.Width(word)
 			if ww > w {
 				flush()
 				lines = append(lines, WrapDisplay(word, w)...)
@@ -118,7 +153,10 @@ func WrapWords(s string, w int) []string {
 }
 
 func padDisp(s string, w int, a Align) string {
-	d := w - runewidth.StringWidth(s)
+	// lipgloss misst Emoji-Praesentation (⚠️ = 2 Zellen), runewidth nicht —
+	// Messung und Padding muessen dieselbe Breite sehen, sonst verschiebt
+	// die Zeile die Rahmen (Box-Geometrie vs. Terminal-Realitaet).
+	d := w - lipgloss.Width(s)
 	if d <= 0 {
 		return s
 	}
@@ -133,7 +171,10 @@ func padDisp(s string, w int, a Align) string {
 	}
 }
 
-// wrapCells wraps every cell of a row to its per-column budget (word wrap).
+// wrapCells wraps every cell of a row to its per-column budget (word wrap)
+// and haengt eine harte Kante dran: WrapWords misst runewidth, Emoji-
+// Praesentation (⚠️) zaehlt im Terminal aber 2 — solche Zeilen werden auf
+// das Budget gekuerzt, damit die Spaltenbreite (und damit die Box) haelt.
 func wrapCells(row []string, budgets []int) [][]string {
 	out := make([][]string, len(budgets))
 	for c := range budgets {
@@ -141,9 +182,35 @@ func wrapCells(row []string, budgets []int) [][]string {
 		if c < len(row) {
 			s = row[c]
 		}
-		out[c] = WrapWords(s, budgets[c])
+		w := budgets[c]
+		if w < 1 {
+			w = 1
+		}
+		lines := WrapWords(s, w)
+		for i, ln := range lines {
+			lines[i] = truncateW(ln, w)
+		}
+		out[c] = lines
 	}
 	return out
+}
+
+// truncateW schneidet s auf w Anzeige-Zellen (lipgloss-Messung) und
+// markiert den Schnitt mit …; Zellen sind kurz, der Scan ist billig.
+func truncateW(s string, w int) string {
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	if w <= 1 {
+		return "…"
+	}
+	rs := []rune(s)
+	for cut := len(rs); cut > 0; cut-- {
+		if out := string(rs[:cut]) + "…"; lipgloss.Width(out) <= w {
+			return out
+		}
+	}
+	return "…"
 }
 
 // DimsLabel builds the compact "R × C" table size label.
@@ -168,14 +235,22 @@ func boxWidth(widths []int) int {
 // display width of the action. st colors the chrome (dim); the action keeps
 // its own styling.
 func FooterLine(totalW int, label, action, actionStyled string, actionW int, st, labelStyle lipgloss.Style, junctions []int) string {
-	// No label: the dashes run straight into the action box — no empty
-	// bracket chrome (FR-30 think block footer).
-	if strings.TrimSpace(label) == "" {
+	// Nur die Action in einem Kasten auf der Rahmenlinie: └──[ COPY ]──┘.
+	// Das ist der Basisfall (leeres Label) UND der Degradationspfad, wenn
+	// Label + Action das hartes Minimum (8 Zellen Chrome) sprengen — das
+	// Label faellt zuerst, die Action bleibt klick-/tastbar (FR-5).
+	actionOnly := func() string {
 		n := max(totalW-actionW-8, 0)
 		return st.Render("└─"+strings.Repeat("─", n)) +
 			st.Render("[ ") + actionStyled + st.Render(" ]─┘")
 	}
+	if strings.TrimSpace(label) == "" {
+		return actionOnly()
+	}
 	labelW := runewidth.StringWidth(label)
+	if totalW-labelW-actionW-8 < 0 {
+		return actionOnly()
+	}
 	spaced := totalW-labelW-actionW-12 >= 0
 	pad := ""
 	if spaced {
@@ -212,6 +287,34 @@ func FooterLine(totalW int, label, action, actionStyled string, actionW int, st,
 	return prefix + actionStyled + suffix
 }
 
+// FooterRail rendert die LEERE Abschlusszeile einer Box: └──────┘ ohne Label
+// und ohne Aktions-Kasten — der Grundpfeiler der Progressive-Disclosure-Anzeige
+// (die Aktionszeile erscheint nur bei Fokus/Hover/Auswahl). Geometrie bleibt
+// exakt die von FooterLine (eine Zeile, gleiche Ecken/Strichstellen), damit
+// Scroll-Position und Maus-Hit-Testing einer Box unveraendert bleiben.
+func FooterRail(totalW int, st lipgloss.Style, junctions []int) string {
+	n := max(totalW-2, 0)
+	isJ := make(map[int]bool, len(junctions))
+	for _, j := range junctions {
+		isJ[j] = true
+	}
+	var dash strings.Builder
+	for x := 1; x <= n; x++ {
+		if isJ[x] {
+			dash.WriteString("┴")
+		} else {
+			dash.WriteString("─")
+		}
+	}
+	return st.Render("└" + dash.String() + "┘")
+}
+
+// TableFooterRail ist die Tabellen-Variante von FooterRail: die Abschluss-
+// zeile kennt die Spalten-Junctions (┴), aber keine Label/Aktion.
+func TableFooterRail(widths []int, th *Theme) string {
+	return FooterRail(boxWidth(widths), th.BorderStyle(), junctionPositions(widths))
+}
+
 // junctionPositions returns the x positions (in cells) of the column
 // junctions inside a row rendered with the given widths.
 func junctionPositions(widths []int) []int {
@@ -236,10 +339,8 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 	if len(cells) == 0 {
 		return nil, nil
 	}
-	header := cells[0]
-	rows := cells[1:]
-	cols := len(header)
-	for _, r := range rows {
+	cols := len(cells[0])
+	for _, r := range cells[1:] {
 		if len(r) > cols {
 			cols = len(r)
 		}
@@ -247,6 +348,43 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 	if cols == 0 {
 		return nil, nil
 	}
+
+	// Spalten, die selbst mit 1 Inhaltszelle nicht mehr in die Breite
+	// passen (Chrome je Spalte: 2 Padding + 1 Junction, plus 2 Rand),
+	// fallen von rechts ab — eine …-Spalte markiert den Schnitt. Das
+	// Kopieren (FR-29) liefert weiterhin ALLE Spalten: Markdown() liest
+	// die Original-Zellen, nicht die Anzeige-Breiten.
+	if width < 16 {
+		width = 16
+	}
+	maxCols := cols
+	for maxCols > 1 && 4*maxCols+1 > width {
+		maxCols--
+	}
+	if maxCols < cols {
+		keep := maxCols - 1
+		trunc := make([][]string, len(cells))
+		for i, row := range cells {
+			n := min(keep, len(row))
+			r := append([]string{}, row[:n]...)
+			if i == 0 {
+				r = append(r, "…")
+			} else {
+				r = append(r, "")
+			}
+			trunc[i] = r
+		}
+		cells = trunc
+		if len(aligns) > keep {
+			aligns = append(append([]Align{}, aligns[:keep]...), AlignDefault)
+		}
+		cols = maxCols
+	}
+
+	// ERST kuerzen, DANN header/rows ableiten — sonst rendern die beiden
+	// noch die Original-Spalten gegen die gekuerzten Budgets.
+	header := cells[0]
+	rows := cells[1:]
 
 	// Natural (unwrapped) content width per column.
 	nat := make([]int, cols)
@@ -256,7 +394,7 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 			if c < len(row) {
 				s = row[c]
 			}
-			if w := runewidth.StringWidth(s); w > nat[c] {
+			if w := lipgloss.Width(s); w > nat[c] {
 				nat[c] = w
 			}
 		}
@@ -293,8 +431,32 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 				widest = c
 			}
 		}
-		if rem := avail - assigned; rem != 0 {
-			budgets[widest] += rem
+		if rem := avail - assigned; rem > 0 {
+			budgets[widest] += rem // Ueberschuss an die breiteste Spalte
+		}
+		// Negative Reste durfen keine Spalte unter 1 druecken (Inhalt muss
+		// rein) und duerfen die Summe nicht ueber avail heben — sonst
+		// ueberlaeuft die Box strukturell die Zielbreite.
+		for rem := avail - assigned; rem < 0; {
+			reduced := false
+			for c := range budgets {
+				if rem == 0 {
+					break
+				}
+				if budgets[c] > 1 {
+					budgets[c]--
+					rem++
+					reduced = true
+				}
+			}
+			if !reduced {
+				break
+			}
+		}
+		for c, b := range budgets {
+			if b < 1 {
+				budgets[c] = 1
+			}
 		}
 	}
 
@@ -308,13 +470,13 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 	for c := 0; c < cols; c++ {
 		wmax := 0
 		for _, ln := range headerW[c] {
-			if w := runewidth.StringWidth(ln); w > wmax {
+			if w := lipgloss.Width(ln); w > wmax {
 				wmax = w
 			}
 		}
 		for _, row := range rowsW {
 			for _, ln := range row[c] {
-				if w := runewidth.StringWidth(ln); w > wmax {
+				if w := lipgloss.Width(ln); w > wmax {
 					wmax = w
 				}
 			}
@@ -326,6 +488,11 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 	footerMin := runewidth.StringWidth(DimsLabel(len(rows), cols)) + len("COPY") + 12
 	if footerMin > width {
 		footerMin -= 4 // drop the inner box padding instead of exceeding the cap
+	}
+	// Niemals ueber die Zielbreite wachsen: der Footer degradiert selbst
+	// (FooterLine laesst das Label zuerst fallen), die Box aber nie.
+	if footerMin > width {
+		footerMin = width
 	}
 	if total := boxWidth(widths); total < footerMin {
 		widths[len(widths)-1] += footerMin - total
@@ -441,7 +608,15 @@ func CenteredActionLine(totalW int, action, actionStyled string, actionW int, st
 	box := actionW + 4 // "[ " + action + " ]"
 	n := totalW - box - 2
 	if n < 0 {
+		// Schmaler als der Action-Kasten: ohne Chrome direkt auf dem
+		// Rahmen (Geometrie bleibt via CenteredActionRange synchron).
 		n = 0
+		if pad := totalW - actionW - 2; pad >= 0 {
+			left := pad / 2
+			return st.Render("└"+strings.Repeat("─", left)) + actionStyled +
+				st.Render(strings.Repeat("─", pad-left)+"┘")
+		}
+		return st.Render("└") + actionStyled + st.Render("┘")
 	}
 	left := n / 2
 	return st.Render("└"+strings.Repeat("─", left)) +
@@ -455,7 +630,12 @@ func CenteredActionRange(totalW, actionW int) (int, int) {
 	box := actionW + 4
 	n := totalW - box - 2
 	if n < 0 {
-		n = 0
+		// Ohne Kasten-Chrome beginnt die Action direkt nach der Ecke —
+		// dieselbe Degradation wie in CenteredActionLine.
+		if pad := totalW - actionW - 2; pad >= 0 {
+			return 1 + pad/2, 1 + pad/2 + actionW
+		}
+		return 1, 1 + actionW
 	}
 	left := n / 2
 	return 1 + left, 1 + left + box

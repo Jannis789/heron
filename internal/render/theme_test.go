@@ -1,6 +1,7 @@
 package render
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -85,6 +86,58 @@ func TestTableChromeIsLavenderWithDarkFill(t *testing.T) {
 	for _, want := range []string{"┌", "│", "╞", "═", "╪", "└", "┘", "[", "]", "COPY", "1", "2"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("%q fehlt: %q", want, out)
+		}
+	}
+}
+
+// TestHeadingScaleSubtle: die "Groesse" von h1..h6 ist eine subtile
+// Prominenz-Hierarchie — alle fett, Farbe gleitet sanft von Action (h1)
+// zu Text (h6), nur h1 unterstrichen (dezenter Abschnitts-Anker). Keine
+// Font-Groessen, keine grossen Spaenge.
+
+// hexDist misst den RGB-Abstand zweier Farben (Kontrast-Kontrolle).
+func hexDist(a, b string) float64 {
+	pa, pb := parseHex(a), parseHex(b)
+	dx, dy, dz := float64(pa[0]-pb[0]), float64(pa[1]-pb[1]), float64(pa[2]-pb[2])
+	return math.Sqrt(dx*dx + dy*dy + dz*dz)
+}
+
+func TestHeadingScaleSubtle(t *testing.T) {
+	th, err := DefaultTheme()
+	if err != nil {
+		t.Fatalf("DefaultTheme: %v", err)
+	}
+	if got := th.HeadingColor(1); got != th.FocusColor() {
+		t.Fatalf("h1 color = %q, want focus %q", got, th.FocusColor())
+	}
+	// Mehr Kontrast als vorher: h1 (Focus) muss klar von h6 (Text) abstehen.
+	if d := hexDist(th.HeadingColor(1), th.HeadingColor(6)); d < 100 {
+		t.Fatalf("Kontrast h1..h6 zu gering (d=%.0f)", d)
+	}
+	if got := th.HeadingColor(6); got != th.Text.Color {
+		t.Fatalf("h6 color = %q, want body-text %q", got, th.Text.Color)
+	}
+	// H1..H6 liefern einen echten Verlauf (kein Klumpen gleicher Farben).
+	seen := map[string]bool{}
+	for l := 1; l <= 6; l++ {
+		seen[th.HeadingColor(l)] = true
+	}
+	if len(seen) != 6 {
+		t.Fatalf("heading gradient nicht monoton: %d verschiedene Farben", len(seen))
+	}
+	// Alle Stufen fett; Unterstreichung nur bei h1. Robust ueber
+	// UnsetUnderline statt fragiler ANSI-Substrings.
+	if !strings.Contains(th.HeadingStyle(1).Render("Titel"), "\x1b[1") {
+		t.Fatal("h1 ist nicht fett")
+	}
+	h1 := th.HeadingStyle(1)
+	if h1.Render("T") == h1.UnsetUnderline().Render("T") {
+		t.Fatal("h1 fehlt die dezente Unterstreichung")
+	}
+	for _, l := range []int{2, 3, 6} {
+		hs := th.HeadingStyle(l)
+		if hs.Render("T") != hs.UnsetUnderline().Render("T") {
+			t.Fatalf("h%d darf nicht unterstrichen sein", l)
 		}
 	}
 }

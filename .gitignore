@@ -3,3 +3,6 @@ result
 *.test
 *.out
 .pi/
+.scratch/
+__pycache__/
+/heron

@@ -78,38 +78,46 @@ func TestRestingFrame(t *testing.T) {
 	chat, _ := r.m.chat.applyDiagrams(done.results, true, r.m.caps)
 	r.m.chat = chat.ScrollEnd()
 
-	raw := r.m.View()
-	plain := stripEsc(raw)
-	rawLines := strings.Split(raw, "\n")
-	t.Logf("raw-zeilen=%d plain-zeilen=%d chat-hoehe=%d apc=%v",
-		len(rawLines), len(strings.Split(plain, "\n")), r.m.chat.height,
-		strings.Contains(raw, transmit))
-
+	// Text ueber die volle Chat-Laenge: Text-Bloecke sind keine rangedWidgets,
+	// all() enthaelt ihre Zeilen vollstaendig — unabhaengig vom Scrollpunkt.
+	allLines, _ := r.m.chat.all()
+	plain := stripEsc(strings.Join(allLines, "\n"))
 	words := []string{"Absatz", "Donaudampf", "kursiv", "package main", "Code-Bl", "Inline-Markdown"}
 	textHits := 0
 	for _, w := range words {
 		if c := strings.Count(plain, w); c > 0 {
 			textHits += c
-			t.Logf("text %q = %d", w, c)
 		}
 	}
-	// Bildzeilen am RAW-Frame zaehlen (FG-ID-Markierung), nicht am gestrippten.
-	imgLines := 0
-	for _, ln := range rawLines {
-		if strings.Contains(ln, fgIDMark) {
-			imgLines++
+	// Bild DIREKT am Block pruefen (Scroll-unabhaengig): all() rendert
+	// rangedWidgets nur im sichtbaren Fenster, und die Leerzeilen um Ueber-
+	// schriften/Listen verschieben den Diagrammstandort am Ruhepunkt (FR:
+	// "eine Zeile frei"). Ein ImageBlock muss Platzhalterzeilen (fgIDMark)
+	// liefern und durch den Zeilen-Cap begrenzt sein.
+	w := r.m.chat.Width()
+	imgRows, imgHeight := 0, 0
+	for _, it := range r.m.chat.items {
+		if ib, ok := it.(ImageBlock); ok {
+			if rows := strings.Count(ib.View(w), fgIDMark); rows > 0 {
+				imgRows += rows
+				imgHeight = ib.Height(w)
+			}
 		}
 	}
-	t.Logf("text-treffer=%d bild-zeilen=%d von %d raw-zeilen", textHits, imgLines, len(rawLines))
+	// Das Ruhe-Fenster selbst darf nicht leer sein (Header/Eingabe/Footer).
+	if strings.TrimSpace(stripEsc(r.m.View())) == "" {
+		t.Fatal("ruhe-fenster ist leer")
+	}
+	t.Logf("text-treffer=%d bild-platzhalterzeilen=%d (blockhoehe=%d, chat-hoehe=%d)",
+		textHits, imgRows, imgHeight, r.m.chat.height)
 	if textHits == 0 {
-		t.Fatalf("RUHENDER SCHIRM OHNE TEXT: %d bild-zeilen von %d", imgLines, len(rawLines))
+		t.Fatal("DOKUMENT OHNE TEXT")
 	}
-	// Beide Richtungen sichern: ohne Bilder waere der Test ein Blindgaenger.
-	if imgLines == 0 {
-		t.Fatalf("ruhender schirm ohne bild-zeilen — cap/Render kaputt")
+	if imgRows == 0 {
+		t.Fatal("kein Bild-Platzhalter (ImageBlock rendert 0 zeilen) — cap/Render kaputt")
 	}
-	// Ein einzelnes Bild darf nie das ganze Fenster fuellen (Cap-Garantie).
-	if imgLines >= len(rawLines) {
-		t.Fatalf("bild fuellt weiterhin den ganzen schirm: %d/%d", imgLines, len(rawLines))
+	// Cap-Garantie: ein Bild darf das Chat-Fenster nie ganz fuellen.
+	if imgHeight <= 0 || imgHeight >= r.m.chat.height {
+		t.Fatalf("bild fuellt das chat-fenster: blockhoehe=%d chat-hoehe=%d", imgHeight, r.m.chat.height)
 	}
 }

@@ -11,11 +11,16 @@ ANSI-stripped final screen to --out (default: stdout). This is the manual
 visual check complement to the model-level tests in internal/tui.
 """
 import argparse, fcntl, os, pty, re, select, struct, subprocess, sys, termios, time
+import unicodedata
 
 KEYMAP = {
     "\\r": b"\r", "\r": b"\r", "\n": b"\n", "\t": b"\t",
     "^C": b"\x03", "esc": b"\x1b", "up": b"\x1b[A", "down": b"\x1b[B",
     "tab": b"\t",
+    "shift+up": b"\x1b[1;2A", "shift+down": b"\x1b[1;2B",
+    "shift+enter": b"\x1b[13;2u", "shift+tab": b"\x1b[Z", "right": b"\x1b[C",
+    "left": b"\x1b[D",
+    "shift+right": b"\x1b[1;2C", "shift+left": b"\x1b[1;2D",
 }
 
 ESC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
@@ -25,6 +30,12 @@ ESC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
 def emit(keys):
     """Translate a key script into a byte stream, expanding named keys."""
     out = bytearray()
+    for tok in emit_tokens(keys):
+        out += tok
+    return bytes(out)
+
+def emit_tokens(keys):
+    """Yield the key script one key at a time (named keys expanded)."""
     i = 0
     names = sorted(KEYMAP, key=len, reverse=True)
     while i < len(keys):
@@ -34,18 +45,20 @@ def emit(keys):
                 hit = n
                 break
         if hit:
-            out += KEYMAP[hit]
+            yield KEYMAP[hit]
             i += len(hit)
         else:
-            out += keys[i].encode()
+            yield keys[i].encode()
             i += 1
-    return bytes(out)
 
 # Capability queries a TUI sends on startup. A bare pty never answers them,
 # so the app would block on its first frame — we play the terminal here.
 REPLIES = [
     (b"\x1b]11;?", b"\x1b]11;rgb:0000/0000/0000\x1b\\"),
     (b"\x1b]10;?", b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\"),
+    (b"\x1b[16t",   b"\x1b[6;20;9t"),          # cell pixels: 9x20
+    (b"\x1b_Ga=q,i=31", b"\x1b_Gi=31;OK\x1b\\"),  # kitty graphics probe
+    (b"\x1b_Ga=q,i=32", b"\x1b_Gi=32;OK\x1b\\"),
     (b"\x1b[6n",   b"\x1b[1;1R"),
     (b"\x1b[>q",   b"\x1bP>|heron-shot/xterm-256color\x1b\\"),
     (b"\x1b[?u",   b"\x1b[?0u"),
@@ -91,6 +104,16 @@ class Screen:
                 self.g[y][x] = " "
 
     def put(self, ch):
+        if unicodedata.combining(ch):
+            # Kitty-Platzhalter: U+10EEEE + Kombinierende Diakritika sind
+            # EINE Zelle. Der Emulator haengt sie an die letzte Zelle an
+            # (bzw. verwirft sie), statt jeder eine eigene zu geben — sonst
+            # laufen die Bildzeilen ueber die Breite und der Screen driftet.
+            if 0 <= self.r < self.rows and 0 < self.c <= self.cols and self.c > 0:
+                prev = self.g[self.r][self.c - 1]
+                if len(prev) == 1:
+                    self.g[self.r][self.c - 1] = prev + ch
+            return
         if self.pending:
             # Deferred wrap: a real terminal stays on the last cell until the
             # next character arrives. Wrapping eagerly shifts every following
@@ -187,6 +210,10 @@ def feed(scr, data):
             m = re.search(r"\x07|\x1b\\", data[i:])
             i += m.end() if m else (n - i)
             continue
+        if i + 1 < n and data[i + 1] == "_":       # APC (kitty gfx): skip to ST
+            m = re.search(r"\x1b\\", data[i:])
+            i += m.end() if m else (n - i)
+            continue
         if i + 1 < n and data[i + 1] in ("(", ")"):  # charset select
             i += 3
             continue
@@ -241,7 +268,13 @@ def main():
     try:
         drain(fd, a.settle, buf)
         if a.keys:
-            os.write(fd, emit(a.keys))
+            # Getaktete Tasten (ein Write pro Taste, kurze Pause): Ein
+            # Burst in EINEM Read ist ein Paste-Randfall, den das PTY
+            # unvorhersehbar zerhackt — getaktet entspricht es dem echten
+            # Terminal und macht die Screenshots stabil.
+            for tok in emit_tokens(a.keys):
+                os.write(fd, tok)
+                drain(fd, 0.25, buf)
             drain(fd, a.after, buf)
     finally:
         # Snapshot the frame as the user last saw it. On shutdown bubbletea

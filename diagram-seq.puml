@@ -1,0 +1,53 @@
+@startuml Heron_PlantUML_Rendering
+skinparam shadowing false
+skinparam sequence {
+    ParticipantBackgroundColor #FDF6E3
+    ParticipantBorderColor #586E75
+    LifeLineBorderColor #93A1A1
+    ArrowColor #268BD2
+    ActorBorderColor #CB4B16
+}
+
+actor Nutzer
+participant "TUI\n(app.go)" as TUI
+participant "Stream\n(stream.go)" as Stream
+participant "Markdown-Parser\n(render/nodes.go)" as MD
+participant "PlantUML-Detektor\n(render/plantuml.go)" as PUML
+participant "Renderer\n(render/imagerender.go)" as REN
+
+Nutzer -> TUI : Nachricht senden\n(Markdown mit ```plantuml Block)
+activate TUI
+TUI -> Stream : Nachricht empfangen
+activate Stream
+Stream -> MD : Markdown parsen
+activate MD
+MD -> MD : Nodes bauen\n(Codeblock erkennen)
+MD --> Stream : Node-Baum
+deactivate MD
+Stream -> PUML : Codeblock-Inhalt prüfen
+activate PUML
+alt PlantUML-Syntax erkannt
+    PUML --> Stream : PlantUML-Block
+    Stream -> REN : Block rendern
+    activate REN
+    REN -> REN : SVG erzeugen / Image\nin Terminal-Grid einpassen
+    REN --> Stream : gerendertes Bild
+    deactivate REN
+else normaler Codeblock
+    PUML --> Stream : Standard-Codeblock
+    Stream -> REN : Syntax-Highlighting
+    activate REN
+    REN --> Stream : farbiger Textblock
+    deactivate REN
+end
+deactivate PUML
+Stream --> TUI : Block-Objekt (image / text)
+deactivate Stream
+TUI --> Nutzer : Ansicht aktualisiert
+deactivate TUI
+
+note over PUML, REN
+  Die TUI zeigt Diagramm und Text
+  blockweise (blocklist.go) an.
+end note
+@enduml

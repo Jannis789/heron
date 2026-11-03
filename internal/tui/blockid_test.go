@@ -7,31 +7,31 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TestCopyableBlocksGetStableNumbers (FR-3): text blocks stay unnumbered,
-// code/table blocks get consecutive 1-based ids that do not shift when more
-// blocks are appended later.
+// TestCopyableBlocksGetStableNumbers (FR-3+FR-40): JEDER Ketten-Block ist
+// adressierbar — auch reine Textabsaetze — und bekommt fortlaufende 1-based
+// IDs, die bei weiterem Append nicht wandern.
 func TestCopyableBlocksGetStableNumbers(t *testing.T) {
 	l := NewBlockList()
 	l = l.Append(
 		NewTextBlock("fließtext", ""),
 		NewCodeBlock("go", "x := 1", nil),
 	)
-	if got := l.items[0].ID(); got != -1 {
-		t.Fatalf("text block should not be addressable, got id %d", got)
+	if got := l.items[0].ID(); got != 1 {
+		t.Fatalf("text block id=%d want 1 (FR-40: Text ist adressierbar)", got)
 	}
-	if got := l.items[1].ID(); got != 1 {
-		t.Fatalf("first code block id=%d want 1", got)
+	if got := l.items[1].ID(); got != 2 {
+		t.Fatalf("first code block id=%d want 2", got)
 	}
 
 	l = l.Append(NewTableBlock([][]string{{"a"}, {"1"}}, nil, nil))
-	if got := l.items[2].ID(); got != 2 {
-		t.Fatalf("second copyable block id=%d want 2", got)
+	if got := l.items[2].ID(); got != 3 {
+		t.Fatalf("second copyable block id=%d want 3", got)
 	}
 
 	// Appending more must not renumber what already exists.
 	l = l.Append(NewCodeBlock("sh", "echo hi", nil))
-	if got := l.items[1].ID(); got != 1 || l.items[3].ID() != 3 {
-		t.Fatalf("ids shifted: want 1 and 3, got %d and %d", l.items[1].ID(), l.items[3].ID())
+	if got := l.items[1].ID(); got != 2 || l.items[3].ID() != 4 {
+		t.Fatalf("ids shifted: want 2 and 4, got %d and %d", l.items[1].ID(), l.items[3].ID())
 	}
 }
 
@@ -52,7 +52,10 @@ func TestAltDigitCopiesNumberedBlock(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0], "alpha") {
 		t.Fatalf("copied=%v want the code body", got)
 	}
-	r.contains("COPIED")
+	// Der COPIED-Flash lebt im Eingabefeld-Chip — der Block-Footer zeigt
+	// keine Kopier-UI mehr.
+	r.notContains("COPIED")
+	r.notContains("[ COPY ]")
 }
 
 // TestAltDigitUnknownBlockDoesNothing: a number with no block is a no-op, it

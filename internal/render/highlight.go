@@ -115,7 +115,12 @@ func WrapANSI(s string, w int) []string {
 	}
 	var out []string
 	for _, ln := range strings.Split(s, "\n") {
-		out = append(out, strings.Split(ansi.Wrap(ln, w, ""), "\n")...)
+		for _, wl := range strings.Split(ansi.Wrap(ln, w, ""), "\n") {
+			// x/ansi.Wrap behaelt Spaces VOR dem Umbruch in der Zeile
+			// (gemessen: 17 Zellen bei w=16) — jede Zeile bekommt eine
+			// harte ANSI-sichere Kante, der Rahmen haelt sonst nicht.
+			out = append(out, ansi.Truncate(wl, w, ""))
+		}
 	}
 	return out
 }

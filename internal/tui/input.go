@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
@@ -50,12 +51,20 @@ func (m *Model) syncInputSize() {
 	// box and the cursor is at the end (typing/pasting flow), reset the
 	// viewport via SetValue; the cursor lands back at the end. Mid-text
 	// cursors are left alone, an over-height box scrolls intentionally.
+	//
+	// atEnd-Check (Regression 2026-10-31): Der alte Vergleich hielt
+	// CharOffset (nur INNERHALB der Wrap-Zeile, inkl. Nachlauf-Whitespace)
+	// gegen die Laenge der GANZEN logischen Zeile — bei EINER umgebrochenen
+	// Zeile (Standard-Tippfall!) ging er nie wahr, ihr Anfang blieb
+	// abgeschnitten. Wasserdicht: Cursor in der letzten harten Zeile
+	// (Line/LineCount) und am deren Ende — verbrauchte Runen der Zeile =
+	// StartColumn+ColumnOffset (beide LineInfo-Aeste tragen m.col ein).
 	if v := m.input.Value(); v != "" && len(rows) <= lines {
 		hard := strings.Split(v, "\n")
 		last := hard[len(hard)-1]
 		li := m.input.LineInfo()
-		atEnd := li.RowOffset == li.Height-1 &&
-			li.CharOffset >= len([]rune(last))
+		atEnd := m.input.Line() == m.input.LineCount()-1 &&
+			li.StartColumn+li.ColumnOffset >= len([]rune(last))
 		if atEnd {
 			m.input.SetValue(v)
 		}
@@ -69,7 +78,10 @@ func (m *Model) syncInputSize() {
 // one — keeps the bottom border of the box from being clipped.
 func (m *Model) relayout() {
 	inputRows := len(strings.Split(m.inputView(), "\n"))
-	used := 2 + inputRows + 2 // title + status, box, gap, footer
+	used := 3 + inputRows // title, box, gap, footer
+	if m.workingLine() != "" {
+		used++ // the "AI is working" row above the box while a turn runs
+	}
 	h := m.height - used
 	if h < 1 {
 		h = 1
@@ -102,6 +114,67 @@ func rewritePromptRow(ln string, th *render.Theme) string {
 // nixIcon prefixes the workspace path — the Nerd Font NixOS glyph.
 const nixIcon = "󱄅"
 
+// Neon-Verlauf des Eingaberahmens, solange ein Turn laeuft (Lila -> Magenta).
+// Nur die RAHMEN-ZEICHEN tragen ihn; Inhalt, Label und Fusszeile bleiben
+// ruhig. Wie bei crushs Regenbogen-Spinner (internal/ui/anim) ist der
+// Verlauf ein PING-PONG-Band (Lila -> Magenta -> Lila) ueber den ganzen
+// Box-Umfang, dessen Phase pro Spinner-Takt weiterrueckt: Das Farbband
+// fliesst im Uhrzeigersinn um die Box.
+const (
+	// neonFrom: Cornflower-artiges Blauviolett (#6C9EFF) — bewusst weit von
+	// Magenta weg, damit das Band beim Umkreisen sichtbar durch das Spektrum
+	// laeuft (Neon-Lila #BF00FF lag zu dicht am Endton: zu wenig Kontrast).
+	neonFrom = "#6C9EFF"
+	neonTo   = "#FF00CC" // Neon-Magenta
+
+	// neonPhaseStep: Umfangs-Zellen pro Spinner-Takt — 18 = dreimal die
+	// vorherige Geschwindigkeit (insgesamt 9x gegenueber Fassung 1).
+	neonPhaseStep = 18
+	// neonFadeStep: 0.5 blendet in zwei Takten (~180 ms) ein/aus —
+	// 1.0 waere kein Fade mehr, nur ein Sprung.
+	neonFadeStep float32 = 0.5
+)
+
+// neonBand liefert die Farbwerte (Hex) des Bandes an allen Umfangs-
+// Positionen, bereits mit dem Fade-Level gegen die Ruhefarbe geblendet:
+// 0 = Ruhe (gar nicht aufgerufen), 1 = volles Band, dazwischen weiche
+// Uebergangsphasen — der Rahmen cross-fadet statt zu springen.
+func (m Model) neonBand(per int, baseHex string) []string {
+	band := make([]string, per)
+	for i := 0; i < per; i++ {
+		t := float64(i) / float64(per)
+		f := t * 2
+		if f > 1 {
+			f = 2 - f // Ping-Pong: hin und zurueck, geschlossen am Umfang
+		}
+		hex := render.LerpHex(neonFrom, neonTo, f)
+		if m.neonLevel < 1 {
+			hex = render.LerpHex(baseHex, hex, float64(m.neonLevel))
+		}
+		band[i] = hex
+	}
+	return band
+}
+
+// neonLine faerbt die Rahmen-Glyphen einer Rahmenzeile mit styleAt(i) — i
+// zaehlt nur Rahmen-Zellen der Zeile (der Aufrufer uebersetzt sie in die
+// Umfangs-Position); Nicht-Rahmen-Glyphen wie das Workspace-Label behalten bs.
+func neonLine(s string, bs lipgloss.Style, styleAt func(i int) lipgloss.Style) string {
+	rs := []rune(s)
+	var sb strings.Builder
+	c := 0
+	for _, r := range rs {
+		switch r {
+		case '┌', '┐', '└', '╯', '─', '│':
+			sb.WriteString(styleAt(c).Render(string(r)))
+			c++
+		default:
+			sb.WriteString(bs.Render(string(r)))
+		}
+	}
+	return sb.String()
+}
+
 // topLabel is the workspace the session runs in — nothing else. The app name
 // already lives in the title row.
 func (m Model) topLabel() string {
@@ -122,7 +195,25 @@ func (m Model) stateLabel() string {
 	if effort == "" {
 		effort = "medium"
 	}
+	if prov := m.providerLabel(); prov != "" {
+		return prov + " · " + model + " · " + effort
+	}
 	return model + " · " + effort
+}
+
+// providerLabel loest den Provider-Wert ueber die annoncierten Optionen zum
+// lesbaren Namen auf ("zai_coding_plan" → "Z.AI (GLM)"); ohne Treffer oder
+// Optionen bleibt der Rohwert, ohne Provider bleibt die Zeile wie bisher.
+func (m Model) providerLabel() string {
+	if m.provider == "" {
+		return ""
+	}
+	for _, o := range m.providerOptions {
+		if o.Value == m.provider {
+			return o.Name
+		}
+	}
+	return m.provider
 }
 
 func (m Model) inputView() string {
@@ -134,7 +225,48 @@ func (m Model) inputView() string {
 	// Monochrome lavender chrome: one hue for frame, label and hints. The
 	// former accent colour and the inner background fill made the box read as
 	// two colours and left a visible patch around the placeholder.
-	bs := th.BorderStyle()
+	// inputFocus (Fokus-Kette, arrow down vom letzten Block): Neon-Rahmen —
+	// dasselbe Signal wie bei den Chat-Bloecken.
+	bs := borderStyleFor(th, m.inputFocus, false)
+	// Neon-Band auf den Rahmenzeichen: Ein Ping-Pong-Verlauf Cornflower ->
+	// Magenta -> Cornflower ueber den GESAMTEN Box-Umfang (im Uhrzeigersinn:
+	// oben hin, rechts runter, unten zurueck, links hoch). neonPhase schiebt
+	// das Band pro Spinner-Takt neonPhaseStep Zellen weiter, neonLevel
+	// blendet es beim Turnstart ein und nach der Antwort wieder aus —
+	// glow greift solange, nicht nur waehrend m.running.
+	// FR-39 "hoechstens EIN Neon-Rahmen": Haelt die Fokus-Kette den Rahmen
+	// im Chat (Block-Fokus ODER Auswahl), ruht das Band am Eingabefeld —
+	// die magenta Neon-Zeichen sind unique, der laufende Turn meldet sich
+	// ueber die Hint-Leiste (ctrl+c abort).
+	glow := m.neonLevel > 0 && !m.chat.Focused() && m.chat.markedCount() == 0
+	rows := strings.Split(m.input.View(), "\n")
+	nRows := len(rows)
+	per := 2 * (w + nRows)
+	baseHex := "#B4BEFE"
+	if th != nil {
+		baseHex = th.Border.Color
+		if m.inputFocus {
+			baseHex = th.FocusColor()
+		}
+	}
+	band := m.neonBand(per, baseHex)
+	ph := m.neonPhase % per
+	at := func(pos int) lipgloss.Style {
+		return lipgloss.NewStyle().Bold(true).
+			Foreground(lipgloss.Color(band[(pos+ph)%per]))
+	}
+	frameLine := func(s string, posOf func(i int) int) string {
+		if !glow {
+			return bs.Render(s)
+		}
+		return neonLine(s, bs, func(i int) lipgloss.Style { return at(posOf(i)) })
+	}
+	// Umfangs-Positionen: oben links->rechts, rechts oben->unten, unten
+	// rechts->links, links unten->oben — ein geschlossener Uhrzeigersinn.
+	topPos := func(i int) int { return i }
+	rightPos := func(k int) int { return w + k }
+	bottomPos := func(i int) int { return w + nRows + (w - 1 - i) }
+	leftPos := func(k int) int { return 2*w + nRows + (nRows - 1 - k) }
 	// The prompt row itself gets the theme background, so the box interior is
 	// filled and does not show the terminal's default background.
 	fill := th.TableFill()
@@ -143,13 +275,13 @@ func (m Model) inputView() string {
 	label := m.topLabel()
 	lines := make([]string, 0, 8)
 	if label == "" {
-		lines = append(lines, bs.Render("┌"+strings.Repeat("─", w-2)+"┐"))
+		lines = append(lines, frameLine("┌"+strings.Repeat("─", w-2)+"┐", topPos))
 	} else {
 		dashes := w - 5 - runewidth.StringWidth(label)
 		if dashes < 0 {
 			dashes = 0
 		}
-		lines = append(lines, bs.Render("┌─ "+label+" "+strings.Repeat("─", dashes)+"┐"))
+		lines = append(lines, frameLine("┌─ "+label+" "+strings.Repeat("─", dashes)+"┐", topPos))
 	}
 
 	// Model/effort picker (FR-20): the box expands into the option list.
@@ -166,9 +298,9 @@ func (m Model) inputView() string {
 			}
 			return bs.Render("│") + " " + s + strings.Repeat(" ", gap) + " " + bs.Render("│")
 		}
-		// /model carries a search line above the list; /effort is short
-		// enough to browse without one (FR-20).
-		if m.pickerKind == "model" {
+		// /model and /resume carry a search line above the list; /effort
+		// is short enough to browse without one (FR-20/FR-44).
+		if m.pickerKind == "model" || m.pickerKind == "resume" {
 			if m.pickerQuery == "" {
 				lines = append(lines, row("> "+ls.Render("search")))
 			} else {
@@ -181,11 +313,28 @@ func (m Model) inputView() string {
 		}
 		rows := m.pickerVisibleRows()
 		end := min(m.pickerScroll+rows, len(options))
+		// Resume rows render their detail dimmed behind the label — the
+		// rows list and the labels come from the same filter, so the
+		// indexes stay aligned (FR-44).
+		var resumeRows []SessionRow
+		if m.pickerKind == "resume" {
+			resumeRows = m.filteredResumeRows()
+		}
 		for idx := m.pickerScroll; idx < end; idx++ {
 			name := options[idx]
 			prefix := "    "
 			if idx == m.pickerCursor {
 				prefix = "  ▸ "
+			}
+			// Resume: newest session starts at the top, there is no
+			// "active" marker — and long rows truncate to the box.
+			if m.pickerKind == "resume" {
+				rowText := name
+				if idx < len(resumeRows) && resumeRows[idx].Detail != "" {
+					rowText += " " + resumeRows[idx].Detail
+				}
+				lines = append(lines, row(prefix+runewidth.Truncate(rowText, inner-5, "…")))
+				continue
 			}
 			// The active option keeps its ✓ even while the cursor is
 			// somewhere else — scrolling must not hide what is live (FR-20).
@@ -199,7 +348,7 @@ func (m Model) inputView() string {
 		return strings.Join(lines, "\n")
 	}
 
-	for i, raw := range strings.Split(m.input.View(), "\n") {
+	for i, raw := range rows {
 		ln := rewritePromptRow(raw, th)
 		// Slash mode (FR-20) renders its own row: typed text + dim ghost —
 		// shell-style autocomplete on the same line. The textarea row stays
@@ -217,14 +366,76 @@ func (m Model) inputView() string {
 		if gap < 0 {
 			gap = 0
 		}
+		// Seitliche Rahmenzellen: im Glow auf ihrer Umfangs-Position im
+		// fliessenden Neon-Band.
+		l, r := bs.Render("│"), bs.Render("│")
+		if glow {
+			l = at(leftPos(i)).Render("│")
+			r = at(rightPos(i)).Render("│")
+		}
 		// One fill across content + padding keeps the background continuous
 		// instead of a seam between the text and the empty cells.
-		lines = append(lines, bs.Render("│")+" "+
-			fill.Render(ln+strings.Repeat(" ", gap))+" "+bs.Render("│"))
+		lines = append(lines, l+" "+
+			fill.Render(ln+strings.Repeat(" ", gap))+" "+r)
 	}
 
-	// The box border stays clean — the model/effort label lives in the
-	// footer bar below (crush-style).
-	lines = append(lines, bs.Render("└"+strings.Repeat("─", w-2)+"╯"))
+	// Untere Rahmenlinie: leer (crush-style) — das Copy-UI lebt in der
+	// zentralen Hint-Leiste unten (app.footerView); im laufenden Turn Neon.
+	lines = append(lines, frameLine("└"+strings.Repeat("─", w-2)+"╯", bottomPos))
 	return strings.Join(lines, "\n")
+}
+
+// ---- Copy-Ziel + Aktion (Hint-Leiste unten, Taste c) -----------------------
+
+// copyTarget ist das Ziel der Copy-Aktion: die Auswahl (markierter Block,
+// FR-29) oder — ohne Auswahl — der fokussierte Block.
+func (m Model) copyTarget() (Widget, int, bool) {
+	l := m.chat
+	if l.markedCount() > 0 {
+		for i, it := range l.items {
+			if l.marks[it.ID()] {
+				return it, i, true
+			}
+		}
+	}
+	if l.Focused() {
+		return l.items[l.focus], l.focus, true
+	}
+	return nil, -1, false
+}
+
+// copySelection fuehrt die Copy-Aktion aus (Taste c): kopiert das Ziel als
+// rohes Markdown und blendet den Flash ("✓ kopiert" in der Hint-Leiste)
+// bis zur naechsten Eingabe. Ziel ist eine Ueberschrift, wird der GANZE
+// Abschnitt bis zur naechsten Ueberschrift kopiert.
+func (m Model) copySelection() (Model, tea.Cmd) {
+	// Shift-Auswahl hat Vorrang: Nur ihr Bereich wird kopiert.
+	if m.chat.selActive() {
+		if m.copyFn == nil {
+			return m, nil
+		}
+		m.copiedFlash = true
+		return m, m.copyFn(m.chat.selMarkdown())
+	}
+	it, idx, ok := m.copyTarget()
+	if !ok {
+		return m, nil
+	}
+	if headingAt(it) {
+		if m.copyFn == nil {
+			return m, nil
+		}
+		return m, m.copyFn(m.chat.sectionMarkdown(idx))
+	}
+	_, cmd := it.Copy()
+	if cmd == nil {
+		// FR-40: Auch reine Textabsaetze sind eigene Segmente und copy-bar
+		// — TextBlock.Copy() hat kein eigenes copyFn, der Weg geht hier.
+		if m.copyFn == nil {
+			return m, nil
+		}
+		return m, m.copyFn(it.Markdown())
+	}
+	m.copiedFlash = true
+	return m, cmd
 }

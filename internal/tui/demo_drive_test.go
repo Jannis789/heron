@@ -60,6 +60,10 @@ func TestDriveRenderTestEndToEnd(t *testing.T) {
 		t.Fatal("applyDiagrams hat nichts angewendet")
 	}
 	t.Cleanup(KittyCleanup)
+	// Lokaler Pfad deterministisch testen: SSH-Env wuerde renderCache auf
+	// Inline-Base64 schalten (ssh-inline), das Assert prueft aber t=f.
+	t.Setenv("SSH_TTY", "")
+	t.Setenv("SSH_CONNECTION", "")
 	found := 0
 	for _, it := range r.m.chat.items {
 		if ib, ok := it.(ImageBlock); ok {

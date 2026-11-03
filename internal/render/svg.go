@@ -31,13 +31,17 @@ func PlantUMLToSVG(ctx context.Context, source string) ([]byte, error) {
 	defer os.RemoveAll(dir)
 
 	src := filepath.Join(dir, "diagram.puml")
-	if err := os.WriteFile(src, []byte(source), 0o600); err != nil {
+	if err := os.WriteFile(src, []byte(withPlantUMLTheme(source)), 0o600); err != nil {
 		return nil, err
 	}
 	bin := os.Getenv("PLANTUML_BIN")
 	if bin == "" {
 		bin = "plantuml"
 	}
+	// Kein CLI-Flag: der Seiten-Hintergrund sitzt als style="…;background:#…;"
+	// am SVG-Root und wird unten deterministisch (und versionsunabhaengig)
+	// auf transparent gesetzt — das -transparent-Flag ist versionsabhaengig
+	// und hat in der Praxis nicht gegriffen.
 	cmd := exec.CommandContext(ctx, bin, "-tsvg", src)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("plantuml -tsvg: %w: %s", err, out)
@@ -49,7 +53,21 @@ func PlantUMLToSVG(ctx context.Context, source string) ([]byte, error) {
 	if !strings.Contains(string(svg), "<svg") {
 		return nil, fmt.Errorf("plantuml: keine gueltige SVG-Ausgabe")
 	}
-	return svg, nil
+	// Der Diagramm-Hintergrund wird transparent, damit das Bild im Dark-TUI
+	// direkt auf dem Terminal-Hintergrund liegt statt als weisse/Papier-Box.
+	return makeSVGBackgroundTransparent(svg), nil
+}
+
+// svgBackgroundRe erkennt den Seiten-Hintergrund, den PlantUML im style-
+// Attribut der SVG-Wurzel setzt: style="…;background:#D9D3D0;…". Nur dieser
+// Root-Ausschnitt — Inhaltselemente (Boxen/Pfeile) nutzen fill= und bleiben.
+var svgBackgroundRe = regexp.MustCompile(`background:#[0-9a-fA-F]{3,8}`)
+
+// makeSVGBackgroundTransparent ersetzt den opaken Root-Hintergrund durch
+// transparent — robuster als das plantuml -transparent-Flag (versions-
+// abhaengig), damit das Diagramm auf dem Terminal-Hintergrund blendet.
+func makeSVGBackgroundTransparent(svg []byte) []byte {
+	return svgBackgroundRe.ReplaceAllLiteral(svg, []byte("background:transparent"))
 }
 
 var (
@@ -126,8 +144,9 @@ func ResvgAvailable() bool {
 //
 // HERON_RESVG_FONTS: ':'-getrennte Font-Verzeichnisse -> --use-fonts-dir.
 // HERON_RESVG_FONT:  Familienname fuer die generischen Familien — noetig,
-//                    weil plantuml font-family="sans-serif" schreibt, resvg
-//                    das auf "Arial" mapped und Arial nicht geladen ist.
+//
+//	weil plantuml font-family="sans-serif" schreibt, resvg
+//	das auf "Arial" mapped und Arial nicht geladen ist.
 func resvgFontArgs() []string {
 	var args []string
 	if dirs := os.Getenv("HERON_RESVG_FONTS"); dirs != "" {

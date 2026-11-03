@@ -30,18 +30,40 @@ func TestCtrlJKeepsFirstLine(t *testing.T) {
 
 // TestTypingPastFullRowKeepsVisible (FR-7): tippen ueber eine volle Zeile
 // hinaus (weicher Umbruch mitten im Schreiben) — Anfang und Ende muessen
-// sichtbar bleiben.
+// sichtbar bleiben. EINDEUTIGE Marker (Regression 2026-10-31): Der alte
+// Test pruefte "wort"/"mehr" — beides stand auch in der ZWEITEN Wrap-Zeile,
+// der abgeschnittene Anfang fiel durch. Erst der Zeilenanfang (anfang99)
+// beweist Sichtbarkeit der ersten Zeile.
 func TestTypingPastFullRowKeepsVisible(t *testing.T) {
 	r := newRig(t)
 	r.do(tea.WindowSizeMsg{Width: 80, Height: 24})
-	r.do(runes(strings.Repeat("wort ", 20)))
+	r.do(runes("anfang99 " + strings.Repeat("wort ", 20)))
 	r.do(runes(" mehr"))
 	view := stripANSI(r.m.inputView())
-	if !strings.Contains(view, "wort") {
+	if !strings.Contains(view, "anfang99") {
 		t.Errorf("beginning cut after soft wrap:\n%s", view)
 	}
 	if !strings.Contains(view, "mehr") {
 		t.Errorf("tail cut after soft wrap:\n%s", view)
+	}
+}
+
+// TestSingleLongLineKeepsStart (FR-7, Regression 2026-10-31): EINE logische
+// Zeile, die weich umbriecht — genau der Fall, in dem der alte atEnd-Check
+// (CharOffset innerhalb der Wrap-Zeile vs. Laenge der GANZEN Zeile) nie
+// griff: die Box wuchs, der Viewport blieb nach unten gescrollt, nur die
+// letzte Wrap-Zeile war sichtbar. Der Zeilenanfang muss sichtbar bleiben.
+func TestSingleLongLineKeepsStart(t *testing.T) {
+	r := newRig(t)
+	r.do(tea.WindowSizeMsg{Width: 80, Height: 24})
+	r.do(runes("startmarker1 " + strings.Repeat("fuelltext ", 20)))
+	r.do(runes(" endmarker2"))
+	view := stripANSI(r.m.inputView())
+	if !strings.Contains(view, "startmarker1") {
+		t.Errorf("start of the single wrapped line cut:\n%s", view)
+	}
+	if !strings.Contains(view, "endmarker2") {
+		t.Errorf("tail cut:\n%s", view)
 	}
 }
 

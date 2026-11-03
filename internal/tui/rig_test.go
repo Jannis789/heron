@@ -11,8 +11,15 @@ import (
 // screen: a seeded code block shows its language header and COPY action.
 func TestRigRendersSeededChat(t *testing.T) {
 	r := newRig(t).seed("```go\nx := 1\n```")
-	r.contains("go").contains("COPY")
-	r.contains("heron") // header
+	r.contains("go") // language header
+	// Progressive Disclosure: ohne Fokus ist die Aktionszeile
+	// (COPY) verborgen — sie erscheint erst bei Fokus/Hover/Auswahl.
+	if strings.Contains(stripANSI(r.m.View()), "COPY") {
+		t.Fatal("COPY sichtbar ohne Fokus (Progressive Disclosure)")
+	}
+	r.do(tea.KeyMsg{Type: tea.KeyTab})
+	r.contains("c copy") // Copy-Hinweis in der zentralen Hint-Leiste
+	r.contains("heron")  // header
 }
 
 // TestRigTypesAndReplies drives the input field end-to-end through Update:
@@ -29,11 +36,14 @@ func TestRigTypesAndReplies(t *testing.T) {
 // the clipboard write; only running the returned Cmd may.
 func TestRigCopyIsDeferredToRuntime(t *testing.T) {
 	r := newRig(t).seed("```go\ny := 2\n```")
-	r.key("tab") // focus the code block
+	r.key("tab") // rein in den Chat: fokussiert den Block
 	if !r.m.chat.Focused() {
 		t.Fatal("tab should focus the code block")
 	}
-	nm, cmd := r.m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Copy laeuft ueber die zentrale Hint-Leiste: Taste c, nicht mehr
+	// enter am Block.
+	r.screen()
+	nm, cmd := r.m.Update(runes("c"))
 	r.m = nm.(Model)
 	if len(r.copied) != 0 {
 		t.Fatalf("copy ran during Update: %v", r.copied)
@@ -42,7 +52,7 @@ func TestRigCopyIsDeferredToRuntime(t *testing.T) {
 	if got := r.copiedAll(); len(got) != 1 || !strings.Contains(got[0], "y := 2") {
 		t.Fatalf("copied=%v want code body", got)
 	}
-	r.contains("COPIED")
+	r.contains("✓ kopiert")
 }
 
 // TestRigCtrlCQuits verifies quit handling through the harness.

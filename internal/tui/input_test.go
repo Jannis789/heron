@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // TestInputBoxIsFramedOnAllSides: the prompt area must render a closed box —
@@ -119,5 +120,137 @@ func TestScreenFitsWithPromptBox(t *testing.T) {
 	r := newRig(t).size(80, rows).seed("kurze antwort")
 	if got := len(r.lines()); got > rows {
 		t.Fatalf("frame is %d rows, terminal has %d — box would be clipped", got, rows)
+	}
+}
+
+// TestWorkingLineCentered: die "antwort läuft …"-Zeile sitzt MITTIG über
+// der Eingabebox — gleicher Rand links und rechts, nie breiter als das
+// Terminal.
+func TestWorkingLineCentered(t *testing.T) {
+	r := newRig(t)
+	r.m.width = 41
+	r.m.startTurn()
+	wl := r.m.workingLine()
+	if wl == "" {
+		t.Fatal("workingLine leer im laufenden Turn")
+	}
+	inner := strings.TrimSpace(wl)
+	pad := len(wl) - len(strings.TrimLeft(wl, " "))
+	if inner == "" || pad != (41-lipgloss.Width(inner))/2 {
+		t.Fatalf("nicht mittig: pad=%d inner=%q (Zeile %q)", pad, inner, wl)
+	}
+	if strings.Contains(wl, "\n") {
+		t.Fatalf("workingLine muss EINE Zeile sein: %q", wl)
+	}
+}
+
+// TestInputBorderNeonWhileRunning: im laufenden Turn tragen NUR die Rahmen-
+// zeichen den Neon-Verlauf Lila -> Magenta (TrueColor); Glyphen-Layout und
+// Inhalt bleiben unangetastet, im Leerlauf gibt es keinen Gradienten.
+func TestInputBorderNeonWhileRunning(t *testing.T) {
+	withTrueColor(t)
+	r := newRig(t)
+	r.m.cwd = "/ws/projekt"
+	r.m.inputFocus = false // Blur: bs ist Lavendel — so ist der Label-Check scharf
+	idle := r.m.inputView()
+	r.m.startTurn()
+	r.m.neonLevel = 1 // volles Band (der Fade-In startet bei 0)
+	hot := r.m.inputView()
+	if stripANSI(idle) != stripANSI(hot) {
+		t.Fatalf("Glyphen duerfen sich durch den Gradienten nicht aendern:\nidle=%q\nhot=%q", stripANSI(idle), stripANSI(hot))
+	}
+	// Band: Cornflower-Start #6C9EFF = (108,158,255), Magenta-Ende
+	// #FF00CC = (255,0,204). Beide nur im laufenden Turn (im Leerlauf ist
+	// der Rahmen Lavendel/Fokus — Magenta kommt dort nie vor).
+	for _, seq := range []string{"38;2;108;158;255", "38;2;255;0;204"} {
+		if !strings.Contains(hot, seq) {
+			t.Fatalf("Gradientenfarbe %q fehlt im laufenden Turn", seq)
+		}
+	}
+	for _, seq := range []string{"38;2;255;0;204"} {
+		if strings.Contains(idle, seq) {
+			t.Fatalf("Gradientenfarbe %q darf im Leerlauf nicht auftreten", seq)
+		}
+	}
+	// Das Workspace-Label (Icon + Pfad) bleibt beim Lavendel-bs — der
+	// gerundete TrueColor-Wert von #B4BEFE (179;190;254) liegt ausserhalb
+	// der Band: Ihr Gruen-Kanal 190 uebersteigt die Bandbreite (0..158).
+	if !strings.Contains(hot, "38;2;179;190;254") {
+		t.Fatalf("Label hat nicht den ruhigen Rahmenstil behalten: %q", hot)
+	}
+}
+
+// TestInputBorderNeonFlows: das Neon-Band WANDERT — verschiedene Phasen
+// muessen verschiedene Farbbelegungen liefern (Glyphen identisch), und
+// jede Zelle bleibt in der Lila-Magenta-Bandbreite des Ping-Pong-Verlaufs.
+func TestInputBorderNeonFlows(t *testing.T) {
+	withTrueColor(t)
+	r := newRig(t)
+	r.m.inputFocus = false
+	r.m.startTurn()
+	r.m.neonLevel = 1 // volles Band (der Fade-In startet bei 0)
+	a := r.m.inputView()
+	r.m.neonPhase = 7
+	b := r.m.inputView()
+	if stripANSI(a) != stripANSI(b) {
+		t.Fatal("Glyphen duerfen sich durch die Phase nicht aendern")
+	}
+	if a == b {
+		t.Fatal("Phasenversatz muss das Farbband bewegen")
+	}
+	// ╯ liegt bei Phase 0 am Band-Mittelpunkt: reines Magenta.
+	if !strings.Contains(a, "38;2;255;0;204m╯") {
+		t.Fatalf("╯ sollte bei Phase 0 im reinen Magenta stehen: %q", a)
+	}
+}
+
+// TestNeonFadeInOut: Das Band blendet beim Turnstart EIN (Level steigt pro
+// Takt), nach endTurn WIEDER AUS (Level faellt bis 0), der Ticker verstopft
+// erst danach — und bei Level 0 ist der Rahmen byte-identisch zum Leerlauf.
+func TestNeonFadeInOut(t *testing.T) {
+	withTrueColor(t)
+	r := newRig(t)
+	r.m.inputFocus = false
+	idle := r.m.inputView()
+	r.m.startTurn()
+	if r.m.neonLevel != 0 {
+		t.Fatalf("Fade-In startet bei 0, ist %v", r.m.neonLevel)
+	}
+	r.do(spinnerTickMsg{})
+	if r.m.neonLevel <= 0 || r.m.neonLevel >= 1 {
+		t.Fatalf("nach einem Takt muss das Level zwischen 0 und 1 liegen: %v", r.m.neonLevel)
+	}
+	for i := 0; i < 20 && r.m.neonLevel < 1; i++ {
+		r.do(spinnerTickMsg{})
+	}
+	if r.m.neonLevel != 1 {
+		t.Fatalf("Level sollte 1 erreichen: %v", r.m.neonLevel)
+	}
+	// Phase läuft mit neonPhaseStep pro Takt.
+	before := r.m.neonPhase
+	r.do(spinnerTickMsg{})
+	if r.m.neonPhase-before != neonPhaseStep {
+		t.Fatalf("Phase sollte pro Takt %d Zellen wandern, delta=%d", neonPhaseStep, r.m.neonPhase-before)
+	}
+	// Fade-out: Ticks laufen nach endTurn weiter, Level sinkt bis 0.
+	r.m.endTurn()
+	for i := 0; i < 20 && r.m.neonLevel > 0; i++ {
+		r.do(spinnerTickMsg{})
+	}
+	if r.m.neonLevel != 0 {
+		t.Fatalf("Level sollte auf 0 ausfaden: %v", r.m.neonLevel)
+	}
+	if got := r.m.inputView(); got != idle {
+		t.Fatalf("bei Level 0 muss der Rahmen dem Leerlauf entsprechen:\n%q\n%q", got, idle)
+	}
+	// Zwischenstand: Level 0.5 ist ein Blend — weder Leerlauf noch volles Band.
+	r.m.neonLevel = 0.5
+	half := r.m.inputView()
+	if half == idle {
+		t.Fatal("Halbes Level muss sich sichtbar vom Leerlauf unterscheiden")
+	}
+	r.m.neonLevel = 1
+	if r.m.inputView() == half {
+		t.Fatal("Volles Band muss sich vom halben Blend unterscheiden")
 	}
 }

@@ -16,7 +16,9 @@ type command struct {
 // this by prefix while the user types.
 var commands = []command{
 	{"model", "choose model"},
+	{"provider", "choose AI provider"},
 	{"effort", "choose effort level"},
+	{"resume", "resume a past session"},
 	{"new", "start a new session"},
 	{"quit", "quit heron"},
 }
@@ -108,6 +110,19 @@ func (m Model) execCommand(full string) (tea.Model, tea.Cmd) {
 		}
 		m.openPicker("effort")
 		return m, nil
+	case "/provider":
+		// Provider-Wechsel (FR-45): Wechsel waehrend eines Turns wuerde die
+		// Config unter dem laufenden Request umziehen — wie /new blockiert.
+		if m.running {
+			m.chat = m.chat.Append(NewTextBlock("Ein Turn läuft noch — brich ihn erst mit ctrl+c ab.", "1"))
+			return m, nil
+		}
+		if len(m.providerOptions) == 0 {
+			m.chat = m.chat.Append(NewTextBlock("goose reported no provider options.", "1"))
+			return m, nil
+		}
+		m.openPicker("provider")
+		return m, nil
 	case "/new":
 		// A fresh session while a turn is running would interleave two
 		// streams into one chat — refuse until it settles.
@@ -121,9 +136,44 @@ func (m Model) execCommand(full string) (tea.Model, tea.Cmd) {
 		}
 		fn := m.newSession
 		return m, func() tea.Msg { return newSessionMsg{err: fn()} }
+	case "/resume":
+		// Laden würde den laufenden Stream kreuzen — dieselbe Blockade
+		// wie /new (FR-20).
+		if m.running {
+			m.chat = m.chat.Append(NewTextBlock("Ein Turn läuft noch — brich ihn erst mit ctrl+c ab.", "1"))
+			return m, nil
+		}
+		if m.resumeList == nil {
+			m.chat = m.chat.Append(NewTextBlock("Kein Backend für Resume (Demo-Modus).", "1"))
+			return m, nil
+		}
+		fn := m.resumeList
+		return m, func() tea.Msg {
+			rows, err := fn()
+			return resumeListMsg{rows: rows, err: err}
+		}
 	case "/quit":
 		return m, tea.Quit
 	}
 	m.chat = m.chat.Append(NewTextBlock("Unbekannter Befehl: "+full, "1"))
 	return m, nil
 }
+
+// SessionRow is one /resume choice (FR-44): what the picker shows and which
+// session startResume loads. tui kennt nur die Anzeige — die Quelle ist
+// goose session/list (main.go mappt acp.SessionInfo, saubere Seams NFR-4).
+type SessionRow struct {
+	ID     string // goose sessionId (Ziel von session/load)
+	Label  string // Titel · Zeit — die sichtbare Zeile
+	Detail string // gedimmt dahinter: Ordner · Nachrichten · Modell
+}
+
+// resumeListMsg reports the /resume listing result; the picker opens on it.
+type resumeListMsg struct {
+	rows []SessionRow
+	err  error
+}
+
+// resumeStartMsg reports the finished session/load — the replayed history
+// has already landed as blocks via the stream.
+type resumeStartMsg struct{ err error }

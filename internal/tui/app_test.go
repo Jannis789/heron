@@ -83,11 +83,18 @@ func TestEnterCopiesWhenCodeFocused(t *testing.T) {
 		return func() tea.Msg { copied = s; return nil }
 	}))
 	var handled bool
-	m.chat, _, handled = m.chat.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m.chat, _, handled = m.chat.Update(tea.KeyMsg{Type: tea.KeyDown})
 	if !handled || !m.chat.Focused() {
 		t.Fatal("tab should focus the code block")
 	}
-	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Copy lebt im Eingabefeld-Footer: der Chip erscheint mit dem Fokus,
+	// enter am Block kopiert NICHT mehr — Taste c (Chip) tut es.
+	nmw, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = nmw.(Model)
+	if !strings.Contains(m.footerView(), "c copy") {
+		t.Fatalf("Copy-Hint fehlt in der Hint-Leiste: %q", m.footerView())
+	}
+	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
 	if cmd == nil {
 		t.Fatal("expected a deferred copy cmd")
 	}
@@ -98,7 +105,7 @@ func TestEnterCopiesWhenCodeFocused(t *testing.T) {
 	if copied != "x := 1" {
 		t.Fatalf("copied=%q want code", copied)
 	}
-	if !strings.Contains(nm.(Model).View(), "COPIED") {
-		t.Fatalf("view should show COPIED: %q", nm.(Model).View())
+	if !strings.Contains(nm.(Model).View(), "✓ kopiert") {
+		t.Fatalf("Chip-Flash fehlt: %q", nm.(Model).View())
 	}
 }

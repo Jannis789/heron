@@ -24,8 +24,9 @@ import (
 type Sender func(prompt string) (string, error)
 
 type replyMsg struct {
-	text string
-	err  error
+	text   string
+	err    error
+	prompt string // der gescheiterte Prompt — Fach fuer den Retry (FR-33)
 }
 
 // Model is the heron TUI state: a chat block list plus a prompt input.
@@ -41,7 +42,25 @@ type Model struct {
 	inline      bool // timg-Modell: Primärscreen statt Alt-Screen (HERON_INLINE)
 	printedUpTo int  // Inline: Index des ersten noch nicht append-only gedruckten Blocks
 
+	// inputFocus: der Zustand der Zwei-Modus-Kette. STANDARD ist der
+	// Eingabe-Modus — das Eingabefeld ist selektiert (Neon-Rahmen,
+	// blinkender Cursor) und Getippe landet dort. tab schaltet in den
+	// Antwort-Modus: der letzte interaktive Block der KI-Antwort (z. B.
+	// ein Codeblock) ist selektiert, ↑/↓ laufen blockweise, Getippe
+	// erreicht das Eingabefeld NICHT (die Textarea ist geblurrt — nur ein
+	// selektierter Abschnitt ist interaktionsfaehig). ↑/↓ im Eingabe-Modus
+	// tun nichts: sie sind fuer die Eingabe-History reserviert.
+	inputFocus bool
+
 	seedDiagrams bool // Seed enthaelt plantuml/mermaid: einmalige Konvertierung
+
+	// Caret-Blink (FR-42): charBlinkArmed verhindert eine zweite Tick-Kette
+	// beim schnellen esc/Wiedereintritt (zwei Takte wuerden sich pro Periode
+	// zweimal schlagen — das Caret stuende still); charBlinkInterval ist im
+	// rig auf Nanosekunden kuerzbar (wie input.Cursor.BlinkSpeed), sonst
+	// wuerde jeder Test-Eintritt 530 ms echt warten.
+	charBlinkArmed    bool
+	charBlinkInterval time.Duration
 
 	// Live turn state (FR-2, FR-7).
 	stream     *Stream // may be nil: no live updates
@@ -51,6 +70,14 @@ type Model struct {
 	streaming  string  // raw answer received so far
 	thinking   string  // thinking received so far
 	toolStatus string  // last tool label while the turn runs
+	spinner    int     // frame index of the running animation
+	// neonPhase schiebt das Neon-Band am Eingaberahmen pro Spinner-Takt eine
+	// Zelle weiter (crushs Regenbogen-Spinner zyklisiert ebenso); unbounded,
+	// der Render nimmt es modulo Umfang.
+	neonPhase int
+	// neonLevel 0..1: Fade des Neon-Bands — beim Turnstart blendet es ein,
+	// nach der Antwort wieder aus; der Ticker laeuft solange nach.
+	neonLevel float32
 
 	// Prompt box chrome (FR-23, minimal).
 	cwd        string // workspace shown in the top border
@@ -63,12 +90,45 @@ type Model struct {
 	effortOptions []string
 	configSet     func(id, value string) error
 	newSession    func() error // /new: fresh goose session (nil = demo)
-	caps          TermCaps     // Term-Probe (FR-27): Platzhalter + Zellpixel
-	pickerKind    string       // "model" or "effort" while open
-	pickerOpen    bool
-	pickerCursor  int
-	pickerScroll  int
-	pickerQuery   string // /model filters the list as you type (FR-20)
+	// Resume (FR-44): Liste + Start als Callbacks — dieselbe Naht wie
+	// /new. resumeRows sind die Zeilen des offene Resume-Pickers.
+	resumeList   func() ([]SessionRow, error)
+	resumeStart  func(id string) error
+	resumeRows   []SessionRow
+	caps         TermCaps // Term-Probe (FR-27): Platzhalter + Zellpixel
+	pickerKind   string   // "model" or "effort" while open
+	pickerOpen   bool
+	pickerCursor int
+	pickerScroll int
+	pickerQuery  string // /model filters the list as you type (FR-20)
+
+	// provider/providerOptions: aktueller ACP-Provider und die waehlbaren
+	// Alternativen (/provider, FR-45) — Name ist das lesbare Label, Value
+	// der Konfigurationswert fuer set_config_option.
+	provider        string
+	providerOptions []OptionRow
+	// providerFavorites: die IDs der in goose EINGERICHTETEN Provider —
+	// goose nennt sie selbst via _goose/unstable/config/read (key
+	// "providers": der providers:-Block, nicht das ~90-Eintraege-
+	// Inventar, das keyless Provider wie lmstudio als "configured"
+	// katalogisiert). filteredProviderRows() zeigt nur sie plus den
+	// aktiven; die Suche im Picker oeffnet den Vollkatalog.
+	providerFavorites []string
+
+	// queued: Prompts, die waehrend eines laufenden Turns getippt wurden —
+	// sie gehen automatisch raus, sobald der Turn endet (FR-46); doppeltes
+	// ctrl+c verwirft die Warteschlange. lastCtrlC erkennt den Doppeldruck.
+	queued    []string
+	lastCtrlC time.Time
+
+	// turnTools zaehlt die Tool-Calls des laufenden/letzten Turns als
+	// distinct callIDs (FR-31: In-place-Updates einer Karte zaehlen nicht
+	// doppelt). startTurn setzt zurueck, endTurn bewahrt den Stand.
+	turnTools map[string]bool
+	// toolLive akkumuliert die live_output-Chunks je CallID (goose streamt
+	// Shell-Ausgabe Stueckweise; das finale Update traegt das Gesamtergebnis
+	// als rawOutput und loescht den Eintrag wieder).
+	toolLive map[string]string
 
 	// Token usage (FR-23): goose reports per-turn usage in the prompt
 	// response. Totals accumulate the session; lastIn/lastOut feed the
@@ -80,6 +140,12 @@ type Model struct {
 	// Slash-command autocomplete (FR-20).
 	cmdCursor    int
 	cmdDismissed bool
+
+	// copiedFlash: kurzzeitiges Feedback des Copy-Chips im Eingabefeld-
+	// Footer ("✓ kopiert") — verfaellt mit der naechsten Eingabe. Seit das
+	// Copy-UI aus den Block-Footern gewandert ist (s. inputView), lebt das
+	// COPIED-Signal HIER.
+	copiedFlash bool
 }
 
 // inlineEnabled schaltet das timg-Modell (HERON_INLINE=1): kein Alt-Screen,
@@ -116,7 +182,11 @@ func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
 	// newline signal bubbletea v1 can tell apart from Enter (keyCR).
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
 	ta.Focus()
-	return Model{input: ta, chat: NewBlockList().SetCopy(copyFn), send: send, theme: th, copyFn: copyFn, inline: inlineEnabled()}
+	// inputFocus ist der ZUSTAND der Zwei-Modus-Kette, kein Extra-Modus:
+	// Standard sitzt sie auf dem Eingabefeld (dort wird getippt), tab
+	// toggelt zu den Chat-Segmenten und zurueck, ↑/↓ laufen blockweise —
+	// aber NUR im Antwort-Modus.
+	return Model{input: ta, chat: NewBlockList().SetCopy(copyFn).SetTheme(th), send: send, theme: th, copyFn: copyFn, inline: inlineEnabled(), inputFocus: true, charBlinkInterval: caretBlinkInterval}
 }
 
 // WithStream wires the live-update bridge used by the backend to push chunk,
@@ -142,6 +212,16 @@ func (m Model) WithEffort(e string) Model { m.effort = e; return m }
 // the picker (FR-20).
 func (m Model) WithConfigSet(fn func(id, value string) error) Model { m.configSet = fn; return m }
 
+// WithProviderFavorites prioisiert die eigenen Provider im /provider-
+// Picker direkt hinter dem aktiven (FR-45). Die IDs stammen aus GOOSE
+// (_goose/unstable/providers/list, Typ "Custom"/"Declarative") und
+// treffen im Regelbetrieb via providerFavoritesMsg ein; der Setter ist
+// die Naht fuer Demo/Tests.
+func (m Model) WithProviderFavorites(values []string) Model {
+	m.providerFavorites = values
+	return m
+}
+
 // configResultMsg reports a finished model change.
 type configResultMsg struct {
 	kind  string
@@ -157,6 +237,22 @@ func (m Model) pickerOptions() []string {
 	if m.pickerKind == "effort" {
 		return m.effortOptions
 	}
+	if m.pickerKind == "resume" {
+		rows := m.filteredResumeRows()
+		labels := make([]string, len(rows))
+		for i, r := range rows {
+			labels[i] = r.Label
+		}
+		return labels
+	}
+	if m.pickerKind == "provider" {
+		rows := m.filteredProviderRows()
+		labels := make([]string, len(rows))
+		for i, r := range rows {
+			labels[i] = r.Name
+		}
+		return labels
+	}
 	opts := m.modelOptions
 	if m.pickerQuery == "" {
 		return opts
@@ -171,10 +267,107 @@ func (m Model) pickerOptions() []string {
 	return out
 }
 
+// filteredResumeRows wendet die Picker-Suche auf die Session-Zeilen an —
+// dieselbe Logik wie die Modell-Suche (FR-20), über Label UND Detail.
+func (m Model) filteredResumeRows() []SessionRow {
+	if m.pickerQuery == "" {
+		return m.resumeRows
+	}
+	q := strings.ToLower(m.pickerQuery)
+	var out []SessionRow
+	for _, r := range m.resumeRows {
+		if strings.Contains(strings.ToLower(r.Label+" "+r.Detail), q) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// providerRows sortiert die Provider-Liste fuer den Picker in drei Zonen,
+// jede in der Reihenfolge, die goose annonciert hat: der AKTIVE Provider
+// steht zuerst (ein Druck auf enter haelt ihn), dann die in goose
+// EINGERICHTETEN Provider (Keys des providers:-Blocks, die goose via
+// config/read selbst nennt), dann der Rest.
+func (m Model) providerRows() []OptionRow {
+	rows := make([]OptionRow, len(m.providerOptions))
+	copy(rows, m.providerOptions)
+	fav := make(map[string]bool, len(m.providerFavorites))
+	for _, v := range m.providerFavorites {
+		fav[v] = true
+	}
+	var active, own, rest []OptionRow
+	for _, r := range rows {
+		switch {
+		case r.Value == m.provider:
+			active = append(active, r)
+		case fav[r.Value]:
+			own = append(own, r)
+		default:
+			rest = append(rest, r)
+		}
+	}
+	out := append(active, own...)
+	return append(out, rest...)
+}
+
+// filteredProviderRows ist die sichtbare Picker-Liste: OHNE Suche nur
+// der aktive Provider plus die in goose EINGERICHTETEN (goose katalogisiert
+// ~90 Provider, eingerichtet sind wenige — die Ruhe-Liste bleibt klein).
+// MIT Suche der volle Katalog: auch ein nicht eingerichteter Provider
+// bleibt so erreichbar. Ohne bekannte Favoriten (Demo-Modus, goose ohne
+// config/read) zeigt die Ruhe-Liste wie bisher den vollen Katalog.
+func (m Model) filteredProviderRows() []OptionRow {
+	rows := m.providerRows()
+	if m.pickerQuery != "" {
+		q := strings.ToLower(m.pickerQuery)
+		var out []OptionRow
+		for _, r := range rows {
+			if strings.Contains(strings.ToLower(r.Name+" "+r.Value), q) {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	if len(m.providerFavorites) == 0 {
+		return rows
+	}
+	fav := make(map[string]bool, len(m.providerFavorites))
+	for _, v := range m.providerFavorites {
+		fav[v] = true
+	}
+	var out []OptionRow
+	for _, r := range rows {
+		if r.Value == m.provider || fav[r.Value] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // openPicker expands the prompt box into the option list for the given kind
-// ("model" or "effort"). No-op without announced options.
+// ("model", "effort" or "resume"). No-op without announced options.
 func (m *Model) openPicker(kind string) {
+	if kind == "resume" {
+		if len(m.resumeRows) == 0 {
+			return
+		}
+		m.pickerKind = kind
+		m.pickerOpen = true
+		m.pickerCursor, m.pickerScroll, m.pickerQuery = 0, 0, ""
+		m.clampPickerScroll()
+		return
+	}
 	var options []string
+	if kind == "provider" {
+		if len(m.providerOptions) == 0 {
+			return
+		}
+		m.pickerKind = kind
+		m.pickerOpen = true
+		m.pickerCursor, m.pickerScroll, m.pickerQuery = 0, 0, ""
+		m.clampPickerScroll()
+		return
+	}
 	if kind == "effort" {
 		options = m.effortOptions
 	} else {
@@ -215,6 +408,20 @@ func (m *Model) closePicker() {
 // WithNewSession wires the /new callback: starts a fresh goose session.
 func (m Model) WithNewSession(fn func() error) Model {
 	m.newSession = fn
+	return m
+}
+
+// WithResumeList wires the /resume listing: goose's stored sessions mapped
+// to display rows (nil = demo mode, /resume reports that).
+func (m Model) WithResumeList(fn func() ([]SessionRow, error)) Model {
+	m.resumeList = fn
+	return m
+}
+
+// WithResumeStart wires the /resume start: loads the chosen session via
+// session/load and replays its history into the chat.
+func (m Model) WithResumeStart(fn func(id string) error) Model {
+	m.resumeStart = fn
 	return m
 }
 
@@ -277,11 +484,39 @@ func (m Model) pickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pickerCursor++
 		}
 	case "enter":
+		// Resume (FR-44): enter startet die markierte Session — Chat und
+		// Token-Zähler werden vorher geleert, der Replay füllt beides neu.
+		if m.pickerKind == "resume" {
+			rows := m.filteredResumeRows()
+			if m.pickerCursor >= len(rows) {
+				return m, nil
+			}
+			id := rows[m.pickerCursor].ID
+			m.closePicker()
+			m.chat = m.chat.Clear()
+			m.printedUpTo = 0 // Inline: von vorn drucken (dieselbe Regel wie /new)
+			m.totalIn, m.totalOut, m.lastIn, m.lastOut = 0, 0, 0, 0
+			if m.resumeStart == nil {
+				m.chat = m.chat.Append(NewTextBlock("Kein Backend für Resume (Demo-Modus).", "1"))
+				return m, m.flushPrinted()
+			}
+			fn := m.resumeStart
+			return m, func() tea.Msg { return resumeStartMsg{err: fn(id)} }
+		}
 		options := m.pickerOptions()
 		if m.pickerCursor >= len(options) {
 			return m, nil
 		}
 		value := options[m.pickerCursor]
+		// Provider-Zeilen: Der Picker zeigt das Label, gesendet wird der
+		// Value ("Z.AI (GLM)" -> "zai_coding_plan").
+		if m.pickerKind == "provider" {
+			rows := m.filteredProviderRows()
+			if m.pickerCursor >= len(rows) {
+				return m, nil
+			}
+			value = rows[m.pickerCursor].Value
+		}
 		if m.configSet == nil {
 			m.applyPicker(value)
 			m.closePicker()
@@ -291,6 +526,9 @@ func (m Model) pickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pickerKind == "effort" {
 			id = "thinking_effort"
 		}
+		if m.pickerKind == "provider" {
+			id = "provider"
+		}
 		kind, fn := m.pickerKind, m.configSet
 		return m, func() tea.Msg {
 			return configResultMsg{kind: kind, value: value, err: fn(id, value)}
@@ -299,9 +537,10 @@ func (m Model) pickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.closePicker()
 		return m, nil
 	}
-	// The model list filters as you type; the effort list is short enough
-	// to browse without a query (FR-20). A changed query restarts at the top.
-	if m.pickerKind == "model" {
+	// The model and resume lists filter as you type; the effort list is
+	// short enough to browse without a query (FR-20/FR-44). A changed
+	// query restarts at the top.
+	if m.pickerKind == "model" || m.pickerKind == "resume" || m.pickerKind == "provider" {
 		changed := false
 		switch msg.String() {
 		case "backspace":
@@ -333,7 +572,67 @@ func (m *Model) applyPicker(value string) {
 		m.effort = value
 		return
 	}
+	if m.pickerKind == "provider" {
+		m.provider = value
+		return
+	}
 	m.modelLabel = value
+}
+
+// OptionRow ist eine waehlbare Konfigurationsoption mit Label — der
+// Provider-Picker zeigt das Name-Feld und sendet das Value-Feld (FR-45).
+type OptionRow struct {
+	Value string
+	Name  string
+}
+
+// retryPromptMsg: "r" auf einem fokussierten Fehler-Block (FR-33) sendet
+// den gescheiterten Prompt erneut — der Fehler-Block wird davor entfernt.
+type retryPromptMsg struct {
+	prompt  string
+	blockID int
+}
+
+// spinnerKick returns the next animation frame while a turn runs (FR-2):
+// the status line shows a rotating braille spinner so the user can see the
+// AI is working even before the first chunk/thought/tool event arrives.
+const (
+	spinnerInterval = 90 * time.Millisecond
+)
+
+// spinnerFrames are the sequential frames of the spinner. They must stay
+// array literals (NOT one multi-byte string): braille glyphs are 3 bytes in
+// UTF-8, so indexing a string with a frame counter would slice continuation
+// bytes and render garbage.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// spinnerTickMsg advances the running animation by one frame.
+type spinnerTickMsg struct{}
+
+// nextSpinner re-arms the animation timer for the next frame.
+func nextSpinner() tea.Cmd {
+	return tea.Tick(spinnerInterval, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+}
+
+// caretBlinkInterval ist der Standard-Takt des Zeichen-Carets (FR-42):
+// ~2 Hz wie der Terminal-Cursor — sichtbar/aufblendend per Bewegung,
+// abblendend im Leerlauf. Das rig kuerzt ihn auf Nanosekunden.
+const caretBlinkInterval = 530 * time.Millisecond
+
+// charBlinkMsg toggelt die Blink-Phase des Zeichen-Carets.
+type charBlinkMsg struct{}
+
+// nextCharBlink re-arms the caret blink timer.
+func (m Model) nextCharBlink() tea.Cmd {
+	return tea.Tick(m.charBlinkInterval, func(time.Time) tea.Msg { return charBlinkMsg{} })
+}
+
+// spinnerGlyph returns the current animation glyph, or "" when idle.
+func (m Model) spinnerGlyph() string {
+	if !m.running {
+		return ""
+	}
+	return spinnerFrames[m.spinner%len(spinnerFrames)]
 }
 
 // modelSegmentRange returns the screen columns of the model segment in the
@@ -383,16 +682,98 @@ func humanTokens(n int) string {
 	return fmt.Sprintf("%d", n)
 }
 
+// trimHints kuerzt die zentrale Hint-Leiste auf maxW Zellen (Punkt→Eclipse),
+// damit die Footer-Zeile nie umbricht und Zeilenzahl/Layout stabil bleiben.
+func trimHints(hints string, maxW int) string {
+	if maxW < 1 || runewidth.StringWidth(hints) <= maxW {
+		return hints
+	}
+	var out strings.Builder
+	w := 0
+	for _, r := range hints {
+		rw := runewidth.StringWidth(string(r))
+		if w+rw > maxW-1 {
+			break
+		}
+		out.WriteRune(r)
+		w += rw
+	}
+	return strings.TrimRight(out.String(), " ") + "…"
+}
+
 func (m Model) footerView() string {
 	left := m.stateLabel()
 	use := m.usageLabel()
+	// FR-31: Anzahl der Tool-Calls des (letzten) Turns als eigenes Segment
+	// vor der Token-Anzeige — Updates derselben Karte zaehlen einfach, ein
+	// neuer Turn startet bei 0. Ohne Tool-Calls bleibt das Segment weg.
+	if n := len(m.turnTools); n > 0 {
+		seg := fmt.Sprintf("🔧 %d tool call", n)
+		if n != 1 {
+			seg += "s"
+		}
+		if use != "" {
+			seg += " · " + use
+		}
+		use = seg
+	}
 	hints := ""
 	if m.running {
 		hints = "ctrl+c abort"
+		if len(m.queued) > 0 {
+			hints = "ctrl+c abort · 2× verwirft warteschlange"
+		}
 	}
+	// Zentrale Aktions-/Hint-Leiste (ganz unten): shift+enter SPAWNT den
+	// Zeichen-Cursor — das steht IMMER da, nicht erst nach einer Auswahl
+	// (der Cursor ist der Haupteingang, blockweise Auswahl ist der Spezial-
+	// fall per shift+up/down). Die Spezial-Modi (Pan, Bild, Cursor aktiv)
+	// verdraengen ihn nur, solange sie gelten.
+	var h string
+	switch {
+	case m.chat.charActive():
+		// Zeichen-Cursor (FR-42): Editor-Caret ueber dem Chat — Pfeile
+		// bewegen (alle Richtungen), shift+Pfeile waehlen, c/enter
+		// kopieren, esc loest erst die Auswahl und verlaesst dann.
+		h = "←↑↓→ cursor · shift+pfeile auswählen · c copy · esc fertig"
+	case m.chat.FocusedError():
+		// Fehler-Block (FR-33): r sendet den gescheiterten Prompt erneut.
+		h = "r retry · c copy · esc lösen"
+	case m.chat.FocusedPanning():
+		h = "+/- zoom · ←↑↓→ bewegen · enter/esc fertig"
+	case m.chat.FocusedImageToggle():
+		h = "⏎ pan & zoom · t text·bild"
+	case m.chat.selActive():
+		// Blockweise Auswahl (FR-42/43): c kopiert den Bereich, shift+enter
+		// spawnt den Cursor an der Auswahl-Kante.
+		h = "c copy · shift+enter cursor · esc lösen"
+	case m.chat.Focused() || m.chat.markedCount() > 0:
+		h = "c copy · shift+enter cursor · space auswählen · y yank · esc lösen"
+	case m.chat.Empty():
+		// Der Cursor braucht Text: Bei leerem Chat (frische Session) waere
+		// shift+enter stumm — die Leiste sagt, warum.
+		h = "shift+enter cursor (ab der ersten Antwort)"
+	default:
+		h = "shift+enter cursor · tab chat"
+	}
+	if m.copiedFlash {
+		// Copy-Feedback: der Flash steht kurzzeitig VOR den Hints — so
+		// ueberlebt er das Breiten-Kappen der Leiste (trimHints schneidet
+		// das Ende, nicht den Anfang).
+		h = "✓ kopiert · " + h
+	}
+	if hints != "" {
+		hints += " · "
+	}
+	hints += h
 	w := m.width
 	if w <= 0 {
 		w = 80
+	}
+	// Hints nie die Zeile wachsen lassen: hart auf die Breite kappen, damit
+	// die finale Zeile nicht umbricht und die Zeilenzahl/Layout stabil bleibt.
+	if budget := w - runewidth.StringWidth(left) - 6; budget > 0 && runewidth.StringWidth(hints) > budget {
+		hints = trimHints(hints, budget)
 	}
 	gap := w - runewidth.StringWidth(left) - 2 - runewidth.StringWidth(hints) - 3
 	if use != "" {
@@ -408,7 +789,13 @@ func (m Model) footerView() string {
 		}
 	}
 	if m.theme == nil {
-		return strings.TrimRight(" "+left+strings.Repeat(" ", gap+3+runewidth.StringWidth(hints)), " ")
+		// Theme-loser Fallback (Tests/PrintOnly): die Hints duerfen NICHT
+		// verloren gehen — vorher stand hier nur Links-Label + Padding.
+		line := " " + left + strings.Repeat(" ", gap)
+		if hints != "" {
+			line += hints + " "
+		}
+		return strings.TrimRight(line, " ")
 	}
 	fill := m.theme.TableFill()
 	line := " " + fill.Render(" "+left+" ")
@@ -422,6 +809,29 @@ func (m Model) footerView() string {
 	return strings.TrimRight(line, " ")
 }
 
+// setInputFocus schaltet die Zwei-Modus-Kette: Eingabe-Modus (on) selektiert
+// das Eingabefeld — die Textarea ist fokussiert, der Cursor blinkt, der
+// Rahmen leuchtet Neon. Antwort-Modus (off) blurrt die Textarea: bubbles
+// verarbeitet Tasten nur im fokussierten Zustand, Getippe kann also NICHT
+// im Eingabefeld landen, solange ein Chat-Segment selektiert ist — ein
+// nicht selektierter Abschnitt ist nicht interaktionsfaehig.
+func (m *Model) setInputFocus(on bool) tea.Cmd {
+	if on == m.inputFocus {
+		return nil
+	}
+	m.inputFocus = on
+	if on {
+		// Ketten-Heimat: Der Fokus kehrt ins Eingabefeld zurueck — die
+		// Klick-Markierung IST Teil der Auswahl und weicht MIT ihm (FR-39:
+		// zu jedem Zeitpunkt leuchtet hoechstens EIN Neon-Rahmen; tab/esc
+		// duerfen nie zwei Rahmen stehen lassen).
+		m.chat = m.chat.clearMarks()
+		return m.input.Focus()
+	}
+	m.input.Blur()
+	return nil
+}
+
 // startTurn resets the live state for a fresh prompt.
 func (m *Model) startTurn() {
 	m.running = true
@@ -429,6 +839,8 @@ func (m *Model) startTurn() {
 	m.streaming = ""
 	m.thinking = ""
 	m.toolStatus = ""
+	m.spinner = 0
+	m.turnTools = nil // FR-31: der Zaehler gehoert zum EINEN Turn
 	// A fresh turn starts without the previous thinking block (FR-30) and
 	// without stale streaming preview blocks.
 	m.chat = m.chat.removeBlock(ThinkBlockID)
@@ -444,8 +856,9 @@ func (m *Model) endTurn() {
 	m.toolStatus = ""
 }
 
-// chatTop is the screen row where the chat area starts (title + status line).
-const chatTop = 2
+// chatTop is the screen row where the chat area starts (title only — the
+// "AI is working" row sits above the input box, not up here).
+const chatTop = 1
 
 // SeedMarkdown appends the blocks of a markdown document to the chat — demo
 // mode to exercise hover/copy actions without a goose session.
@@ -469,6 +882,18 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	prevValue := m.input.Value()
+	// Der Copy-Flash des Eingabefeld-Chips verfaellt mit der naechsten
+	// Eingabe — Tasten und Maus-PRESS. Ein RELEASE (folgt jedem Klick
+	// unmittelbar) loescht ihn nicht: sonst waere der Klick-Flash nie
+	// sichtbar (Press setzt, Release loescht, bevor gerendert wird).
+	switch mm := msg.(type) {
+	case tea.KeyMsg:
+		m.copiedFlash = false
+	case tea.MouseMsg:
+		if mm.Action == tea.MouseActionPress {
+			m.copiedFlash = false
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -499,8 +924,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		mm.Y -= chatTop
 		var cmd tea.Cmd
 		var handled bool
+		marksBefore := m.chat.markedCount()
 		m.chat, cmd, handled = m.chat.Update(mm)
 		if handled {
+			// FR-39-Invariante "hoechstens EIN Neon-Rahmen", Maus-Pfad: Die
+			// Klick-Markierung IST die Auswahl und haelt DEN Rahmen — das
+			// Eingabefeld weicht (blur, Rahmen zur Ruhefarbe), genauso wie
+			// die Shift-Auswahl die Eingabe weichen laesst. Loeist der Klick
+			// die letzte Markierung und haelt die Kette keinen Chat-Fokus,
+			// kehrt der Fokus auf seinen STANDARD zurueck: Eingabe-Modus.
+			if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+				switch {
+				case m.chat.markedCount() > 0 && m.inputFocus:
+					cmd = tea.Batch(cmd, m.setInputFocus(false))
+				case marksBefore > 0 && m.chat.markedCount() == 0 && !m.chat.Focused():
+					cmd = tea.Batch(cmd, m.setInputFocus(true))
+				}
+			}
 			return m, cmd
 		}
 	case tea.KeyMsg:
@@ -510,7 +950,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Slash-command navigation (FR-20): while the prompt starts with
 		// "/", up/down move the selection, tab completes, esc dismisses.
-		if m.slashActive() && len(m.slashMatches()) > 0 {
+		// Nur im Eingabe-Modus: im Antwort-Modus sind ↑/↓ Block-Tasten.
+		if m.inputFocus && m.slashActive() && len(m.slashMatches()) > 0 {
 			switch msg.String() {
 			case "down":
 				m.cmdCursor = m.nextCmd(1)
@@ -541,7 +982,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// when the cursor leaves a too-small window and never scrolls back
 		// after SetHeight — the first line was cut off above. Growing first
 		// keeps every row visible; syncInputSize normalises afterwards.
-		if msg.String() == "ctrl+j" {
+		// Antwort-Modus: kein Zeilenumbruch — das Eingabefeld ist nicht
+		// selektiert und damit nicht interaktionsfaehig.
+		if msg.String() == "ctrl+j" && m.inputFocus {
 			if h := m.input.Height(); h < inputMaxHeight {
 				m.input.SetHeight(h + 1)
 			}
@@ -556,9 +999,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		switch msg.String() {
+		case "shift+enter", "shift+tab":
+			// Zeichen-Cursor (FR-42): shift+enter IST das Editor-Caret —
+			// frei bewegend, shift+Pfeile auswaehlend (nur lesend). handleKey
+			// entscheidet: Eintritt an der Leseposition (bzw. an laufender
+			// Block-Auswahl), Austritt per Toggle. Aus beiden Modi (Eingabe
+			// weicht, Antwort bleibt). shift+enter kommt in ghostty/kitty
+			// als eigene Sequenz an (Kitty-Protokoll, kbd.go uebersetzt sie
+			// auf den selben Trigger); alle anderen Terminals senden fuer
+			// shift+enter schlicht \r — dort ist shift+tab der Ausloeser.
+			if !m.chat.Empty() {
+				var cmd tea.Cmd
+				var handled bool
+				m.chat, cmd, handled = m.chat.Update(msg)
+				if handled {
+					focus := m.setInputFocus(false)
+					cmds := []tea.Cmd{cmd, focus}
+					if m.chat.charActive() && !m.charBlinkArmed {
+						// Modus-Eintritt: GENAU EINE Blink-Kette starten
+						// (Armed-Marker gegen Doppel-Takte, s. Model).
+						m.charBlinkArmed = true
+						cmds = append(cmds, m.nextCharBlink())
+					}
+					return m, tea.Batch(cmds...)
+				}
+			}
 		case "ctrl+c":
 			// FR-7: during a turn Ctrl+C aborts the turn (session/cancel)
 			// instead of killing the app; a second Ctrl+C force-quits.
+			// FR-46: existiert eine Warteschlange, QUITTIERT der Doppel-
+			// druck sie (verwirft alles Wartende) — Quit greift erst, wenn
+			// nichts mehr wartet.
+			now := time.Now()
+			double := now.Sub(m.lastCtrlC) < 750*time.Millisecond
+			m.lastCtrlC = now
+			if double && len(m.queued) > 0 {
+				n := len(m.queued)
+				m.queued = nil
+				m.chat = m.chat.Append(NewTextBlock(
+					fmt.Sprintf("Warteschlange verworfen (%d).", n), "1"))
+				if !m.running || m.cancel == nil || m.cancelling {
+					return m, m.flushPrinted()
+				}
+			}
 			if m.running && m.cancel != nil && !m.cancelling {
 				m.cancelling = true
 				cancel := m.cancel
@@ -566,10 +1049,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "enter":
+			// Zeichen-Modus (FR-42): enter kopiert den markierten Buchstaben-
+			// Bereich (wie c) — die Cursor-Sektion hat keinen Block-Fokus.
+			// Erhaltene Auswahl (22:18): auch von aussen kopierbar.
+			if (m.chat.charActive() || m.chat.residualSelShown()) && m.copyFn != nil {
+				m.copiedFlash = true
+				return m, m.copyFn(m.chat.selMarkdown())
+			}
 			if m.chat.Focused() {
 				var cmd tea.Cmd
 				m.chat, cmd, _ = m.chat.Update(msg)
 				return m, cmd
+			}
+			if !m.inputFocus {
+				return m, nil // Antwort-Modus ohne Block-Fokus: schlucken
 			}
 			prompt := strings.TrimSpace(m.input.Value())
 			if prompt == "" {
@@ -589,6 +1082,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncInputSize()
 				return m, m.flushPrinted()
 			}
+			// Queue (FR-46): Laeuft der Turn noch, wartet der Prompt in der
+			// Warteschlange und geht automatisch raus, sobald er endet —
+			// doppeltes ctrl+c verwirft alles.
+			if m.running {
+				m.queued = append(m.queued, prompt)
+				m.input.SetValue("")
+				m.syncInputSize()
+				return m, m.flushPrinted()
+			}
 			m.chat = m.chat.Append(NewUserBlock(prompt))
 			m.input.SetValue("")
 			if m.send == nil {
@@ -598,17 +1100,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			send := m.send
 			sendCmd := func() tea.Msg {
 				text, err := send(prompt)
-				return replyMsg{text: text, err: err}
+				return replyMsg{text: text, err: err, prompt: prompt}
 			}
-			// User-Block append-only echoen (timg-Modell), Versand parallel.
-			return m, tea.Batch(sendCmd, m.flushPrinted())
-		case "up", "down", "pgup", "pgdown", "tab":
+			// User-Block append-only echoen (timg-Modell), Versand parallel;
+			// der Status-Spinner laeuft, bis die Antwort eintrifft (FR-2).
+			return m, tea.Batch(sendCmd, m.flushPrinted(), nextSpinner())
+		case "up", "down", "pgup", "pgdown", "shift+up", "shift+down":
+			// Eingabe-Modus: ↑/↓ tun NICHTS — sie sind fuer die Eingabe-
+			// History reserviert (spaeter) und springen keinen Fokus. Nur
+			// Bild ↓/↑ scrollen seitenweise (Lesen ohne Fokus-Wechsel).
+			// Antwort-Modus: ↑/↓ laufen blockweise und STOPPEN an beiden
+			// Kettenenden — der Rueckweg ins Eingabefeld fuehrt hier
+			// AUSSCHLIESSLICH tab (esc bleibt der Reset auf den Standard).
+			if m.inputFocus {
+				s := msg.String()
+				if s == "pgup" || s == "pgdown" {
+					// Bild-Seitenwechsel aus der Eingabe: reines Scrollen,
+					// KEIN Fokus-Wechsel (die Kette bleibt in der Eingabe).
+					var cmd tea.Cmd
+					m.chat, cmd, _ = m.chat.Update(msg)
+					return m, cmd
+				}
+				// shift+up/down starten KEINE Auswahl mehr aus der Eingabe
+				// (User-Report: unfreiwilliger Modus-Wechsel — "Man ist im
+				// Cursor-Mode gefangen", Getippte erreichte das Feld nicht
+				// mehr). Der Weg in die Auswahl fuehrt bewusst ueber tab
+				// (Antwort-Modus) bzw. shift+enter (Zeichen-Cursor).
+				return m, nil // ↑/↓/shift+↑/shift+↓: History-Reserve, no-op
+			}
 			var cmd tea.Cmd
-			var handled bool
-			m.chat, cmd, handled = m.chat.Update(msg)
-			if handled {
+			m.chat, cmd, _ = m.chat.Update(msg)
+			return m, cmd
+		case "left", "right", "shift+left", "shift+right", "home", "end":
+			// Antwort-Modus: links/rechts steuern das pannende Bild (die
+			// BlockList leitet an den Block weiter); im Zeichen-Cursor
+			// (FR-42) bewegen sie das Caret bzw. waehlen mit shift. Ohne
+			// beides sind es KEINE Block-Tasten und werden unten verschluckt.
+			// Im Eingabe-Modus fallen sie durch zur Textarea (Cursor bewegt
+			// sich im Text) — Slash-Completion fängt right oben ab.
+			if !m.inputFocus {
+				var cmd tea.Cmd
+				m.chat, cmd, _ = m.chat.Update(msg)
 				return m, cmd
 			}
+		case "tab":
+			// tab TOGGELT Eingabe-Modus <-> Antwort-Modus: vom Eingabefeld
+			// direkt ins letzte Chat-Segment der KI-Antwort (z. B. ein
+			// Codeblock) und mit EINEM tab zurueck zum Tippen (nicht 10x ↓).
+			// Die Slash-Completion oben faengt tab ab, solange ein Befehl-
+			// Praefix getippt ist.
+			if m.chat.Focused() || !m.inputFocus {
+				m.chat = m.chat.Unfocus()
+				return m, m.setInputFocus(true)
+			}
+			nl := m.chat.FocusVisible()
+			if !nl.Focused() {
+				// Kein fokussierbares Segment im Chat: im Eingabe-Modus
+				// bleiben — sonst hinge die Kette ohne Ziel fest.
+				return m, nil
+			}
+			m.chat = nl
+			return m, m.setInputFocus(false)
 		case " ", "y":
 			// Selection keys (FR-29): space marks the focused block, y yanks
 			// the marked range as plain markdown. Unhandled they fall
@@ -619,19 +1171,77 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if handled {
 				return m, cmd
 			}
-		case "c", "esc", "t", "+", "=", "-", "_":
-			// Block-Aktionen am fokussierten Block: c/esc wie gehabt; t
-			// schaltet einen Diagramm-Block zwischen Bild (Standard) und
-			// rohem Quelltext um, +/- sind fuer Zoom reserviert (Bonus-FR).
-			// Ohne Fokus faellt alles durch und tippt normal ins Eingabefeld.
-			if m.chat.Focused() {
+		case "c":
+			// Copy-Chip im Eingabefeld-Footer: c kopiert die Auswahl (oder
+			// den fokussierten Block) — das Copy-UI lebt nicht mehr in den
+			// Block-Footern. Shift-Auswahl UND Zeichen-Cursor haben Vorrang:
+			// c kopiert NUR sie.
+			if (m.chat.selActive() || m.chat.charActive() || m.chat.residualSelShown()) && m.copyFn != nil {
+				m.copiedFlash = true
+				return m, m.copyFn(m.chat.selMarkdown())
+			}
+			if m.chat.markedCount() > 0 || m.chat.Focused() {
+				return m.copySelection()
+			}
+		case "esc", "t", "+", "=", "-", "_", "r":
+			// Block-Aktionen am fokussierten Block: t toggelt EIN-TASTIG
+			// zwischen Bild und Quelltext (FR-38 — i ist entfallen), +/-
+			// klappen den Think-Block. Im Zeichen-Cursor kollabiert esc
+			// zunaechst die Auswahl. Ohne Fokus faellt alles durch und
+			// tippt normal ins Eingabefeld.
+			if m.chat.Focused() || m.chat.selActive() || m.chat.charActive() || m.chat.prevSel || m.chat.residualSelShown() {
 				var cmd tea.Cmd
 				var handled bool
 				m.chat, cmd, handled = m.chat.Update(msg)
 				if handled {
+					// Hat esc den BLOCK-Fokus weggeraeumt, faellt die Kette
+					// auf ihren Standard zurueck: das Eingabefeld. esc raeumt
+					// aber in STUFEN ab: Laeuft noch der Zeichen-Cursor (esc
+					// hat NUR die Auswahl aufs Caret kollabiert) oder wartet
+					// unter ihm eine Block-Auswahl (esc kehrt in sie zurueck),
+					// bleibt die Kette IM Chat — das Eingabefeld darf den
+					// Nutzer nicht mitten im Modus uebernehmen (User-Report:
+					// esc warf aus dem Schnipsel-Modus in die Eingabe).
+					if msg.String() == "esc" && !m.chat.Focused() && !m.chat.charActive() && !m.chat.selActive() {
+						return m, tea.Batch(cmd, m.setInputFocus(true))
+					}
 					return m, cmd
 				}
-			}		}
+			}
+			if msg.String() == "esc" {
+				// Esc raeumt der Reihe nach weg: Auswahl, Block-Fokus — und
+				// kehrt auf den STANDARD zurueck: Eingabefeld selektiert.
+				m.setInputFocus(true)
+			}
+		}
+	case spinnerTickMsg:
+		// Advance the running animation one frame; re-arm while the turn
+		// is still in flight (FR-2) ODER der Rahmen-Fade noch auslaeuft:
+		// Das Neon-Band blendet beim Start ein, nach dem Turn wieder aus —
+		// der Ticker verstopft erst, wenn beides Ruhe hat.
+		m.neonPhase += neonPhaseStep
+		if m.running {
+			m.spinner = (m.spinner + 1) % len(spinnerFrames)
+			m.neonLevel = min(1, m.neonLevel+neonFadeStep)
+			return m, nextSpinner()
+		}
+		if m.neonLevel > 0 {
+			m.neonLevel = max(0, m.neonLevel-neonFadeStep)
+			return m, nextSpinner()
+		}
+		return m, nil
+	case charBlinkMsg:
+		// Caret-Blink (FR-42): Die Phase toggelt NUR, solange der Zeichen-
+		// Cursor laeuft — sonst endet die Kette hier (und der Arm-Marker
+		// wird fuer den naechsten Eintritt frei). Eine laufende Auswahl
+		// blinkt nicht mit: charDecorate blendet nur das alleinstehende
+		// Caret ab, der Bereich steht als Farbe.
+		if m.chat.charActive() {
+			m.chat = m.chat.toggleCharBlink()
+			return m, m.nextCharBlink()
+		}
+		m.charBlinkArmed = false
+		return m, nil
 	case chunkMsg:
 		// The answer grows in place under the chat while it streams (FR-2):
 		// prose as raw preview, in-progress tables re-layout per row.
@@ -649,18 +1259,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.toolStatus = msg.name
 		}
+		// FR-31: distinct callIDs zaehlen — Updates derselben Karte
+		// (gleiche callID) erhoehen den Turn-Zaehler nicht.
+		if m.turnTools == nil {
+			m.turnTools = map[string]bool{}
+		}
+		m.turnTools[msg.callID] = true
+		// Live-Output akkumulieren (live_output-Chunks kommen Stueckweise,
+		// jedes Update traegt nur seinen Chunk); das finale Update liefert
+		// das komplette rawOutput und raeumt den Akkumulator.
+		if m.toolLive == nil {
+			m.toolLive = map[string]string{}
+		}
+		if msg.live != "" {
+			m.toolLive[msg.callID] += msg.live
+		}
+		live := m.toolLive[msg.callID]
+		if msg.done {
+			delete(m.toolLive, msg.callID)
+			live = ""
+		}
+		// Tool-Karte im Chat (FR-2/FR-31): tool_call startet die laufende
+		// Karte, tool_call_update aktualisiert dieselbe in Place (callID);
+		// kind waehlt das Icon, failed den ✗-Zustand. Sie ist ein normales
+		// Ketten-Segment — Shift-Auswahl inklusive.
+		m.chat = m.chat.upsertToolBlock(ToolData{
+			CallID: msg.callID, Title: msg.name, Kind: msg.kind, Text: msg.text,
+			Command: msg.cmd, Stdout: msg.out, Stderr: msg.errOut,
+			Exit: msg.exit, HasOutput: msg.hasOut, Live: live,
+			Running: !msg.done, Failed: msg.failed,
+		}, m.theme, m.copyFn)
 		return m, nil
 	case infoMsg:
-		// The backend announced the real model/effort (ACP configOptions);
-		// empty parts keep the current labels (flag overrides).
+		// The backend announced the real model/effort/provider (ACP
+		// configOptions); empty parts keep the current labels (flag
+		// overrides). Auch ERNEUT nach einem Config-Wechsel — der Provider-
+		// Wechsel meldet die NEUE Modellliste.
 		if msg.model != "" {
 			m.modelLabel = msg.model
 		}
 		if msg.effort != "" {
 			m.effort = msg.effort
 		}
+		if msg.provider != "" {
+			m.provider = msg.provider
+		}
 		m.modelOptions = msg.modelOptions
 		m.effortOptions = msg.effortOptions
+		m.providerOptions = msg.providerOptions
 		return m, nil
 	case usageMsg:
 		m.totalIn += msg.in
@@ -674,8 +1320,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Fresh session: fresh chat, fresh counters (FR-20).
 		m.chat = m.chat.Clear()
+		m.printedUpTo = 0 // Inline: von vorn drucken, sonst druckt /new nie wieder
 		m.totalIn, m.totalOut = 0, 0
 		m.lastIn, m.lastOut = 0, 0
+		return m, nil
+	case resumeListMsg:
+		if msg.err != nil {
+			m.chat = m.chat.Append(NewTextBlock("Resume-Liste fehlgeschlagen: "+msg.err.Error(), "1"))
+			return m, m.flushPrinted()
+		}
+		if len(msg.rows) == 0 {
+			m.chat = m.chat.Append(NewTextBlock("goose meldet keine früheren Sessions.", "1"))
+			return m, m.flushPrinted()
+		}
+		m.resumeRows = msg.rows
+		m.openPicker("resume")
+		return m, nil
+	case resumeStartMsg:
+		if msg.err != nil {
+			m.chat = m.chat.Append(NewTextBlock("Resume fehlgeschlagen: "+msg.err.Error(), "1"))
+			return m, m.flushPrinted()
+		}
+		// Der Replay ist schon da (er lief WÄHREND des Loads) — Inline
+		// druckt Reste nach (endet der Verlauf z.B. auf Tool-Karten).
+		return m, m.flushPrinted()
+	case replayMsg:
+		// session/load-Replay (FR-44): der geladene Verlauf landet als
+		// fertige Blöcke — Nutzerzeile bzw. final gerenderte Antwort,
+		// inkl. Diagramm-Konvertierung wie in replyMsg.
+		switch msg.kind {
+		case replayUser:
+			m.chat = m.chat.Append(NewUserBlock(msg.text))
+			return m, m.flushPrinted()
+		case replayAgent:
+			nodes, err := render.Parse(msg.text)
+			if err != nil {
+				m.chat = m.chat.Append(NewTextBlock("Parse-Fehler: "+err.Error(), "1"))
+				return m, m.flushPrinted()
+			}
+			m.chat = m.chat.Append(BuildWidgets(nodes, m.theme, m.copyFn)...)
+			return m, tea.Batch(m.pendingDiagrams(), m.flushPrinted())
+		}
+		return m, nil
+	case noticeMsg:
+		m.chat = m.chat.Append(NewTextBlock(msg.text, "1"))
+		return m, m.flushPrinted()
+	case providerFavoritesMsg:
+		// Eigene Provider, wie GOOSE sie klassifiziert
+		// (_goose/unstable/providers/list: "Custom"/"Declarative") —
+		// providerRows() sortiert sie hinter den aktiven (FR-45).
+		m.providerFavorites = msg.ids
 		return m, nil
 	case configResultMsg:
 		// The backend confirmed (or failed) the model/effort change.
@@ -697,7 +1391,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat = m.chat.removeStreamBlocks()
 		switch {
 		case msg.err != nil:
-			m.chat = m.chat.Append(NewTextBlock("Fehler: "+msg.err.Error(), "1"))
+			// API-/RPC-Fehler als eigener Block mit Retry-Aktion (FR-33):
+			// "r" auf dem fokussierten Block sendet den Prompt erneut.
+			m.chat = m.chat.Append(NewErrorBlock(msg.err.Error(), msg.prompt, m.theme, m.copyFn))
 		case msg.text == "":
 		case true:
 			nodes, err := render.Parse(msg.text)
@@ -707,16 +1403,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chat = m.chat.Append(BuildWidgets(nodes, m.theme, m.copyFn)...)
 			}
 		}
+		// Queue-Drainage (FR-46): Nur nach einem sauberen Turn-Ende geht der
+		// naechste wartende Prompt raus — nach einem Fehler bleibt die
+		// Warteschlange stehen (Retry entscheidet, 2x ctrl+c verwirft).
+		if msg.err == nil && len(m.queued) > 0 && m.send != nil {
+			next := m.queued[0]
+			m.queued = m.queued[1:]
+			m.chat = m.chat.Append(NewUserBlock(next))
+			m.startTurn()
+			send := m.send
+			sendCmd := func() tea.Msg {
+				text, err := send(next)
+				return replyMsg{text: text, err: err, prompt: next}
+			}
+			return m, tea.Batch(sendCmd, m.flushPrinted(), nextSpinner())
+		}
 		// PlantUML blocks in the fresh reply convert in the background
 		// (FR-6); die finalen Bloecke druckt der Flush append-only.
 		return m, tea.Batch(m.pendingDiagrams(), m.flushPrinted())
+	case retryPromptMsg:
+		// Retry (FR-33): Fehler-Block weg, derselbe Prompt erneut — nur im
+		// Ruhestand; laeuft ein Turn (oder fehlt das Backend), passiert nichts.
+		if m.running || m.send == nil {
+			return m, nil
+		}
+		m.chat = m.chat.removeBlock(msg.blockID)
+		m.startTurn()
+		send := m.send
+		p := msg.prompt
+		sendCmd := func() tea.Msg {
+			text, err := send(p)
+			return replyMsg{text: text, err: err, prompt: p}
+		}
+		return m, tea.Batch(sendCmd, m.flushPrinted(), nextSpinner())
 	}
+	// Eingabe-Modus: nur die SELEKTIERTE Textarea bekommt Tasten — im
+	// Antwort-Modus faellt hier nichts mehr durch, Getippe kann das
+	// Eingabefeld nicht erreichen (nicht selektiert = nicht interaktiv).
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	if m.input.Value() != prevValue {
-		// Typing resets the slash-command state (FR-20).
-		m.cmdDismissed = false
-		m.cmdCursor = 0
+	if m.inputFocus {
+		m.input, cmd = m.input.Update(msg)
+		if m.input.Value() != prevValue {
+			// Typing resets the slash-command state (FR-20).
+			m.cmdDismissed = false
+			m.cmdCursor = 0
+		}
 	}
 	// The prompt box grows with the text, so the chat gives the rows back.
 	m.syncInputSize()
@@ -782,20 +1513,42 @@ func (m *Model) flushPrinted() tea.Cmd {
 	return tea.Sequence(cmds...)
 }
 
-// statusLine is the fixed line under the title: tool activity (FR-2). Keeping
-// it to exactly one row keeps chatTop at 2, so mouse hit-testing against the
-// chat area stays correct. Thinking lives in its own collapsible block (FR-30).
-func (m Model) statusLine() string {
-	if m.toolStatus == "" {
+// workingLine is the slim "AI is working" row rendered DIRECTLY ABOVE the
+// input box (not under the title): a rotating spinner while the turn runs,
+// plus the current tool label when one is active. It collapses to nothing
+// when idle, so a finished turn leaves no blank row and the input box keeps
+// its place. Keeping it to exactly one row preserves the chat hit-testing.
+func (m Model) workingLine() string {
+	if !m.running && m.toolStatus == "" {
 		return ""
 	}
-	line := "🔧 " + m.toolStatus
+	var line string
+	if m.running {
+		line = m.spinnerGlyph() + " "
+	}
+	if m.toolStatus != "" {
+		line += "🔧 " + m.toolStatus
+	} else if m.running {
+		line += "antwort läuft …"
+	}
+	if m.running && len(m.queued) > 0 {
+		line += fmt.Sprintf(" · ⏳ %d wartend (2× ctrl+c verwirft)", len(m.queued))
+	}
 	if m.width > 0 {
 		if w := render.WrapDisplay(line, m.width); len(w) > 0 {
 			line = w[0]
 		}
 	}
-	return lipgloss.NewStyle().Faint(true).Render(line)
+	styled := lipgloss.NewStyle().Faint(true).Render(line)
+	// Mittig in der Zeile: Der Status gehoert zur Box DARUNTER — zentriert
+	// liest er sich als deren Ueberschrift, nicht als Fliesstext-Rest. Der
+	// Farbstil zaehlt nicht in die Breite (ANSI wird ignoriert).
+	if m.width > 0 {
+		if pad := (m.width - lipgloss.Width(styled)) / 2; pad > 0 {
+			return strings.Repeat(" ", pad) + styled
+		}
+	}
+	return styled
 }
 
 func (m Model) View() string {
@@ -811,8 +1564,6 @@ func (m Model) View() string {
 	}()
 	var top strings.Builder
 	top.WriteString(lipgloss.NewStyle().Bold(true).Render("heron · goose acp"))
-	top.WriteString("\n")
-	top.WriteString(m.statusLine())
 	top.WriteString("\n")
 	if m.chat.Empty() {
 		top.WriteString("(no messages yet — type below)\n")
@@ -843,12 +1594,10 @@ func (m Model) View() string {
 		var live strings.Builder
 		live.WriteString(lipgloss.NewStyle().Bold(true).Render("heron · goose acp"))
 		live.WriteString("\n")
-		sl := m.statusLine()
-		if sl == "" && m.running {
-			sl = lipgloss.NewStyle().Faint(true).Render("▸ Antwort läuft …")
+		if wl := m.workingLine(); wl != "" {
+			live.WriteString(wl)
+			live.WriteString("\n")
 		}
-		live.WriteString(sl)
-		live.WriteString("\n")
 		live.WriteString(prompt)
 		live.WriteString("\n")
 		live.WriteString(m.footerView())
@@ -856,14 +1605,20 @@ func (m Model) View() string {
 		perfBytes(len(out))
 		return out
 	}
+	// The "AI is working" row hangs on to the bottom: directly above the box
+	// it belongs to, never at the top next to the title.
+	bottom := prompt
+	if wl := m.workingLine(); wl != "" {
+		bottom = wl + "\n" + bottom
+	}
 	if m.height <= 0 {
 		// No terminal size known yet (tests, first paint): render as-is
 		// instead of squeezing the frame into an unknown height, which cut
 		// the header and the newest chat rows.
-		return m.fillScreen(top.String() + "\n\n" + prompt + "\n" + m.footerView())
+		return m.fillScreen(top.String() + "\n\n" + bottom + "\n" + m.footerView())
 	}
-	promptRows := len(strings.Split(prompt, "\n"))
-	avail := m.height - promptRows - 1 // the footer row
+	bottomRows := len(strings.Split(bottom, "\n"))
+	avail := m.height - bottomRows - 1 // the footer row
 	if avail < 1 {
 		avail = 1
 	}
@@ -874,7 +1629,7 @@ func (m Model) View() string {
 	for len(topLines) < avail {
 		topLines = append(topLines, "")
 	}
-	return m.fillScreen(strings.Join(append(append(topLines, prompt), m.footerView()), "\n"))
+	return m.fillScreen(strings.Join(append(append(topLines, bottom), m.footerView()), "\n"))
 }
 
 // fillScreen pads every line to the terminal width and paints the theme
@@ -943,6 +1698,19 @@ func RunModel(m Model) error {
 		}
 	}
 	opts := []tea.ProgramOption{tea.WithFilter(kittyResponseFilter)}
+	// Shift+Enter (ghostty/kitty): Das Kitty-Tastaturprotokoll liefert die
+	// Taste als \x1b[13;2u — der uebersetzende Reader macht daraus den
+	// shift+tab-Trigger (beide Opening-Cases matchen gemeinsam), Esc
+	// (\x1b[27u) faellt auf \x1b zurueck. Ohne Kitty-Terminal bleibt es
+	// beim shift+tab-Fallback (kbd.go).
+	if kbd := newKittyKeyboard(os.Stdin, os.Stdout); kbd != nil {
+		opts = append(opts, tea.WithInput(kbd))
+		defer kbd.Restore()
+		// SICHTBARE Bestaetigung: Der Placeholder meldet, dass shift+enter
+		// wirklich scharf ist (Terminal hat das Protokoll angenommen) —
+		// ohne Raetseln, ob "nichts passiert" Tastatur oder Feature ist.
+		m.input.Placeholder = m.input.Placeholder + " · shift+enter cursor"
+	}
 	if m.inline {
 		// Kein Alt-Screen, kein Mouse-Reporting: der Terminal scrollt
 		// nativ — damit entfaellt auch die Klasse der SGR-Maus-Leaks,

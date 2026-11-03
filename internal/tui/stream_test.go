@@ -71,15 +71,54 @@ func TestThinkingStreamsIntoCollapsedBlock(t *testing.T) {
 	r.notContains("💭")
 }
 
+// TestRunningSpinnerAnimatesStatusLine (FR-2): while a turn runs the status
+// line shows a rotating spinner; it vanishes once the turn settles.
+func TestRunningSpinnerAnimatesStatusLine(t *testing.T) {
+	r := newRig(t)
+
+	// Idle: no animation glyph in the status line.
+	if g := r.m.spinnerGlyph(); g != "" {
+		t.Fatalf("idle spinner glyph = %q, want empty", g)
+	}
+
+	r.m.startTurn()
+	a := r.m.spinnerGlyph()
+	if a == "" {
+		t.Fatal("spinner glyph must be visible while the turn runs")
+	}
+
+	// Advancing frames changes the glyph (real animation).
+	r.do(spinnerTickMsg{})
+	b := r.m.spinnerGlyph()
+	if b == a {
+		t.Fatalf("spinner did not advance: both frames %q", a)
+	}
+
+	// The first frame already appears in the rendered status line.
+	r.contains(r.m.spinnerGlyph())
+
+	r.m.endTurn()
+	if g := r.m.spinnerGlyph(); g != "" {
+		t.Fatalf("spinner glyph survived endTurn: %q", g)
+	}
+}
+
 // TestToolStatusShowsAndClears (FR-2): tool activity is visible while the
-// tool runs and disappears when it finishes.
+// tool runs and disappears when it finishes — die STATUSZEILE raeumt, die
+// Tool-KARTE im Chat bleibt (FR-31: nachvollziehbare Aktivitaet).
 func TestToolStatusShowsAndClears(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
-	r.do(toolMsg{name: "read_file.go", done: false})
+	r.do(toolMsg{callID: "c1", name: "read_file.go", done: false})
 	r.contains("read_file.go")
-	r.do(toolMsg{name: "read_file.go", done: true})
-	r.notContains("read_file.go")
+	if r.m.toolStatus != "read_file.go" {
+		t.Fatalf("Statuszeile muss den Tool-Namen zeigen: %q", r.m.toolStatus)
+	}
+	r.do(toolMsg{callID: "c1", name: "read_file.go", done: true})
+	if r.m.toolStatus != "" {
+		t.Fatalf("done muss die Statuszeile raeumen: %q", r.m.toolStatus)
+	}
+	r.contains("🔧 read_file.go ✓") // Karte bleibt mit fertig-Status
 }
 
 // TestCtrlCAbortsTurnInsteadOfQuitting (FR-7): the first Ctrl+C cancels the
@@ -159,12 +198,12 @@ func TestStreamPublishWithoutProgramIsNoop(t *testing.T) {
 	var nilStream *Stream
 	nilStream.Chunk("x")
 	nilStream.Thought("y")
-	nilStream.Tool("z", false)
+	nilStream.ToolCall("c0", "z", "execute", "text", false, false)
 
 	empty := &Stream{}
 	empty.Chunk("x")
 	empty.Thought("y")
-	empty.Tool("z", true)
+	empty.ToolCall("c1", "z", "fetch", "text", true, false)
 	empty.attach(nil)
 	empty.Chunk("still safe")
 }

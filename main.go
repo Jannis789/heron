@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ func main() {
 	gooseBin := flag.String("goose", "goose", "goose binary (launched with 'acp' as ACP agent)")
 	themeFile := flag.String("theme", "", "path to a theme JSON (default: embedded default.json)")
 	demo := flag.Bool("demo", false, "canned reply instead of a goose session (TUI testing)")
+	cont := flag.Bool("c", false, "resume the newest session of this directory (FR-25)")
 	modelFlag := flag.String("model", "", "model label override (default: what goose reports, else \"goose\")")
 	effortFlag := flag.String("effort", "", "effort label override (default: what goose reports, else \"medium\")")
 	seedFile := flag.String("seed", "", "markdown file to seed into the chat on startup")
@@ -114,8 +116,15 @@ func main() {
 	events := &acp.Events{
 		OnChunk:   func(text string) { stream.Chunk(text) },
 		OnThought: func(text string) { stream.Thought(text) },
-		OnTool:    func(name string, done bool) { stream.Tool(name, done) },
-		OnUsage:   func(u acp.Usage) { stream.Usage(u.InputTokens, u.OutputTokens) },
+		OnTool: func(e acp.ToolEvent) {
+			stream.Tool(tui.ToolUpdate{
+				CallID: e.CallID, Label: e.Label(), Kind: e.Kind, Text: e.Text,
+				Command: e.Command, Stdout: e.Stdout, Stderr: e.Stderr,
+				Exit: e.ExitCode, HasOutput: e.HasOutput, Live: e.Live,
+				Done: e.Done, Failed: e.IsError,
+			})
+		},
+		OnUsage: func(u acp.Usage) { stream.Usage(u.InputTokens, u.OutputTokens) },
 	}
 
 	// The prompt box shows what goose really runs (ACP configOptions) —
@@ -130,10 +139,133 @@ func main() {
 		if pinned["effort"] {
 			eff = ""
 		}
-		if mdl == "" && eff == "" {
+		// Provider ist nie gepinnt — er gehoert zur Session (FR-45).
+		if mdl == "" && eff == "" && s.Provider() == "" {
 			return
 		}
-		stream.Info(mdl, eff, s.ModelOptions(), s.EffortOptions())
+		provOpts := make([]tui.OptionRow, len(s.ProviderOptions()))
+		for i, po := range s.ProviderOptions() {
+			provOpts[i] = tui.OptionRow{Value: po.Value, Name: po.Name}
+		}
+		stream.Info(mdl, eff, s.Provider(), s.ModelOptions(), s.EffortOptions(), provOpts)
+	}
+
+	// publishProviderFavorites holt die EINGERICHTETEN Provider aus goose
+	// selbst (_goose/unstable/config/read, key "providers"): goose nennt
+	// genau die Keys des providers:-Blocks — bei ~90 katalogisierten
+	// Providern (davon keyless wie lmstudio "configured") sind das die
+	// einzigen, die der Nutzer wirklich eingerichtet hat. Der
+	// /provider-Picker zeigt nur sie (plus den aktiven), der Vollkatalog
+	// bleibt über die Suche erreichbar. Fehler bleiben stumm: ohne
+	// Favoriten zeigt der Picker wie bisher die volle Liste.
+	publishProviderFavorites := func(s *acp.Session) {
+		own, err := s.ConfiguredProviders(context.Background())
+		if err == nil && len(own) > 0 {
+			stream.ProviderFavorites(own)
+		}
+	}
+
+	// publishConfigResult wertet die ERFRISCHTEN configOptions aus einer
+	// set_config_option-Antwort aus: Ein Provider-Wechsel meldet die NEUE
+	// Modellliste — Picker und Footer stehen danach nicht auf Altbestand.
+	publishConfigResult := func(res []byte) {
+		mdl, eff, prov, mdls, effs, provs := acp.ParseConfig(res)
+		if mdl == "" && eff == "" && prov == "" && len(mdls) == 0 && len(effs) == 0 && len(provs) == 0 {
+			return
+		}
+		provOpts := make([]tui.OptionRow, len(provs))
+		for i, po := range provs {
+			provOpts[i] = tui.OptionRow{Value: po.Value, Name: po.Name}
+		}
+		stream.Info(mdl, eff, prov, mdls, effs, provOpts)
+	}
+
+	// Resume (FR-44): Listing und Start als Callbacks ins TUI — dieselbe
+	// Naht wie /new. session/list liefert die gespeicherten Sessions,
+	// session/load lädt die gewählte in einem frischen goose-Prozess und
+	// replayt den Verlauf als Blöcke in den Chat.
+	listInfos := func() ([]acp.SessionInfo, error) {
+		if s := session(); s != nil {
+			return s.ListSessions(context.Background())
+		}
+		return acp.ListSessions(context.Background(), *gooseBin)
+	}
+	replayCollect := func(it acp.ReplayItem) {
+		switch it.Kind {
+		case acp.ReplayUser:
+			stream.ReplayUser(it.Text)
+		case acp.ReplayAgent:
+			stream.ReplayAgent(it.Text)
+		case acp.ReplayTool:
+			e := it.Tool
+			stream.Tool(tui.ToolUpdate{
+				CallID: e.CallID, Label: e.Label(), Kind: e.Kind, Text: e.Text,
+				Command: e.Command, Stdout: e.Stdout, Stderr: e.Stderr,
+				Exit: e.ExitCode, HasOutput: e.HasOutput, Live: e.Live,
+				Done: e.Done, Failed: e.IsError,
+			})
+		}
+	}
+	startResume := func(id string) error {
+		sessMu.Lock()
+		defer sessMu.Unlock()
+		if sess != nil {
+			sess.Close()
+			sess = nil
+		}
+		s, err := acp.LoadSession(context.Background(), *gooseBin, wd, id, replayCollect)
+		if err != nil {
+			return err
+		}
+		sess = s
+		publishModelInfo(s)
+		return nil
+	}
+	// resumeRows mappt goose's Sessionliste auf die Picker-Zeilen: Titel ·
+	// lokale Zeit, dahinter gedimmt Ordner · Nachrichten · Modell.
+	resumeRows := func() ([]tui.SessionRow, error) {
+		infos, err := listInfos()
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]tui.SessionRow, 0, len(infos))
+		for _, in := range infos {
+			title := in.Title
+			if title == "" {
+				title = in.SessionID
+			}
+			when := in.UpdatedAt
+			if t, err := time.Parse(time.RFC3339, in.UpdatedAt); err == nil {
+				when = t.Local().Format("02.01. 15:04")
+			}
+			dir := in.Cwd
+			if base := filepath.Base(in.Cwd); base != "" && base != "." && base != "/" {
+				dir = base
+			}
+			detail := dir
+			if in.MessageCount > 0 {
+				detail += " · " + strconv.Itoa(in.MessageCount) + " msgs"
+			}
+			if in.ModelID != "" {
+				detail += " · " + in.ModelID
+			}
+			rows = append(rows, tui.SessionRow{ID: in.SessionID, Label: title + " · " + when, Detail: detail})
+		}
+		return rows, nil
+	}
+	// resumeNewest wählt die neueste Session dieses Ordners (FR-25) —
+	// listInfos sortiert bereits newest-first.
+	resumeNewest := func() error {
+		infos, err := listInfos()
+		if err != nil {
+			return err
+		}
+		for _, in := range infos {
+			if in.Cwd == wd {
+				return startResume(in.SessionID)
+			}
+		}
+		return fmt.Errorf("keine frühere Session in diesem Ordner")
 	}
 
 	sender := func(prompt string) (string, error) {
@@ -149,6 +281,19 @@ func main() {
 	prewarmDone := make(chan struct{})
 	if *demo {
 		sender = demoStreamingSender(stream)
+	} else if *cont {
+		// FR-25: heron -c übernimmt die letzte Session desselben Ordners —
+		// der Verlauf replayt als Blöcke. Fehlschlag: neue Session + Hinweis.
+		go func() {
+			defer close(prewarmDone)
+			if err := resumeNewest(); err != nil {
+				stream.Notice("Resume fehlgeschlagen: " + err.Error() + " — neue Session.")
+				if s, err := ensureSession(); err == nil {
+					publishModelInfo(s)
+					publishProviderFavorites(s)
+				}
+			}
+		}()
 	} else {
 		// Prewarm the session right after launch: the prompt box then shows
 		// the real model/effort without waiting for the first prompt.
@@ -157,6 +302,7 @@ func main() {
 			defer close(prewarmDone)
 			if s, err := ensureSession(); err == nil {
 				publishModelInfo(s)
+				publishProviderFavorites(s)
 			}
 		}()
 	}
@@ -176,7 +322,10 @@ func main() {
 		if s == nil {
 			return fmt.Errorf("keine goose-session")
 		}
-		_, err := s.SetConfigOption(context.Background(), id, value)
+		res, err := s.SetConfigOption(context.Background(), id, value)
+		if err == nil {
+			publishConfigResult(res)
+		}
 		return err
 	}
 
@@ -195,6 +344,7 @@ func main() {
 		}
 		sess = s
 		publishModelInfo(s)
+		publishProviderFavorites(s)
 		return nil
 	}
 
@@ -215,6 +365,7 @@ func main() {
 	}
 	model := tui.New(sender, th, copyFn).WithStream(stream).WithCancel(cancel).
 		WithConfigSet(configSet).WithNewSession(resetSession).
+		WithResumeList(resumeRows).WithResumeStart(startResume).
 		WithContextWindow(*contextWindow).WithTermCaps(caps).
 		WithWorkspace(cwd).WithModel(*modelFlag).WithEffort(*effortFlag)
 	var seedText string
@@ -248,12 +399,15 @@ func demoStreamingSender(stream *tui.Stream) func(string) (string, error) {
 	return func(prompt string) (string, error) {
 		full := demoMarkdown(prompt)
 		stream.Thought("demo: thinking of a reply …")
-		stream.Tool("demo-tool", false)
+		stream.ToolCall("demo-0", "demo-tool", "execute", "ls -la\nLICENSE README.md", false, false)
 		for _, piece := range splitChunks(full, 14) {
 			stream.Chunk(piece)
 			time.Sleep(5 * time.Millisecond)
 		}
-		stream.Tool("demo-tool", true)
+		stream.ToolCall("demo-0", "demo-tool", "execute", "ls -la\nLICENSE README.md", true, false)
+		// Zweite Demo-Karte: fetch-Icon UND Fehler-Zustand (✗) zeigen.
+		stream.ToolCall("demo-1", "demo fetch", "fetch",
+			"curl -s https://example.com\nconnection refused", true, true)
 		return full, nil
 	}
 }

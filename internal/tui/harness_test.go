@@ -8,6 +8,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"heron/internal/render"
 )
@@ -18,6 +20,19 @@ var ansiRE = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;:?
 
 // stripANSI removes escape sequences (CSI, OSC, single-char) from s.
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+
+// withTrueColor erzwingt TrueColor fuer einen Test (go test laeuft sonst im
+// Ascii-Profil: Stile rendern ohne ANSI und Farbaussagen werden blind) und
+// stellt das Profil danach wieder her. Liegt HIER (versioniert), weil der
+// Nix-Bau nur den committeten Baum testet — Test-Dateien ausserhalb des
+// Index sind fuer ihn unsichtbar.
+func withTrueColor(t *testing.T) {
+	t.Helper()
+	rp := lipgloss.DefaultRenderer()
+	old := rp.ColorProfile()
+	rp.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { rp.SetColorProfile(old) })
+}
 
 // rig drives a Model deterministically: every input is fed through Update and
 // every returned tea.Cmd is executed and its message fed back, so a test can
@@ -45,6 +60,10 @@ func newRig(t *testing.T) *rig {
 	})
 	// The cursor blink timer otherwise waits a real 530ms per input action.
 	r.m.input.Cursor.BlinkSpeed = time.Nanosecond
+	// Dasselbe fuer das Caret des Zeichen-Cursors (FR-42): Der Blink-Takt
+	// ist ein tea.Tick mit echtem Sleep — im rig auf Nanosekunden, sonst
+	// zahle JEDER Test, der den Cursor betritt, 530 ms Echtzeit.
+	r.m.charBlinkInterval = time.Nanosecond
 	r.size(100, 30)
 	return r
 }
@@ -134,16 +153,12 @@ func keyOf(s string) tea.KeyMsg {
 	switch s {
 	case "enter":
 		return tea.KeyMsg{Type: tea.KeyEnter}
-	case "tab":
-		return tea.KeyMsg{Type: tea.KeyTab}
-	case "shift+tab":
-		return tea.KeyMsg{Type: tea.KeyShiftTab}
-	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEsc}
-	case "up":
-		return tea.KeyMsg{Type: tea.KeyUp}
 	case "down":
 		return tea.KeyMsg{Type: tea.KeyDown}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
 	case "pgup":
 		return tea.KeyMsg{Type: tea.KeyPgUp}
 	case "pgdown":
@@ -152,6 +167,12 @@ func keyOf(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	case "space":
 		return tea.KeyMsg{Type: tea.KeySpace}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
+	case "shift+down":
+		return tea.KeyMsg{Type: tea.KeyShiftDown}
+	case "shift+up":
+		return tea.KeyMsg{Type: tea.KeyShiftUp}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }

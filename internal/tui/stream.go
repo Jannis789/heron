@@ -78,9 +78,25 @@ func (s *Stream) Thought(text string) {
 	}
 }
 
-// Tool publishes tool activity (FR-2). done clears the busy label.
-func (s *Stream) Tool(name string, done bool) {
-	s.publish(toolMsg{name: name, done: done})
+// ToolCall veroeffentlicht eine Tool-Aktivitaet (FR-2/FR-31): Die Karte im
+// Chat (callID identifiziert sie fuer In-place-Updates) UND die Statuszeile
+// (done raeumt sie). label ist der lesbare Titel (ToolEvent.Label), kind die
+// ACP-Kategorie (execute/fetch/… — sie waehlt das Icon der Karte), text der
+// bisher gestreamte Inhalt; failed markiert das Call als gescheitert
+// (Kopf zeigt ✗ statt ✓). Legacy-/Demo-Pfad: ohne Struktur (rawInput/
+// rawOutput) — dafuer gibt es Stream.Tool.
+func (s *Stream) ToolCall(callID, label, kind, text string, done, failed bool) {
+	s.Tool(ToolUpdate{CallID: callID, Label: label, Kind: kind, Text: text,
+		Done: done, Failed: failed})
+}
+
+// Tool veroeffentlicht eine Tool-Aktivitaet MIT Struktur (echte goose-
+// Frames): Kommando, aufgeteilte Ausgabe, Exit-Code und Live-Chunk —
+// die Karte rendert daraus $-Zeile, Output, ⚠-Stderr und exit-N.
+func (s *Stream) Tool(u ToolUpdate) {
+	s.publish(toolMsg{callID: u.CallID, name: u.Label, kind: u.Kind, text: u.Text,
+		done: u.Done, failed: u.Failed, cmd: u.Command, out: u.Stdout,
+		errOut: u.Stderr, exit: u.Exit, hasOut: u.HasOutput, live: u.Live})
 }
 
 // Usage publishes the token accounting of a finished turn (FR-23).
@@ -91,21 +107,78 @@ func (s *Stream) Usage(in, out int) {
 // usageMsg carries the token usage of the finished turn.
 type usageMsg struct{ in, out int }
 
-// Info publishes the model/effort the backend announced (ACP configOptions)
-// once the session exists, plus the selectable option lists.
-func (s *Stream) Info(model, effort string, modelOptions, effortOptions []string) {
-	s.publish(infoMsg{model: model, effort: effort,
-		modelOptions: modelOptions, effortOptions: effortOptions})
+// Info publishes the model/effort/provider the backend announced (ACP
+// configOptions) once the session exists, plus the selectable option lists
+// — auch ERNEUT nach einem set_config_option (Provider-Wechsel aendert die
+// Modellliste).
+func (s *Stream) Info(model, effort, provider string, modelOptions, effortOptions []string, providerOptions []OptionRow) {
+	s.publish(infoMsg{model: model, effort: effort, provider: provider,
+		modelOptions: modelOptions, effortOptions: effortOptions,
+		providerOptions: providerOptions})
 }
+
+// ProviderFavorites published die IDs der in goose EINGERICHTETEN
+// Provider (Quelle: goose _goose/unstable/config/read, key "providers"
+// — der providers:-Block nennt genau die eingerichteten) — der
+// /provider-Picker zeigt nur sie plus den aktiven Provider.
+func (s *Stream) ProviderFavorites(ids []string) {
+	s.publish(providerFavoritesMsg{ids: ids})
+}
+
+// providerFavoritesMsg traegt die eigenen Provider-IDs in das Modell.
+type providerFavoritesMsg struct{ ids []string }
 
 // infoMsg carries the session's real model/effort labels and the selectable
 // option lists behind them.
 type infoMsg struct {
-	model         string
-	effort        string
-	modelOptions  []string
-	effortOptions []string
+	model           string
+	effort          string
+	provider        string
+	modelOptions    []string
+	effortOptions   []string
+	providerOptions []OptionRow
 }
+
+// ReplayUser publishes one replayed user message (session/load, FR-44): the
+// loaded history arrives as whole blocks, never as a live stream.
+func (s *Stream) ReplayUser(text string) {
+	if text != "" {
+		s.publish(replayMsg{kind: replayUser, text: text})
+	}
+}
+
+// ReplayAgent publishes one replayed agent answer (session/load, FR-44):
+// whole text, rendered as final blocks like a settled reply.
+func (s *Stream) ReplayAgent(text string) {
+	if text != "" {
+		s.publish(replayMsg{kind: replayAgent, text: text})
+	}
+}
+
+// Notice publishes a backend/system hint as a plain text block (e.g. the
+// -c resume fallback in main.go).
+func (s *Stream) Notice(text string) {
+	if text != "" {
+		s.publish(noticeMsg{text: text})
+	}
+}
+
+// replayKind classifies a replayed history element (FR-44).
+type replayKind int
+
+const (
+	replayUser replayKind = iota
+	replayAgent
+)
+
+// replayMsg carries one whole element of the loaded conversation.
+type replayMsg struct {
+	kind replayKind
+	text string
+}
+
+// noticeMsg reports a backend hint that lands as a text block.
+type noticeMsg struct{ text string }
 
 // chunkMsg carries one piece of the in-flight answer.
 type chunkMsg struct{ text string }
@@ -113,10 +186,37 @@ type chunkMsg struct{ text string }
 // thoughtMsg carries one piece of the thinking stream.
 type thoughtMsg struct{ text string }
 
-// toolMsg reports tool activity while the turn runs.
+// toolMsg reports tool activity while the turn runs: name speist die
+// Statuszeile, callID/title/text die Tool-Karte im Chat; kind waehlt deren
+// Icon, failed den Fehler-Zustand.
 type toolMsg struct {
-	name string
-	done bool
+	callID string
+	name   string
+	kind   string
+	text   string
+	done   bool
+	failed bool
+	// Strukturierte Felder aus den echten goose-Frames (rawInput/rawOutput/
+	// live_output) — leer im Legacy-/Demo-Pfad, dann gilt text.
+	cmd    string // rawInput.command → $-Zeile der Karte
+	out    string // rawOutput.stdout
+	errOut string // rawOutput.stderr (⚠-Zeilen)
+	exit   int    // rawOutput.exit_code
+	hasOut bool   // finales Update mit rawOutput
+	live   string // live_output-Chunk DIESES Updates
+}
+
+// ToolUpdate bündelt alle Anzeige-Daten eines Tool-Call-Stands für
+// Stream.Tool — die strukturierte Variante von ToolCall.
+type ToolUpdate struct {
+	CallID, Label, Kind string
+	Text                string
+	Command             string
+	Stdout, Stderr      string
+	Exit                int
+	HasOutput           bool
+	Live                string
+	Done, Failed        bool
 }
 
 // removeStreamBlocks drops every transient streaming preview block (the

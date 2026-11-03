@@ -57,8 +57,29 @@ func TestParseSplitsHeadingsOut(t *testing.T) {
 	if nodes[0].Kind != NodeHeading || nodes[0].Text != "Titel" {
 		t.Fatalf("node0: %+v", nodes[0])
 	}
+	if nodes[0].Level != 1 {
+		t.Fatalf("heading level = %d, want 1 (Anzahl #)", nodes[0].Level)
+	}
 	if nodes[1].Kind != NodeText || !strings.Contains(nodes[1].Text, "Fließtext") {
 		t.Fatalf("node1: %+v", nodes[1])
+	}
+}
+
+// TestParseCapturesHeadingLevels: jedes # liefert die Stufe 1..6 mit,
+// damit die Darstellung eine (subtile) Groessen-Hierarchie bauen kann.
+func TestParseCapturesHeadingLevels(t *testing.T) {
+	nodes, err := Parse("# a\n## b\n#### d\n###### f\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []int{1, 2, 4, 6}
+	if len(nodes) != len(want) {
+		t.Fatalf("nodes=%d want %d", len(nodes), len(want))
+	}
+	for i, w := range want {
+		if nodes[i].Kind != NodeHeading || nodes[i].Level != w {
+			t.Fatalf("node%d: %+v (level want %d)", i, nodes[i], w)
+		}
 	}
 }
 

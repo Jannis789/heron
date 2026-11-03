@@ -61,7 +61,9 @@ func TestThinkActionHoverMatchesCopy(t *testing.T) {
 		w = 80
 	}
 	b := NewThinkBlock("eins\nzwei\ndrei\nvier\nfünf", r.m.theme)
-	lines := strings.Split(stripANSI(b.View(w)), "\n")
+	// Fokussiert rendern, damit die Fold-Aktion sichtbar ist (Progressive
+	// Disclosure: ohne Fokus schliesst der Block mit leerer Bahn).
+	lines := strings.Split(stripANSI(b.SetFocused(true).(ThinkBlock).View(w)), "\n")
 	footer := lines[len(lines)-1]
 	// Byte offsets are not cell offsets: box-drawing chars are 3 bytes but
 	// one cell — measure the prefix in cells.
@@ -77,9 +79,10 @@ func TestThinkActionHoverMatchesCopy(t *testing.T) {
 	if b.HitAction(w, 10, y) {
 		t.Fatal("HitAction hits outside the action box")
 	}
-	// Hover/focus restyle the fold action exactly like COPY (white text on
-	// hover, reverse on focus). go test runs with an Ascii color profile, so
-	// force TrueColor for this check and restore it afterwards.
+	// Hover/Hotkey-Verhalten: Der aktivierende Buchstabe (+) ist IMMER
+	// Neon-Violett fett — auch im Hover sagt er die Taste. Der REST des
+	// Labels wird beim Hover weiß + unterstrichen. go test läuft mit Ascii-
+	// Profil, deshalb fuer diesen Check TrueColor erzwingen.
 	rp := lipgloss.DefaultRenderer()
 	old := rp.ColorProfile()
 	rp.SetColorProfile(termenv.TrueColor)
@@ -90,26 +93,48 @@ func TestThinkActionHoverMatchesCopy(t *testing.T) {
 	if hoverLabel != "+ show more" || stripANSI(hoverStyled) != "+ show more" {
 		t.Fatal("hover styling changed the label")
 	}
-	// One single style wraps the WHOLE label — white from the first glyph
-	// to the last (nested renders used to leave the first one lavender).
-	// lipgloss v1.1 re-applies the style per run, so require white on
-	// EVERY run, not one big sequence.
-	for i, run := range strings.Split(hoverStyled, "\x1b[0m") {
+	runs := strings.Split(hoverStyled, "\x1b[0m")
+	if len(runs) < 2 {
+		t.Fatalf("hotkey run missing: %q", hoverStyled)
+	}
+	// Run 0 ist der Neon-Hotkey: fett + unterstrichen (wie der Rest beim
+	// Hover) + #BF00FF (191;0;255) — nur die Farbe bleibt Neon.
+	if !strings.HasPrefix(runs[0], "\x1b[1;4;38;2;191;0;255") {
+		t.Fatalf("hotkey run is not bold+underlined neon purple: %q", runs[0])
+	}
+	// Alle Folgeruns (der Label-Rest) sind weiß + unterstrichen.
+	for i, run := range runs[1:] {
 		if run == "" {
 			continue
 		}
 		if !strings.Contains(run, "38;2;255;255;255") {
-			t.Fatalf("hover run %d is not white: %q", i, run)
+			t.Fatalf("hover run %d is not white: %q", i+1, run)
 		}
 	}
-	fb := b.SetFocused(true).(ThinkBlock)
-	focusLabel, focusedStyled := fb.action()
-	if focusLabel != "+ show more" || stripANSI(focusedStyled) != "+ show more" {
-		t.Fatal("focus styling changed the label")
+
+	// Ohne Hover bleibt der Hotkey Neon-Violett (immer, nicht nur bei
+	// Fokus/Hover) — das ist das Tastatur-Angebot.
+	_, plain := b.action()
+	if !strings.Contains(plain, "38;2;191;0;255") {
+		t.Fatalf("resting action lost the neon hotkey: %q", plain)
 	}
-	// Reverse now merges into the single style's sequence ("\x1b[7;38;…").
-	if !strings.Contains(focusedStyled, "\x1b[7;") {
-		t.Fatalf("focus does not reverse the fold action: %q", focusedStyled)
+
+	// Fokus zeigt sich NICHT mehr am Label (kein Reverse), sondern am
+	// RAMEN des Blocks: Neon-Violett statt Theme-Border.
+	fb := b.SetFocused(true).(ThinkBlock)
+	_, focusedStyled := fb.action()
+	if strings.Contains(focusedStyled, "\x1b[7;") {
+		t.Fatalf("focus must not reverse the action: %q", focusedStyled)
+	}
+	view := fb.View(w)
+	if !strings.Contains(view, "38;2;191;0;255") {
+		t.Fatal("focused block border is not neon purple")
+	}
+	// Die Fold-Aktion des ThinkBlocks bleibt IMMER sichtbar → unfocused
+	// traegt sie genau einen Neon-Run (der +-Hotkey).
+	if u := b.View(w); strings.Count(u, "38;2;191;0;255") != 1 {
+		t.Fatalf("unfocused view must carry exactly one neon run (hotkey), got %d",
+			strings.Count(u, "38;2;191;0;255"))
 	}
 }
 
@@ -127,7 +152,9 @@ func TestThinkBlockUnfoldsOnClick(t *testing.T) {
 		t.Fatal("thought did not produce a think block")
 	}
 	h := b.Height(w)
-	footer := strings.Split(stripANSI(b.View(w)), "\n")[h-1]
+	// Die Fold-Aktion rendert nur bei Fokus/Copy (Disclosure) — Geometrie
+	// zum Klicken also aus einer fokussierten Ansicht ziehen.
+	footer := strings.Split(stripANSI(b.SetFocused(true).(ThinkBlock).View(w)), "\n")[h-1]
 	i := strings.Index(footer, "show more")
 	if i < 0 {
 		t.Fatal("footer does not show the fold action")
@@ -146,7 +173,7 @@ func TestThinkBlockUnfoldsOnClick(t *testing.T) {
 	// Clicking the fold action folds it back. The expanded block is taller —
 	// recompute footer row and screen y, they moved with the height.
 	h2 := nb.Height(w)
-	footer2 := strings.Split(stripANSI(nb.View(w)), "\n")[h2-1]
+	footer2 := strings.Split(stripANSI(nb.SetFocused(true).(ThinkBlock).View(w)), "\n")[h2-1]
 	i2 := strings.Index(footer2, "show less")
 	if i2 < 0 {
 		t.Fatal("footer does not show the fold action")

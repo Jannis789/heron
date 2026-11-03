@@ -3,5 +3,7 @@
   "text": { "color": "#D9D4EC", "bold": true, "italic": false },
   "border": { "color": "#B4BEFE", "bold": true, "italic": false },
   "action": { "color": "#B999FF", "bold": false, "italic": false },
+  "focus": { "color": "#BF00FF", "bold": true, "italic": false },
+  "pan": { "color": "#FFB300", "bold": true, "italic": false },
   "background": "#141419"
 }

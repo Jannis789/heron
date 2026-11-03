@@ -97,3 +97,21 @@ func TestSessionStreamRealGoose(t *testing.T) {
 	}
 	t.Logf("streamed %d chunks, first=%q", n, first)
 }
+
+// TestParseConfiguredProviders: die Antwort von _goose/unstable/config/read
+// (key "providers") nennt als value genau die eingerichteten Provider —
+// die Keys sind die Favoriten fuer den /provider-Picker. Schema-Drift
+// bleibt leer.
+func TestParseConfiguredProviders(t *testing.T) {
+	res := []byte(`{"value":{"custom_nous":{"enabled":true,"model":"~z-ai/glm-flash-latest","configured":true},"zai_coding_plan":{"enabled":true,"model":"glm-5.3","configured":true}}}`)
+	got := parseConfiguredProviders(res)
+	if len(got) != 2 || got[0] != "custom_nous" || got[1] != "zai_coding_plan" {
+		t.Fatalf("configured providers = %v, want [custom_nous zai_coding_plan]", got)
+	}
+	if parseConfiguredProviders([]byte("kein json")) != nil {
+		t.Fatal("schema drift must yield an empty list")
+	}
+	if parseConfiguredProviders([]byte(`{}`)) != nil {
+		t.Fatal("no value must yield an empty list")
+	}
+}

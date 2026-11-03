@@ -181,6 +181,12 @@ func imageLogf(format string, a ...interface{}) {
 // never queued again.
 func (l BlockList) applyDiagrams(results []diagramResult, useImg bool, caps TermCaps) (BlockList, int) {
 	applied := 0
+	// Sprungschutz VOR dem Ersetzen: Bild/ASCII hat eine andere Hoehe als
+	// der Roh-Zaun, der Viewport darf beim Nachladen nicht wandern. Der
+	// Anker ist block-relativ (stabil gegen Hoehenaenderung); follow haelt
+	// den Pager wie bei Stream/Think (upsertStreamWidgets) unten fest.
+	follow := l.follow
+	anchorIdx, anchorRel := l.topAnchor()
 	for _, r := range results {
 		for i, it := range l.items {
 			cb, ok := it.(CodeBlock)
@@ -197,11 +203,11 @@ func (l BlockList) applyDiagrams(results []diagramResult, useImg bool, caps Term
 					break
 				}
 				img := NewImageBlock(r.png, strings.TrimSuffix(r.ascii, "\n"), true, caps, cb.copyFn, cb.th)
-			// Roh-Quelltext fuer den t-Switch (Bild <-> Text) mitgeben,
-			// bevor ID/Fokus gesetzt werden — SetID/Focused propagieren.
-			if r.src != "" {
-				img = img.SetSource(r.lang, r.src).(ImageBlock)
-			}
+				// Roh-Quelltext fuer den t-Switch (Bild <-> Text) mitgeben,
+				// bevor ID/Fokus gesetzt werden — SetID/Focused propagieren.
+				if r.src != "" {
+					img = img.SetSource(r.lang, r.src).(ImageBlock)
+				}
 				// Terminal-Bild-ID: 1..250, in \e[38;5;N m codierbar (FR-27).
 				if r.svg != nil {
 					img = img.SetSVG(r.svg).(ImageBlock)
@@ -220,8 +226,23 @@ func (l BlockList) applyDiagrams(results []diagramResult, useImg bool, caps Term
 				if cap > 0 {
 					img = img.SetMaxRows(cap).(ImageBlock)
 				}
+				// lastWidth initialisieren (gleiche Lektion wie beim Cap):
+				// zoomBy/panBy klemmen an frameWidth(), das nach der
+				// Konvertierung noch 0 (Fallback 80) waere — der Render-Pfad
+				// rechnet aber mit der echten Chat-Breite. Ohne Init zaehlt
+				// der ⤢-Indikator bei breiten Diagrammen bis ~390%, waehrend
+				// das virtuelle Raster laengst an der Diakritika-Grenze
+				// stoppt: Zoom "klappt nicht mehr", der Indikator behauptet
+				// das Gegenteil.
+				img = img.Resize(l.width).(ImageBlock)
 				if cb.focused {
 					img = img.SetFocused(true).(ImageBlock)
+				}
+				// Markierung mitnehmen: focused propagiert bereits — ohne
+				// das blieb die Auswahl unsichtbar im marks-Map haengen
+				// (Chip weg, y kopiert sie trotzdem).
+				if cb.marked {
+					img = img.SetMarked(true).(ImageBlock)
 				}
 				l.items[i] = img
 				applied++
@@ -236,6 +257,11 @@ func (l BlockList) applyDiagrams(results []diagramResult, useImg bool, caps Term
 			applied++
 			break
 		}
+	}
+	if follow {
+		l = l.ScrollEnd()
+	} else {
+		l = l.restoreTopAnchor(anchorIdx, anchorRel)
 	}
 	return l, applied
 }

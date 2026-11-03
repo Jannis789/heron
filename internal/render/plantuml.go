@@ -7,7 +7,50 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
+
+// plantumlDefaultTheme ist das Standard-Theme fuer jede PlantUML-Darstellung:
+// mimeograph — Tinten-Violett (#9275B6) auf Papiergrau (#D9D3D0). Hoher
+// Pfeil-/Linienkontrast, der auch auf dunklem Terminal tragbar bleibt (die
+// nackten PlantUML-Defaults/Pfeile gehen im Darkmode unter).
+// HERON_PUML_THEME uebersteuert ohne Rebuild (z.B. ein Dark-Theme).
+const plantumlDefaultTheme = "mimeograph"
+
+// plantumlTheme liest das Theme aus der Umgebung, sonst das Standard-Theme.
+func plantumlTheme() string {
+	if t := os.Getenv("HERON_PUML_THEME"); t != "" {
+		return t
+	}
+	return plantumlDefaultTheme
+}
+
+// withPlantUMLTheme injiziert die `!theme`-Direktive in den Quelltext, damit
+// JEDE PlantUML-Darstellung das Standard-Theme bekommt. Ein explizites
+// `!theme` im Quelltext des Nutzers gewinnt (wird nicht ueberschrieben);
+// sonst wird direkt nach `@startuml` eingefuegt (ohne `@startuml` voran-
+// gestellt). Eigene skinparams im Quelltext bleiben hoeherwertig.
+func withPlantUMLTheme(source string) string {
+	if strings.Contains(source, "!theme") {
+		return source
+	}
+	theme := plantumlTheme()
+	// Hintergrund transparent: PlantUML malt den Seiten-Hintergrund als
+	// Full-Canvas-era <rect> (das CSS background: des SVG-Root ist ohnehin
+	// transparent) — nur skinparam BackgroundColor transparent beseitigt
+	// das opake Theme-Papier, damit die Grafik im Dark-TUI auf dem
+	// Terminal-Hintergrund liegt statt als weisse Box (per Pixel geprueft).
+	directive := "!theme " + theme + "\nskinparam BackgroundColor transparent"
+	if i := strings.Index(source, "@startuml"); i >= 0 {
+		nl := strings.IndexByte(source[i:], '\n')
+		if nl < 0 {
+			return source + "\n" + directive
+		}
+		at := i + nl + 1
+		return source[:at] + directive + "\n" + source[at:]
+	}
+	return directive + "\n" + source
+}
 
 // PlantUMLToASCII renders a @startuml source through `plantuml -ttxt` to ASCII.
 func PlantUMLToASCII(ctx context.Context, source string) (string, error) {
@@ -18,7 +61,9 @@ func PlantUMLToASCII(ctx context.Context, source string) (string, error) {
 	defer os.RemoveAll(dir)
 
 	src := filepath.Join(dir, "diagram.puml")
-	if err := os.WriteFile(src, []byte(source), 0o600); err != nil {
+	// Theme (#mimeograph-Standard) in die Quelle injizieren, damit Pfeile/
+	// Linien auch im Darkmode Kontrast haben (mitPlantUMLTheme).
+	if err := os.WriteFile(src, []byte(withPlantUMLTheme(source)), 0o600); err != nil {
 		return "", err
 	}
 	bin := os.Getenv("PLANTUML_BIN")
@@ -53,14 +98,19 @@ func PlantUMLToPNG(ctx context.Context, source string) ([]byte, error) {
 	defer os.RemoveAll(dir)
 
 	src := filepath.Join(dir, "diagram.puml")
-	if err := os.WriteFile(src, []byte(source), 0o600); err != nil {
+	// Theme (#mimeograph-Standard) in die Quelle injizieren, damit Pfeile/
+	// Linien auch im Darkmode Kontrast haben (mitPlantUMLTheme).
+	if err := os.WriteFile(src, []byte(withPlantUMLTheme(source)), 0o600); err != nil {
 		return nil, err
 	}
 	bin := os.Getenv("PLANTUML_BIN")
 	if bin == "" {
 		bin = "plantuml"
 	}
-	cmd := exec.CommandContext(ctx, bin, "-tpng", src)
+	// -transparent: keine weisse/helle Box im Dark-TUI — das Diagramm
+	// blendet mit dem Terminal-Hintergrund (herons Theme-Farbe) und die
+	// mimeograph-Pfeile bleiben kontrastreich.
+	cmd := exec.CommandContext(ctx, bin, "-tpng", "-transparent", src)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("plantuml: %w: %s", err, out)
 	}

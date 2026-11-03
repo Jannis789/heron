@@ -33,7 +33,7 @@ buildGoModule {
 
   meta = with lib; {
     description = "ACP-TUI (goose-Backend) mit übersteuerbarem Markdown-Rendering";
-    homepage = "https://github.com/example/heron";
+    homepage = "https://github.com/Jannis789/heron";
     license = licenses.mit;
     mainProgram = "heron";
   };

@@ -17,14 +17,14 @@ func TestTableBlockHitActionAndCopy(t *testing.T) {
 		func(s string) tea.Cmd { return func() tea.Msg { copied = s; return nil } },
 	)
 	w := 60
-	fy := b.Height(w) - 1
-	if !b.HitAction(w, w-6, fy) {
-		t.Fatalf("expected COPY hit at x=%d y=%d", w-6, fy)
+	// Kein klickbarer COPY-Kasten mehr im Block-Footer (Copy = Eingabefeld-
+	// Chip): HitAction bleibt ueberall false — Klicks markieren den Block.
+	for _, pt := range [][2]int{{w - 6, b.Height(w) - 1}, {2, 0}, {4, 1}} {
+		if b.HitAction(w, pt[0], pt[1]) {
+			t.Fatalf("HitAction(%v) must be false — kein Block-Copy mehr", pt)
+		}
 	}
-	if b.HitAction(w, 2, 0) {
-		t.Fatal("header is not the action")
-	}
-	w2, cmd := b.Copy()
+	_, cmd := b.Copy()
 	if cmd == nil {
 		t.Fatal("expected copy cmd")
 	}
@@ -32,12 +32,9 @@ func TestTableBlockHitActionAndCopy(t *testing.T) {
 	if !strings.Contains(copied, "| name | qty |") {
 		t.Fatalf("copied=%q", copied)
 	}
-	if !w2.(TableBlock).copied {
-		t.Fatal("copied flag missing")
-	}
 }
 
-func TestBlockListClickCopiesMarkdown(t *testing.T) {
+func TestBlockListClickMarksBlock(t *testing.T) {
 	var copied string
 	l := NewBlockList()
 	l = l.Append(NewTableBlock(
@@ -48,21 +45,32 @@ func TestBlockListClickCopiesMarkdown(t *testing.T) {
 	w := 60
 	l = l.SetSize(w, 30)
 	fy := l.items[0].Height(w) - 1
-	l2, cmd, handled := l.Update(tea.MouseMsg{
+	// Klick (auch auf die ehemalige COPY-Zeile) MARKIERT den Block — das
+	// Kopieren uebernimmt der Chip im Eingabefeld-Footer.
+	l2, _, handled := l.Update(tea.MouseMsg{
 		X:      w - 6,
 		Y:      fy,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	})
-	if !handled || cmd == nil {
-		t.Fatalf("click should copy: handled=%v cmd=%v", handled, cmd != nil)
+	if !handled {
+		t.Fatal("click should mark")
+	}
+	if !l2.items[0].Marked() {
+		t.Fatal("block not marked after click")
+	}
+	m := New(nil, nil, nil)
+	m.chat = l2
+	nm, cmd := m.copySelection()
+	if cmd == nil {
+		t.Fatal("chip copy should copy the marked block")
 	}
 	cmd()
 	if !strings.Contains(copied, "| a | b |") {
 		t.Fatalf("copied=%q", copied)
 	}
-	if !l2.items[0].(TableBlock).copied {
-		t.Fatal("widget should be marked copied")
+	if !strings.Contains(nm.View(), "✓ kopiert") {
+		t.Fatal("chip flash missing")
 	}
 }
 
@@ -81,19 +89,24 @@ func TestHoverSetsAndClears(t *testing.T) {
 	if !l.items[0].(TableBlock).hover {
 		t.Fatal("hover flag missing")
 	}
+	// Hover bleibt, solange die Maus ueber IRGENDEINE Zeile des Blocks
+	// liegt (Progressive Disclosure haelt den Footer offen)…
 	l = l.setHoverAt(2, 0)
+	if !l.items[0].(TableBlock).hover {
+		t.Fatal("hover must persist while over the block body")
+	}
+	// …und loescht erst, wenn der Block verlassen wird.
+	l = l.setHoverAt(w-6, l.items[0].Height(w))
 	if l.items[0].(TableBlock).hover {
-		t.Fatal("hover should clear")
+		t.Fatal("hover should clear when leaving the block")
 	}
 }
 
-func TestBlockListClickAfterScrollCopies(t *testing.T) {
-	var copied string
+func TestBlockListClickAfterScrollMarks(t *testing.T) {
 	l := NewBlockList()
 	l = l.Append(
 		NewTableBlock([][]string{{"a"}, {"1"}}, []render.Align{render.AlignDefault}, nil),
-		NewTableBlock([][]string{{"b"}, {"2"}}, []render.Align{render.AlignDefault},
-			func(s string) tea.Cmd { return func() tea.Msg { copied = s; return nil } }),
+		NewTableBlock([][]string{{"b"}, {"2"}}, []render.Align{render.AlignDefault}, nil),
 	)
 	w := 60
 	h0 := l.items[0].Height(w)
@@ -102,23 +115,20 @@ func TestBlockListClickAfterScrollCopies(t *testing.T) {
 	if l.offset == 0 {
 		t.Fatalf("expected scroll offset > 0, got %d", l.offset)
 	}
-	// Click the footer of the second (visible) table in visible coordinates.
+	// Click the footer row of the second (visible) table in visible
+	// coordinates — markiert den richtigen Block trotz Scroll-Offset.
 	fyAbs := h0 + l.items[1].Height(w) - 1
 	visY := fyAbs - l.offset
-	l2, cmd, handled := l.Update(tea.MouseMsg{
+	l2, _, handled := l.Update(tea.MouseMsg{
 		X:      w - 6,
 		Y:      visY,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	})
-	if !handled || cmd == nil {
-		t.Fatalf("scrolled click should copy: handled=%v cmd=%v", handled, cmd != nil)
+	if !handled {
+		t.Fatalf("scrolled click should mark: handled=%v", handled)
 	}
-	cmd()
-	if !strings.Contains(copied, "| b |") {
-		t.Fatalf("copied=%q", copied)
-	}
-	if !l2.items[1].(TableBlock).copied {
-		t.Fatal("widget should be marked copied")
+	if !l2.items[1].Marked() {
+		t.Fatal("scrolled click marked the wrong block")
 	}
 }
