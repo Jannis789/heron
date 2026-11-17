@@ -825,6 +825,11 @@ func (m *Model) setInputFocus(on bool) tea.Cmd {
 		// Klick-Markierung IST Teil der Auswahl und weicht MIT ihm (FR-39:
 		// zu jedem Zeitpunkt leuchtet hoechstens EIN Neon-Rahmen; tab/esc
 		// duerfen nie zwei Rahmen stehen lassen).
+		// EXKLUSIVITAET (User-Report "Eingabefeld UND Cursor gleichzeitig"):
+		// Eingabefokus und Zeichen-Cursor/Rest-Auswahl schliessen sich aus —
+		// der Rueckweg ins Feld raeumt sie mit esc-Semantik ab (Anker und
+		// Caret-Rest weg, kein Residual beim Tippen).
+		m.chat = m.chat.clearCharSelEsc()
 		m.chat = m.chat.clearMarks()
 		return m.input.Focus()
 	}

@@ -56,6 +56,14 @@ func (l BlockList) charView(i, w int) (charSelWidget, []string, bool) {
 	if len(lines) == 0 {
 		return nil, nil, false
 	}
+	// Zellkarte IST sichtbarer Text, nicht Markup: ANSI hier strippen.
+	// Mit Escapes in der Karte driftet rangeHighlight (base zaehlt Runen,
+	// styleRange zaehlt sichtbare Zellen) — Bold-Segmente landen als
+	// Symbolmuell auf dem Schirm und charMarkdown kopierte \x1b-Bytes
+	// (User-Report: "fettgedruckte texte zu komischen symbolen").
+	for j, s := range lines {
+		lines[j] = render.StripANSI(s)
+	}
 	return cw, lines, true
 }
 
