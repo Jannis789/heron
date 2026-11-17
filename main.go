@@ -150,19 +150,55 @@ func main() {
 		stream.Info(mdl, eff, s.Provider(), s.ModelOptions(), s.EffortOptions(), provOpts)
 	}
 
-	// publishProviderFavorites holt die EINGERICHTETEN Provider aus goose
-	// selbst (_goose/unstable/config/read, key "providers"): goose nennt
-	// genau die Keys des providers:-Blocks — bei ~90 katalogisierten
-	// Providern (davon keyless wie lmstudio "configured") sind das die
-	// einzigen, die der Nutzer wirklich eingerichtet hat. Der
-	// /provider-Picker zeigt nur sie (plus den aktiven), der Vollkatalog
-	// bleibt über die Suche erreichbar. Fehler bleiben stumm: ohne
-	// Favoriten zeigt der Picker wie bisher die volle Liste.
-	publishProviderFavorites := func(s *acp.Session) {
+	// publishConfiguredFallback ist der Weg fuer aelteres goose ohne
+	// providers/list: config/read (key "providers") nennt die Keys des
+	// providers:-Blocks, sonst bleibt alles wie bisher.
+	publishConfiguredFallback := func(s *acp.Session) {
 		own, err := s.ConfiguredProviders(context.Background())
 		if err == nil && len(own) > 0 {
 			stream.ProviderFavorites(own)
 		}
+	}
+
+	// publishInventory kitzelt das Provider-Inventar aus goose
+	// (_goose/unstable/providers/list) und fuettert daraus BEIDE Picker:
+	// die Provider-Zeilen mit den Katalog-Namen (abgekündigte ohne eigene
+	// Konfiguration fliegen raus), die Favoriten = die EINGERICHTETEN —
+	// und, falls die configOptions von session/new keine Modelle nennen,
+	// die Modellliste des aktiven Providers aus dem Inventar. Fehler
+	// bleiben stumm: dann sind die configOptions wie bisher die einzige
+	// Quelle. Gegen echtes goose 1.55.0 probed (87 Provider, Custom-
+	// Provider mit exakt deren Modellen).
+	publishInventory := func(s *acp.Session) {
+		inv, err := s.ProviderInventory(context.Background())
+		if err != nil || len(inv) == 0 {
+			publishConfiguredFallback(s)
+			return
+		}
+		cur := s.Provider()
+		rows := make([]tui.OptionRow, 0, len(inv))
+		favs := make([]string, 0, 8)
+		var curModels []string
+		for _, e := range inv {
+			if e.Deprecated && e.ProviderID != cur && !e.Configured {
+				continue
+			}
+			rows = append(rows, tui.OptionRow{Value: e.ProviderID, Name: e.Name})
+			if e.Configured {
+				favs = append(favs, e.ProviderID)
+			}
+			if e.ProviderID == cur {
+				for _, m := range e.Models {
+					curModels = append(curModels, m.ID)
+				}
+			}
+		}
+		stream.ProviderFavorites(favs)
+		models := s.ModelOptions()
+		if len(models) == 0 {
+			models = curModels
+		}
+		stream.Info("", "", "", models, s.EffortOptions(), rows)
 	}
 
 	// publishConfigResult wertet die ERFRISCHTEN configOptions aus einer
@@ -290,7 +326,7 @@ func main() {
 				stream.Notice("Resume fehlgeschlagen: " + err.Error() + " — neue Session.")
 				if s, err := ensureSession(); err == nil {
 					publishModelInfo(s)
-					publishProviderFavorites(s)
+					publishInventory(s)
 				}
 			}
 		}()
@@ -302,7 +338,7 @@ func main() {
 			defer close(prewarmDone)
 			if s, err := ensureSession(); err == nil {
 				publishModelInfo(s)
-				publishProviderFavorites(s)
+				publishInventory(s)
 			}
 		}()
 	}
@@ -344,7 +380,7 @@ func main() {
 		}
 		sess = s
 		publishModelInfo(s)
-		publishProviderFavorites(s)
+		publishInventory(s)
 		return nil
 	}
 

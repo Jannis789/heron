@@ -96,6 +96,95 @@ func parseConfiguredProviders(res []byte) []string {
 	return out
 }
 
+// InventoryModel ist ein Modell aus dem Provider-Inventar: dieselben
+// Katalogdaten, die auch goose configure zeigt (Kontextlimit, Reasoning,
+// Empfehlungs-Flag).
+type InventoryModel struct {
+	ID           string
+	Name         string
+	ContextLimit int
+	Reasoning    bool
+	Recommended  bool
+}
+
+// InventoryEntry ist ein Provider aus dem goose-Inventar
+// (_goose/unstable/providers/list): Metadaten plus die Modellliste, die
+// der /model-Picker braucht, wenn die configOptions von session/new
+// schweigen.
+type InventoryEntry struct {
+	ProviderID   string
+	Name         string
+	Description  string
+	DefaultModel string
+	Configured   bool
+	Available    bool
+	ACP          bool
+	Deprecated   bool
+	Models       []InventoryModel
+}
+
+// ProviderInventory kitzelt das komplette Provider-Inventar aus goose
+// (_goose/unstable/providers/list): alle katalogisierten Provider mit
+// configured/available-Flags und je Provider die Modellliste — gegen
+// echtes goose 1.55.0 verifiziert (87 Eintraege; Custom-Provider aus
+// ~/.config/goose/custom_providers/*.json erscheinen mit exakt deren
+// Modellen). Das ist die Quelle fuer beide Picker und vor allem der
+// Modell-Fallback, wenn die configOptions leer bleiben. Schema-Drift
+// liefert nil statt Fehler.
+func (s *Session) ProviderInventory(ctx context.Context) ([]InventoryEntry, error) {
+	res, err := s.client.Request(ctx, "_goose/unstable/providers/list", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	return parseProviderInventory(res), nil
+}
+
+// parseProviderInventory liest die entries:-Liste der providers/list-
+// Antwort; Eintraege ohne ID fallen raus.
+func parseProviderInventory(res []byte) []InventoryEntry {
+	var raw struct {
+		Entries []struct {
+			ProviderID   string `json:"providerId"`
+			ProviderName string `json:"providerName"`
+			Description  string `json:"description"`
+			DefaultModel string `json:"defaultModel"`
+			Configured   bool   `json:"configured"`
+			Available    bool   `json:"available"`
+			ProviderType string `json:"providerType"`
+			ACP          bool   `json:"acp"`
+			Deprecated   bool   `json:"deprecated"`
+			Models       []struct {
+				ID           string `json:"id"`
+				Name         string `json:"name"`
+				ContextLimit int    `json:"contextLimit"`
+				Reasoning    bool   `json:"reasoning"`
+				Recommended  bool   `json:"recommended"`
+			} `json:"models"`
+		} `json:"entries"`
+	}
+	if json.Unmarshal(res, &raw) != nil || len(raw.Entries) == 0 {
+		return nil
+	}
+	out := make([]InventoryEntry, 0, len(raw.Entries))
+	for _, e := range raw.Entries {
+		if e.ProviderID == "" {
+			continue
+		}
+		ie := InventoryEntry{ProviderID: e.ProviderID, Name: e.ProviderName, Description: e.Description,
+			DefaultModel: e.DefaultModel, Configured: e.Configured, Available: e.Available,
+			ACP: e.ACP, Deprecated: e.Deprecated}
+		for _, m := range e.Models {
+			ie.Models = append(ie.Models, InventoryModel{ID: m.ID, Name: m.Name,
+				ContextLimit: m.ContextLimit, Reasoning: m.Reasoning, Recommended: m.Recommended})
+		}
+		out = append(out, ie)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // ProviderOption ist eine waehlbare Provider-Auspraegung aus den ACP
 // configOptions: Value ist der Konfigurationswert (Ziel von
 // session/set_config_option), Name das lesbare Label ("Z.AI (GLM)").

@@ -118,9 +118,10 @@ func (s *Stream) Info(model, effort, provider string, modelOptions, effortOption
 }
 
 // ProviderFavorites published die IDs der in goose EINGERICHTETEN
-// Provider (Quelle: goose _goose/unstable/config/read, key "providers"
-// — der providers:-Block nennt genau die eingerichteten) — der
-// /provider-Picker zeigt nur sie plus den aktiven Provider.
+// Provider — Quelle ist das goose-Inventar (_goose/unstable/providers/
+// list, configured-Flag); bei aelterem goose ohne providers/list der
+// config/read-Fallback. Der /provider-Picker zeigt nur sie plus den
+// aktiven Provider.
 func (s *Stream) ProviderFavorites(ids []string) {
 	s.publish(providerFavoritesMsg{ids: ids})
 }
