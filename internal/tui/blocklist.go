@@ -315,8 +315,8 @@ func (l BlockList) SetSize(w, h int) BlockList {
 
 func (l BlockList) totalLines() int {
 	total := 0
-	for _, it := range l.items {
-		total += it.Height(l.Width())
+	for i := range l.items {
+		total += l.heightAt(i, l.Width())
 	}
 	return total
 }
@@ -334,8 +334,8 @@ func (l BlockList) ScrollEnd() BlockList {
 func (l BlockList) topAnchor() (idx, rel int) {
 	w := l.Width()
 	y := l.offset
-	for i, it := range l.items {
-		h := it.Height(w)
+	for i := range l.items {
+		h := l.heightAt(i, w)
 		if y < h {
 			return i, y
 		}
@@ -352,10 +352,10 @@ func (l BlockList) restoreTopAnchor(idx, rel int) BlockList {
 	w := l.Width()
 	y := 0
 	for i := 0; i < idx && i < len(l.items); i++ {
-		y += l.items[i].Height(w)
+		y += l.heightAt(i, w)
 	}
 	if idx < len(l.items) {
-		if h := l.items[idx].Height(w); rel > h-1 {
+		if h := l.heightAt(idx, w); rel > h-1 {
 			rel = max(h-1, 0)
 		}
 		y += rel
@@ -398,6 +398,45 @@ func (l BlockList) all() (lines []string, total int) {
 // Bildbloecke liefern nur ihre sichtbaren Zeilen: Der Transmit-Escape landet
 // auf der ersten sichtbaren Zeile, damit hohe Bilder das Terminal auch dann
 // erreichen, wenn ihr Blockanfang ausserhalb des Fensters liegt (FR-27).
+// stackCardLabel liefert Kopf-/Divider-Label einer stapelbaren Karte
+// (Think-/ToolBlock); false = kein Stack-Mitglied.
+func stackCardLabel(it Widget, w int) (string, bool) {
+	switch c := it.(type) {
+	case ThinkBlock:
+		return c.label(), true
+	case ToolBlock:
+		return c.stateLabel(w), true
+	}
+	return "", false
+}
+
+// joinTopAt meldet, ob Item i OHNE eigene ┌─┐-Zeile rendert: nur wenn es
+// selbst UND sein Vorgänger Stack-Karten sind — der Vorgänger schließt
+// dann mit ├─ <Label von i> ─┤ ab (User-Skizze "thinking | tool stacken").
+// Text zwischen den Karten (Antwort, User) beendet den Stack natürlich.
+func (l BlockList) joinTopAt(i, w int) bool {
+	if i <= 0 || i >= len(l.items) {
+		return false
+	}
+	if _, ok := stackCardLabel(l.items[i], w); !ok {
+		return false
+	}
+	_, prev := stackCardLabel(l.items[i-1], w)
+	return prev
+}
+
+// heightAt ist DIE Höhen-Quelle für Offset/Clip/Fenster: sie kennt das
+// Stack-Joining (joinTop spart die Kopfzeile). Jede Height-Stelle in
+// diesem File läuft über diesen Helfer — Höhe und gerenderte Zeilen
+// können nicht driften.
+func (l BlockList) heightAt(i, w int) int {
+	h := l.items[i].Height(w)
+	if l.joinTopAt(i, w) {
+		h--
+	}
+	return h
+}
+
 func (l BlockList) stack(windowed bool) (lines []string, top, total int) {
 	w := l.Width()
 	if windowed && (l.height <= 0 || l.inline) {
@@ -423,7 +462,7 @@ func (l BlockList) stack(windowed bool) (lines []string, top, total int) {
 		charBa, _, charBb, _ = l.charRange()
 	}
 	for i, it := range l.items {
-		h := it.Height(w)
+		h := l.heightAt(i, w)
 		// Vergangene Auswahl (FR-43): Rahmen in der verblichenen Sekundaer-
 		// Farbe, bis esc sie aufloest — aber nur, wo sie nicht von der
 		// AKTUELLEN Auswahl uebermalt wird (Neon schlaegt Verblichen).
@@ -461,6 +500,27 @@ func (l BlockList) stack(windowed bool) (lines []string, top, total int) {
 			cursorLine = start
 			if l.selDir < 0 {
 				cursorLine = start + h - 1
+			}
+		}
+		// Stack-Joining (Render-Ebene): nur auf der KOPIE — die Felder
+		// stehen nie in den List-Items, heightAt/joinTopAt leiten die
+		// Regel aus der Nachbarschaft her (Höhe ⇒ Zeilen konsistent).
+		jT := l.joinTopAt(i, w)
+		jB := i+1 < len(l.items) && l.joinTopAt(i+1, w)
+		if jT || jB {
+			switch c := it.(type) {
+			case ThinkBlock:
+				c.joinTop, c.joinAsDivider = jT, jB
+				if jB {
+					c.dividerLabel, _ = stackCardLabel(l.items[i+1], w)
+				}
+				it = c
+			case ToolBlock:
+				c.joinTop, c.joinAsDivider = jT, jB
+				if jB {
+					c.dividerLabel, _ = stackCardLabel(l.items[i+1], w)
+				}
+				it = c
 			}
 		}
 		// Nur Bloecke rendern, die das Fenster beruehren. Vorher lief
@@ -518,7 +578,7 @@ func (l BlockList) stack(windowed bool) (lines []string, top, total int) {
 	// der Einheit), bei shift+up (Richtung -1) die LETZTE (Ende der Einheit)
 	// — der Selection-Cursor zeigt die Kante, von der die Auswahl waechst.
 	if rel := cursorLine - top; cursorLine >= 0 && rel >= 0 && rel < len(lines) {
-		blkH := max(l.items[l.selCur].Height(w), 1)
+		blkH := max(l.heightAt(l.selCur, w), 1)
 		lo := max(rel-blkH+1, 0)
 		hi := min(rel+blkH-1, len(lines)-1)
 		target := -1
@@ -812,8 +872,8 @@ func (l BlockList) handleKey(k tea.KeyMsg) (BlockList, tea.Cmd, bool) {
 func (l BlockList) blockAt(x, y int) (int, int, bool) {
 	w := l.Width()
 	y0 := 0
-	for i, it := range l.items {
-		h := it.Height(w)
+	for i := range l.items {
+		h := l.heightAt(i, w)
 		if y >= y0 && y < y0+h {
 			return i, y - y0, true
 		}
@@ -1040,11 +1100,11 @@ func (l BlockList) handleMouse(msg tea.MouseMsg) (BlockList, tea.Cmd, bool) {
 func (l BlockList) topVisibleIndex() int {
 	w := l.Width()
 	y := 0
-	for i, it := range l.items {
-		if y+it.Height(w) > l.offset {
+	for i := range l.items {
+		if y+l.heightAt(i, w) > l.offset {
 			return i
 		}
-		y += it.Height(w)
+		y += l.heightAt(i, w)
 	}
 	return max(len(l.items)-1, 0)
 }
@@ -1303,11 +1363,11 @@ func (l BlockList) bottomVisibleIndex() int {
 	}
 	w := l.Width()
 	y := 0
-	for i, it := range l.items {
+	for i := range l.items {
 		if y >= l.offset+l.height {
 			return max(i-1, 0)
 		}
-		y += it.Height(w)
+		y += l.heightAt(i, w)
 	}
 	return n
 }
@@ -1320,8 +1380,8 @@ func (l BlockList) scrollSelIntoView() BlockList {
 	}
 	w := l.Width()
 	y := 0
-	for i, it := range l.items {
-		h := it.Height(w)
+	for i := range l.items {
+		h := l.heightAt(i, w)
 		if i == l.selCur {
 			if y < l.offset {
 				l.offset = y
@@ -1474,7 +1534,7 @@ func (l BlockList) FocusVisible() BlockList {
 	lastVis, firstBelow := -1, -1
 	y := 0
 	for i, it := range l.items {
-		h := it.Height(w)
+		h := l.heightAt(i, w)
 		if it.Focusable() {
 			switch {
 			case y+h > l.offset && y < bottom: // ragt in den Viewport
@@ -1543,13 +1603,13 @@ func (l BlockList) reveal(idx int) BlockList {
 	w := l.Width()
 	y, total := 0, 0
 	for i := 0; i < len(l.items); i++ {
-		h := l.items[i].Height(w)
+		h := l.heightAt(i, w)
 		if i < idx {
 			y += h
 		}
 		total += h
 	}
-	h := l.items[idx].Height(w)
+	h := l.heightAt(idx, w)
 	if y < l.offset {
 		l.offset = y
 		l.follow = false

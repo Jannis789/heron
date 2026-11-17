@@ -52,9 +52,14 @@ type ToolBlock struct {
 	marked   bool
 	// stale: Karte ist Teil der VERGANGENEN Auswahl (FR-43) — Rahmen in
 	// der verblichenen Sekundaer-Farbe.
-	stale  bool
-	th     *render.Theme
-	copyFn CopyFunc
+	stale bool
+	// Stack-Joining (nur auf RENDER-KOPIEN in BlockList.stack gesetzt):
+	// wie beim ThinkBlock — joinTop ohne ┌─┐, joinAsDivider mit ├─┤-Boden.
+	joinTop       bool
+	joinAsDivider bool
+	dividerLabel  string
+	th            *render.Theme
+	copyFn        CopyFunc
 	// Hover ist ZIELGENAU wie beim ThinkBlock: Kopfzeile und Footer-
 	// Aktion sind getrennte Ziele, nie gleichzeitig.
 	hoverHead bool
@@ -247,7 +252,8 @@ func (b ToolBlock) View(width int) string {
 	inner := codeInnerWidth(width)
 	// Fokus ODER Auswahl am RAHMEN (Neon-Violett), wie Think/CodeBlock.
 	// Die VERGANGENE Auswahl (stale, FR-43) traegt die Sekundaer-Farbe.
-	bs := borderStyleFor(b.th, b.focused || b.marked, b.stale)
+	// Normalzustand: Rahmen in der TEXT-Farbe der Karte — nicht weiß.
+	bs := cardBorderStyleFor(b.th, b.focused || b.marked, b.stale)
 	ls := b.th.LabelStyle()
 
 	label := b.stateLabel(width)
@@ -260,8 +266,10 @@ func (b ToolBlock) View(width int) string {
 	// wrappen (sourceExceeds: die Zeilenzahl beweist es bereits).
 	hidden := sourceExceeds(b.bodyLines(), inner, toolCollapsed)
 	lines := make([]string, 0, b.Height(width))
-	lines = append(lines, bs.Render("┌─ ")+actionStyle(b.th, b.hoverHead).Render(label)+
-		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
+	if !b.joinTop {
+		lines = append(lines, bs.Render("┌─ ")+actionStyle(b.th, b.hoverHead).Render(label)+
+			bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
+	}
 	for _, ln := range b.visibleRows(width) {
 		txt := ls.Render(ln)
 		gap := inner - lipgloss.Width(txt)
@@ -274,6 +282,9 @@ func (b ToolBlock) View(width int) string {
 		action, styled := b.action()
 		lines = append(lines, render.CenteredActionLine(width, action, styled,
 			runewidth.StringWidth(action), bs))
+	} else if b.joinAsDivider {
+		// Stacked: Boden ist die Trennlinie zur nächsten Karte, nicht └┘.
+		lines = append(lines, stackDivider(bs, b.dividerLabel, width))
 	} else {
 		lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
 	}

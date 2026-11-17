@@ -146,6 +146,32 @@ func borderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
 	return th.BorderStyle()
 }
 
+// cardBorderStyleFor ist der Rahmen der Think-/Tool-Karten: im Normal-
+// Zustand in der TEXT-Farbe der Karte (faint Frame-Farbe) statt weiß —
+// der Rahmen gehört zur Karte, nicht zur Konversation (User-Feedback:
+// "grenzt sich nicht genug an"). Fokus-/Markierungs- und Stale-Rahmen
+// bleiben unangetastet, damit die Auswahl weiterhin herausliest.
+func cardBorderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
+	if sel {
+		return th.FocusBorderStyle()
+	}
+	if stale {
+		return th.StaleBorderStyle()
+	}
+	return th.LabelStyle()
+}
+
+// stackDivider rendert die Trennlinie zwischen zwei gestapelten Karten:
+// ├─ <Label der nächsten Karte> ──┤ (User-Skizze "thinking | tool").
+func stackDivider(bs lipgloss.Style, label string, width int) string {
+	lw := runewidth.StringWidth(label)
+	dashes := width - 5 - lw
+	if dashes < 0 {
+		dashes = 0
+	}
+	return bs.Render("├─ ") + label + bs.Render(" "+strings.Repeat("─", dashes)+"┤")
+}
+
 func actionStyle(th *render.Theme, hover bool) lipgloss.Style {
 	st := lipgloss.NewStyle()
 	if th != nil {
@@ -884,7 +910,14 @@ type ThinkBlock struct {
 	// stale: Block ist Teil der VERGANGENEN Auswahl (FR-43) — Rahmen in
 	// der verblichenen Sekundaer-Farbe, ohne das "✓" der Markierung.
 	stale bool
-	th    *render.Theme
+	// Stack-Joining (nur auf RENDER-KOPIEN in BlockList.stack gesetzt):
+	// aufeinanderfolgende Think-/Tool-Karten teilen EINEN Rahmen —
+	// joinTop laesst die eigene ┌─┐-Zeile weg, joinAsDivider ersetzt die
+	// eigene └─┘-Zeile durch ├─ <dividerLabel> ─┤.
+	joinTop       bool
+	joinAsDivider bool
+	dividerLabel  string
+	th            *render.Theme
 	// Hover ist ZIELGENAU, nicht blockweit: Kopfzeile und Footer-Aktion
 	// sind getrennte Klickziele — nur die tatsaechlich getroffene Zelle
 	// highlightet (frueher leuchteten beide gleichzeitig).
@@ -995,7 +1028,8 @@ func (b ThinkBlock) View(width int) string {
 	// Border — die Markierung faerbt den GESAMTEN Block (wie ImageBlock),
 	// nicht nur die Aktionszeile. Die VERGANGENE Auswahl (stale, FR-43)
 	// traegt den Rahmen in der Sekundaer-Farbe — kein "✓" (nicht aktuell).
-	bs := borderStyleFor(b.th, b.focused || b.marked, b.stale)
+	// Normalzustand: Rahmen in der TEXT-Farbe der Karte (cardBorderStyle).
+	bs := cardBorderStyleFor(b.th, b.focused || b.marked, b.stale)
 	ls := b.th.LabelStyle()
 
 	label := b.label()
@@ -1005,11 +1039,16 @@ func (b ThinkBlock) View(width int) string {
 		dashes = 0
 	}
 	lines := make([]string, 0, b.Height(width))
-	// The caption is a fold hit target (HitAction y==0) — die gleiche
-	// Hover-Behandlung wie die Footer-Aktion, aber nur wenn SIE getroffen
-	// ist (hoverHead), nie gleichzeitig mit dem Footer.
-	lines = append(lines, bs.Render("┌─ ")+actionStyle(b.th, b.hoverHead).Render(label)+
-		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
+	// Stack-Joining: nicht-erste Karte einer Stacks hat keine ┌─┐-Zeile —
+	// der Vorgänger schließt mit ├─ <dieses Label> ─┤ ab. Height/Offset
+	// rechnen das über BlockList.heightAt mit (eine Zeile weniger).
+	if !b.joinTop {
+		// The caption is a fold hit target (HitAction y==0) — die gleiche
+		// Hover-Behandlung wie die Footer-Aktion, aber nur wenn SIE getroffen
+		// ist (hoverHead), nie gleichzeitig mit dem Footer.
+		lines = append(lines, bs.Render("┌─ ")+actionStyle(b.th, b.hoverHead).Render(label)+
+			bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
+	}
 
 	// Collapsed shows the END of the thinking — the conclusion lives there
 	// (visibleRows wraps only that tail, so streaming stays cheap).
@@ -1035,6 +1074,9 @@ func (b ThinkBlock) View(width int) string {
 		// Markierung bereits neon).
 		lines = append(lines, render.CenteredActionLine(width, action, styled,
 			runewidth.StringWidth(action), bs))
+	} else if b.joinAsDivider {
+		// Stacked: Boden ist die Trennlinie zur nächsten Karte, nicht └┘.
+		lines = append(lines, stackDivider(bs, b.dividerLabel, width))
 	} else {
 		lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
 	}
