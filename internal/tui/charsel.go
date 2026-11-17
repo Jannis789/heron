@@ -40,7 +40,7 @@ type charSelWidget interface {
 }
 
 // charActive meldet, ob der Zeichen-Cursor laeuft.
-func (l BlockList) charActive() bool { return l.charSel && len(l.items) > 0 }
+func (l BlockList) charActive() bool { return l.char.active && len(l.items) > 0 }
 
 // charView liefert die Zeichen-Ansicht eines Blocks (leer, wenn der Block
 // keine unterstuetzt — User-Schiene, Bilder, Tabellen).
@@ -129,6 +129,18 @@ func (l BlockList) enterCursorMode() BlockList {
 			l.items[blk] = nb
 		}
 	}
+	// LAUSCHER-Prioritaet: Ein LAUFENDER Streaming-Block (aktiver Think
+	// mitten im Turn, feste ID ThinkBlockID) hat Vorrang vor dem Viewport-
+	// Rand — der Cursor soll DA spawnen, wo gerade getippt wird (User-
+	// Report: "bei einem aktiven thinking block in den cursor mode").
+	// Nur wenn kein laufender Block existiert, gilt die Leseposition
+	// (Auswahl/Fokus/Viewport-Rand).
+	for j, it := range l.items {
+		if tb, ok := it.(ThinkBlock); ok && tb.ID() == ThinkBlockID {
+			blk = j
+			break
+		}
+	}
 	if !l.charCapableAt(blk) {
 		// Der Leseposition-Block ist nicht buchstaben-faehig (Tabelle,
 		// User-Schiene, Bild OHNE Quelle — z. B. tab auf einem ImageBlock
@@ -144,16 +156,29 @@ func (l BlockList) enterCursorMode() BlockList {
 		}
 		blk = nb
 	}
-	// Kollabierte Tool-Karte aufklappen: Das Caret adressiert den
-	// VOLLSTAENDIGen Inhalt, nicht den gefalteten Rest.
-	if tb, ok := l.items[blk].(ToolBlock); ok && !tb.expanded {
-		tb.expanded = true
-		l.items[blk] = tb
+	// Kollabierte Karten (Think/Tool) aufklappen: Das Caret adressiert
+	// den VOLLSTAENDIGen Inhalt, nicht den gefalteten Rest. (User-Report:
+	// Spawn "manchmal broken" — im aktiven Streaming-Think ist der Block
+	// zugeklappt, ohne Aufklappen zeigte CharLines nur die letzten 3 Zeilen
+	// und die Offsets des Spawns passten nicht zum Sichtbaren.)
+	if blk >= 0 && blk < len(l.items) {
+		switch c := l.items[blk].(type) {
+		case ToolBlock:
+			if !c.expanded {
+				c.expanded = true
+				l.items[blk] = c
+			}
+		case ThinkBlock:
+			if !c.expanded && c.hidden(codeInnerWidth(w)) {
+				c.expanded = true
+				l.items[blk] = c
+			}
+		}
 	}
 	text, _ := l.charTextAt(blk, w)
 	n := len([]rune(text))
-	l.charSel = true
-	l.charBlinkHide = false // Caret startet SICHTBAR und blinkt ab dem ersten Takt
+	l.char.active = true
+	l.char.blinkHide = false // Caret startet SICHTBAR und blinkt ab dem ersten Takt
 	// Rest-Auswahl restaurieren (VERALLGEMEINERT — User-Reports: "der
 	// cursor mode verschiebt den ankerpunkt" + "die selection im cursor
 	// mode soll erhalten bleiben"): Gueltige Anker/Caret-Reste sind die
@@ -162,20 +187,20 @@ func (l BlockList) enterCursorMode() BlockList {
 	// restaurieren die Reste nur bei DECKUNGSGLEICHEN Grenzen; veraenderte
 	// sie sich unterdessen (shift+up/down), konvertiert der Eintritt wie
 	// bisher von den Kanten. Nur esc raeumt die Reste (resetCharResidual).
-	if l.charFromBlock >= 0 && l.charBlock >= 0 {
+	if l.char.fromBlock >= 0 && l.char.block >= 0 {
 		match := !l.selActive()
 		if !match {
 			lo, hi := l.selBounds()
-			rlo, rhi := l.charFromBlock, l.charBlock
+			rlo, rhi := l.char.fromBlock, l.char.block
 			if rlo > rhi {
 				rlo, rhi = rhi, rlo
 			}
 			match = rlo == lo && rhi == hi
 		}
 		if match {
-			if t, ok := l.charTextAt(l.charBlock, w); ok {
-				if n := len([]rune(t)); l.charTo < 0 || l.charTo > n {
-					l.charTo = n // Text unterdessen gewachsen: klemmen
+			if t, ok := l.charTextAt(l.char.block, w); ok {
+				if n := len([]rune(t)); l.char.to < 0 || l.char.to > n {
+					l.char.to = n // Text unterdessen gewachsen: klemmen
 				}
 			}
 			l.follow = false
@@ -196,14 +221,14 @@ func (l BlockList) enterCursorMode() BlockList {
 		// aktiv"): Liegt der feine Anker-Rest IM Bereich der Block-
 		// Auswahl, haelt er EXAKT (nur ans Textende geklemmt); neu ge-
 		// baut wird er nur OHNE solchen Rest.
-		keepAnchor := l.charFromBlock >= 0
+		keepAnchor := l.char.fromBlock >= 0
 		if keepAnchor {
 			lo, hi := l.selBounds()
-			if l.charFromBlock < lo || l.charFromBlock > hi {
+			if l.char.fromBlock < lo || l.char.fromBlock > hi {
 				keepAnchor = false
-			} else if at, ok := l.charTextAt(l.charFromBlock, w); ok {
-				if n := len([]rune(at)); l.charFrom > n {
-					l.charFrom = n
+			} else if at, ok := l.charTextAt(l.char.fromBlock, w); ok {
+				if n := len([]rune(at)); l.char.from > n {
+					l.char.from = n
 				}
 			}
 		}
@@ -229,30 +254,30 @@ func (l BlockList) enterCursorMode() BlockList {
 					ao = len([]rune(at))
 				}
 			}
-			l.charFrom, l.charFromBlock = ao, anchor
+			l.char.from, l.char.fromBlock = ao, anchor
 		}
 		if l.selDir < 0 {
-			l.charTo, l.charBlock = 0, blk
+			l.char.to, l.char.block = 0, blk
 		} else {
-			l.charTo, l.charBlock = n, blk
+			l.char.to, l.char.block = n, blk
 		}
 		// Einheitlicher Auswahl-Vertrag: Der Eintritt KONSUMIERT die Block-
 		// Auswahl — im Modus existiert genau EINE Auswahl (die feine
 		// Konvertierung). Bereich selFrom/selCur und selDir bleiben fuer
 		// den esc-Rueckweg stehen (charFromSel).
-		l.charFromSel = true
+		l.char.fromSel = true
 		l.sel = false
-	} else if l.charBlock == blk { // Wiedereintritt: Position halten
-		if l.charTo < 0 || l.charTo > n {
-			l.charFrom, l.charTo = 0, 0
+	} else if l.char.block == blk { // Wiedereintritt: Position halten
+		if l.char.to < 0 || l.char.to > n {
+			l.char.from, l.char.to = 0, 0
 		}
-		l.charFromBlock = l.charBlock
+		l.char.fromBlock = l.char.block
 	} else if edge < 0 {
-		l.charFrom, l.charTo, l.charBlock = n, n, blk
-		l.charFromBlock = blk
+		l.char.from, l.char.to, l.char.block = n, n, blk
+		l.char.fromBlock = blk
 	} else {
-		l.charFrom, l.charTo, l.charBlock = 0, 0, blk
-		l.charFromBlock = blk
+		l.char.from, l.char.to, l.char.block = 0, 0, blk
+		l.char.fromBlock = blk
 	}
 	l.follow = false
 	l = l.clearFocus() // hoechstens EIN Neon-Signal (FR-39): das Caret
@@ -269,8 +294,8 @@ func (l BlockList) clearCharSel() BlockList {
 		ba, _, bb, _ := l.charRange()
 		l = l.setPrevSel(ba, bb)
 	}
-	l.charSel = false
-	l.charFromSel = false
+	l.char.active = false
+	l.char.fromSel = false
 	return l
 }
 
@@ -293,9 +318,9 @@ func (l BlockList) clearCharSelEsc() BlockList {
 // Fokus), raeumt es die Reste MIT weg, sonst restaurierte der naechste
 // Eintritt die "wegge-esc-te" Auswahl.
 func (l BlockList) resetCharResidual() BlockList {
-	l.charFrom, l.charTo = 0, 0
-	l.charFromSel = false
-	l.charFromBlock, l.charBlock = -1, -1
+	l.char.from, l.char.to = 0, 0
+	l.char.fromSel = false
+	l.char.fromBlock, l.char.block = -1, -1
 	return l
 }
 
@@ -307,12 +332,12 @@ func (l BlockList) resetCharResidual() BlockList {
 // rendert inklusive Caret/Blink) und nicht, wenn eine deckungsgleiche
 // Block-Auswahl denselben Bereich bereits GANZ zeigt (Anker-Block-Austritt).
 func (l BlockList) residualSelShown() bool {
-	if l.charSel || l.charFromBlock < 0 || l.charBlock < 0 || l.charEmptySelection() {
+	if l.char.active || l.char.fromBlock < 0 || l.char.block < 0 || l.charEmptySelection() {
 		return false
 	}
 	if l.selActive() {
 		lo, hi := l.selBounds()
-		rlo, rhi := l.charFromBlock, l.charBlock
+		rlo, rhi := l.char.fromBlock, l.char.block
 		if rlo > rhi {
 			rlo, rhi = rhi, rlo
 		}
@@ -378,7 +403,7 @@ func (l BlockList) demoteResidualSel() BlockList {
 // Neustart vom Viewport-Anker (das "waehlte den ganzen Schnippsel"), KEIN
 // Wiedereintritt in den Modus (charSel bleibt aus).
 func (l BlockList) extendResidualSel(dir int) BlockList {
-	if l.charFromBlock < 0 || l.charBlock < 0 || len(l.items) == 0 {
+	if l.char.fromBlock < 0 || l.char.block < 0 || len(l.items) == 0 {
 		return l
 	}
 	// Ein Blockrand pro Druck. Landet der Schritt auf dem Anker-Rand
@@ -406,27 +431,27 @@ func (l BlockList) extendResidualSel(dir int) BlockList {
 func (l BlockList) stepResidualCaret(dir int) (BlockList, bool) {
 	w := l.Width()
 	if dir < 0 {
-		if l.charTo > 0 {
-			l.charTo = 0
+		if l.char.to > 0 {
+			l.char.to = 0
 			return l, true
 		}
 		nl := l.autoTextModeOnCross(-1)
-		if nb := nl.nextCharBlock(l.charBlock, -1); nb >= 0 {
-			nl.charBlock, nl.charTo = nb, 0
+		if nb := nl.nextCharBlock(l.char.block, -1); nb >= 0 {
+			nl.char.block, nl.char.to = nb, 0
 			return nl, true
 		}
 		return l, false
 	}
-	if t, ok := l.charTextAt(l.charBlock, w); ok {
-		if end := len([]rune(t)); l.charTo < end {
-			l.charTo = end
+	if t, ok := l.charTextAt(l.char.block, w); ok {
+		if end := len([]rune(t)); l.char.to < end {
+			l.char.to = end
 			return l, true
 		}
 	}
 	nl := l.autoTextModeOnCross(1)
-	if nb := nl.nextCharBlock(l.charBlock, 1); nb >= 0 {
+	if nb := nl.nextCharBlock(l.char.block, 1); nb >= 0 {
 		if nt, ok := nl.charTextAt(nb, w); ok {
-			nl.charBlock, nl.charTo = nb, len([]rune(nt))
+			nl.char.block, nl.char.to = nb, len([]rune(nt))
 			return nl, true
 		}
 	}
@@ -467,7 +492,7 @@ func (l BlockList) exitCursorToSel() BlockList {
 	// Eine darunterliegende Block-Auswahl (Modus-Eintritt UEBER ihr)
 	// bleibt daneben bestehen und zeigt den Bereich wieder ganz, solange
 	// sie die feine Auswahl enthaelt (residualSelShown-Deckelung).
-	l.charSel = false
+	l.char.active = false
 	// Einheitlicher Auswahl-Vertrag: Eine darunterliegende Block-Auswahl
 	// (Modus-Eintritt UEBER ihr) wurde beim Eintritt bereits KONSUMIERT
 	// (charFromSel, sel=false) — draussen zaehlt nur EINE Auswahl, die
@@ -475,26 +500,26 @@ func (l BlockList) exitCursorToSel() BlockList {
 	// naechsten shift-Druck ab und die Auswahl springt auf Blockkanten
 	// statt vom Anker zu starten).
 	l.sel = false
-	l.charFromSel = false
+	l.char.fromSel = false
 	return l
 }
 
 // toggleCharBlink schaltet die Blink-Phase des Carets um (charBlinkMsg,
 // app.go) — nur gerufen, solange der Modus laeuft.
 func (l BlockList) toggleCharBlink() BlockList {
-	l.charBlinkHide = !l.charBlinkHide
+	l.char.blinkHide = !l.char.blinkHide
 	return l
 }
 
 // charCollapse zieht die Auswahl aufs Caret zusammen (esc-Stufe 1).
 func (l BlockList) charCollapse() BlockList {
-	l.charFrom, l.charFromBlock = l.charTo, l.charBlock
+	l.char.from, l.char.fromBlock = l.char.to, l.char.block
 	return l
 }
 
 // charEmptySelection: Caret steht auf dem Anker (kein Bereich markiert).
 func (l BlockList) charEmptySelection() bool {
-	return l.charFrom == l.charTo && l.charFromBlock == l.charBlock
+	return l.char.from == l.char.to && l.char.fromBlock == l.char.block
 }
 
 // charTextAt ist der flat Text eines Blocks (Inhalt-Zeilen, \n-verbunden).
@@ -521,7 +546,7 @@ func (l BlockList) charTextAt(i int, w int) (string, bool) {
 // Bewegungsschritt — nur was der Cursor tatsaechlich ansteuert, wechselt
 // die Ansicht.
 func (l BlockList) autoTextModeOnCross(dir int) BlockList {
-	for j := l.charBlock + dir; j >= 0 && j < len(l.items); j += dir {
+	for j := l.char.block + dir; j >= 0 && j < len(l.items); j += dir {
 		if l.charCapableAt(j) {
 			return l // faehiger Block vorweg: kein Diagramm zu schalten
 		}
@@ -542,32 +567,32 @@ func (l BlockList) autoTextModeOnCross(dir int) BlockList {
 // esc kollabiert sie weiterhin (Stufe 1).
 func (l BlockList) charMove(dir int, extend bool) BlockList {
 	w := l.Width()
-	text, ok := l.charTextAt(l.charBlock, w)
+	text, ok := l.charTextAt(l.char.block, w)
 	if !ok {
 		return l
 	}
 	wasEmpty := l.charEmptySelection()
 	rs := []rune(text)
-	next := l.charTo + dir
+	next := l.char.to + dir
 	switch {
 	case next >= 0 && next <= len(rs):
-		l.charTo = next
+		l.char.to = next
 	case next < 0:
 		l = l.autoTextModeOnCross(-1)
-		if pb := l.nextCharBlock(l.charBlock, -1); pb >= 0 {
+		if pb := l.nextCharBlock(l.char.block, -1); pb >= 0 {
 			pt, _ := l.charTextAt(pb, w)
-			l.charBlock, l.charTo = pb, len([]rune(pt))
+			l.char.block, l.char.to = pb, len([]rune(pt))
 		}
 	default: // hinter das Blockende
 		l = l.autoTextModeOnCross(1)
-		if nb := l.nextCharBlock(l.charBlock, 1); nb >= 0 {
-			l.charBlock, l.charTo = nb, 0
+		if nb := l.nextCharBlock(l.char.block, 1); nb >= 0 {
+			l.char.block, l.char.to = nb, 0
 		}
 	}
 	if !extend && wasEmpty {
 		l = l.charCollapse()
 	}
-	l.charBlinkHide = false // Bewegung blendet das Caret ein (Blink startet neu)
+	l.char.blinkHide = false // Bewegung blendet das Caret ein (Blink startet neu)
 	return l.scrollCharIntoView()
 }
 
@@ -577,36 +602,36 @@ func (l BlockList) charMove(dir int, extend bool) BlockList {
 // Auswahl nicht — der Anker bleibt, die Auswahl folgt dem Caret.
 func (l BlockList) charMoveLine(dir int, extend bool) BlockList {
 	w := l.Width()
-	text, ok := l.charTextAt(l.charBlock, w)
+	text, ok := l.charTextAt(l.char.block, w)
 	if !ok {
 		return l
 	}
 	wasEmpty := l.charEmptySelection()
-	line, col := charLineCol(text, l.charTo)
+	line, col := charLineCol(text, l.char.to)
 	nLines := strings.Count(text, "\n") + 1
 	nl := line + dir
 	if nl >= 0 && nl < nLines {
-		l.charTo = charAtLineCol(text, nl, col)
+		l.char.to = charAtLineCol(text, nl, col)
 	} else if nl < 0 {
 		l = l.autoTextModeOnCross(-1)
-		if pb := l.nextCharBlock(l.charBlock, -1); pb >= 0 {
+		if pb := l.nextCharBlock(l.char.block, -1); pb >= 0 {
 			pt, _ := l.charTextAt(pb, w)
 			pLines := strings.Count(pt, "\n") + 1
-			l.charBlock = pb
-			l.charTo = charAtLineCol(pt, pLines-1, col)
+			l.char.block = pb
+			l.char.to = charAtLineCol(pt, pLines-1, col)
 		}
 	} else {
 		l = l.autoTextModeOnCross(1)
-		if nb := l.nextCharBlock(l.charBlock, 1); nb >= 0 {
+		if nb := l.nextCharBlock(l.char.block, 1); nb >= 0 {
 			nt, _ := l.charTextAt(nb, w)
-			l.charBlock = nb
-			l.charTo = charAtLineCol(nt, 0, col)
+			l.char.block = nb
+			l.char.to = charAtLineCol(nt, 0, col)
 		}
 	}
 	if !extend && wasEmpty {
 		l = l.charCollapse()
 	}
-	l.charBlinkHide = false // Bewegung blendet das Caret ein (Blink startet neu)
+	l.char.blinkHide = false // Bewegung blendet das Caret ein (Blink startet neu)
 	return l.scrollCharIntoView()
 }
 
@@ -614,14 +639,14 @@ func (l BlockList) charMoveLine(dir int, extend bool) BlockList {
 // BESTEHENDE Auswahl ueberlebt den Sprung (Anker bleibt, nur esc loest auf);
 // eine leere Auswahl bleibt leer.
 func (l BlockList) charHome() BlockList {
-	text, ok := l.charTextAt(l.charBlock, l.Width())
+	text, ok := l.charTextAt(l.char.block, l.Width())
 	if !ok {
 		return l
 	}
 	wasEmpty := l.charEmptySelection()
-	line, _ := charLineCol(text, l.charTo)
-	l.charTo = charAtLineCol(text, line, 0)
-	l.charBlinkHide = false // Bewegung blendet das Caret ein (Blink startet neu)
+	line, _ := charLineCol(text, l.char.to)
+	l.char.to = charAtLineCol(text, line, 0)
+	l.char.blinkHide = false // Bewegung blendet das Caret ein (Blink startet neu)
 	if wasEmpty {
 		return l.charCollapse()
 	}
@@ -629,14 +654,14 @@ func (l BlockList) charHome() BlockList {
 }
 
 func (l BlockList) charEnd() BlockList {
-	text, ok := l.charTextAt(l.charBlock, l.Width())
+	text, ok := l.charTextAt(l.char.block, l.Width())
 	if !ok {
 		return l
 	}
 	wasEmpty := l.charEmptySelection()
-	line, _ := charLineCol(text, l.charTo)
-	l.charTo = charAtLineCol(text, line, charLineLen(text, line))
-	l.charBlinkHide = false // Bewegung blendet das Caret ein (Blink startet neu)
+	line, _ := charLineCol(text, l.char.to)
+	l.char.to = charAtLineCol(text, line, charLineLen(text, line))
+	l.char.blinkHide = false // Bewegung blendet das Caret ein (Blink startet neu)
 	if wasEmpty {
 		return l.charCollapse()
 	}
@@ -646,7 +671,7 @@ func (l BlockList) charEnd() BlockList {
 // charRange liefert die Auswahl in DOKUMENT-Reihenfolge: (Block, Offset)
 // des Ankers und des Carets — tauscht bei umgeschlagener Richtung.
 func (l BlockList) charRange() (ba, oa, bb, ob int) {
-	ba, oa, bb, ob = l.charFromBlock, l.charFrom, l.charBlock, l.charTo
+	ba, oa, bb, ob = l.char.fromBlock, l.char.from, l.char.block, l.char.to
 	if ba > bb || (ba == bb && oa > ob) {
 		ba, oa, bb, ob = bb, ob, ba, oa
 	}
@@ -676,6 +701,14 @@ func (l BlockList) charMarkdown() string {
 	for i := ba + 1; i < bb; i++ {
 		if t, ok := l.charTextAt(i, w); ok {
 			parts = append(parts, t)
+		} else if _, isCard := l.items[i].(interface {
+			stateLabel(int) string
+		}); isCard {
+			// Think-/Tool-Karten sind IMMER adressierbar (CharLines existiert)
+			// — ein fehlender Text hier waere ein Bug; konservativ NICHTS
+			// ergänzen (kein Karten-Titel im Copy-Payload, User-Report:
+			// "nicht die überschrift tool markieren sondern nur den text").
+			continue
 		} else {
 			// Nicht adressierbare Bloecke im Auswahlbereich (PlantUML-BILD,
 			// User-Schiene, Tabelle) werden GANZ kopiert — der Cursor kann
@@ -705,10 +738,10 @@ func (l BlockList) charDecorate(i int, blk []string, w int) []string {
 	}
 	pad, left := cw.CharPad(w), cw.CharLeft(w)
 	if l.charEmptySelection() {
-		if i != l.charBlock || l.charBlinkHide {
+		if i != l.char.block || l.char.blinkHide {
 			return blk // Abgeblendete Blink-Phase: kein Caret auf dem Schirm
 		}
-		return caretBlock(blk, cls, pad, left, l.charTo)
+		return caretBlock(blk, cls, pad, left, l.char.to)
 	}
 	ba, oa, bb, ob := l.charRange()
 	if i < ba || i > bb {
@@ -722,7 +755,7 @@ func (l BlockList) charDecorate(i int, blk []string, w int) []string {
 	if i == bb {
 		hi = ob
 	}
-	if lo >= hi && i != l.charBlock {
+	if lo >= hi && i != l.char.block {
 		return blk // leerer Block-Schnitt und nicht das Caret: nichts zu tun
 	}
 	blk = l.rangeHighlight(blk, cls, pad, left, lo, hi)
@@ -732,13 +765,13 @@ func (l BlockList) charDecorate(i int, blk []string, w int) []string {
 	// die Wurzelzeile). Das Auswahl-Ende, an dem der Cursor steht, ist so
 	// STETS farblich vom Rest der Flaeche unterscheidbar (und blinkt
 	// bewusst nicht: Der Marker darf nicht verschwinden).
-	if i == l.charBlock && l.charActive() {
+	if i == l.char.block && l.charActive() {
 		// NUR im AKTIVEN Modus: Nach dem Verlassen (residualSelShown —
 		// Toggle-Austritt) verschwindet der Cursor, die Auswahl-Flaeche
 		// bleibt (User-Report: "wenn ich den cursor mode verlasse,
 		// existiert der cursor immer noch" — der invertierte Marker IST
 		// der Cursor; draussen gehoert er weg).
-		blk = caretBlock(blk, cls, pad, left, l.charTo)
+		blk = caretBlock(blk, cls, pad, left, l.char.to)
 	}
 	return blk
 }
@@ -800,22 +833,28 @@ func (l BlockList) rangeHighlight(blk, cls []string, pad, left, lo, hi int) []st
 
 // scrollCharIntoView zieht den Viewport nach, bis die Zeile des Carets
 // sichtbar ist (blockweise wie scrollSelIntoView, aber zeilenscharf).
+// heightAt statt Height: Das Stack-Joining verkuerzt joined Karten um die
+// Kopfzeile — mit der rohen Height driftete der kumulierte y-Wert um EINE
+// ZEILE je gejointer Karte, der Screen wanderte beim Cursor nach unten
+// falsch mit (und nach oben nicht — der Drift lief nur in eine Richtung,
+// User-Report).
 func (l BlockList) scrollCharIntoView() BlockList {
 	if l.height <= 0 || l.inline {
 		return l
 	}
 	w := l.Width()
-	cw, _, ok := l.charView(l.charBlock, w)
+	cw, _, ok := l.charView(l.char.block, w)
 	if !ok {
 		return l
 	}
-	text, _ := l.charTextAt(l.charBlock, w)
-	line, _ := charLineCol(text, l.charTo)
+	text, _ := l.charTextAt(l.char.block, w)
+	line, _ := charLineCol(text, l.char.to)
 	row := cw.CharPad(w) + line
 	y := 0
 	for i, it := range l.items {
-		h := it.Height(w)
-		if i == l.charBlock {
+		h := l.heightAt(i, w)
+		_ = it
+		if i == l.char.block {
 			abs := y + row
 			if abs < l.offset {
 				l.offset = abs

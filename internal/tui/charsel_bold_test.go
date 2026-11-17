@@ -33,9 +33,9 @@ func TestCharSelectionBoldClean(t *testing.T) {
 	}
 	// "Hallo " sind 6 Zellen — [6,10) ist exakt das fette "Welt" (to exklusiv).
 	l2 := l
-	l2.charSel = true
-	l2.charBlock = 0
-	l2.charFrom, l2.charTo = 6, 10
+	l2.char.active = true
+	l2.char.block = 0
+	l2.char.from, l2.char.to = 6, 10
 	if got := l2.charMarkdown(); got != "Welt" {
 		t.Fatalf("copy over bold word = %q, want %q", got, "Welt")
 	}

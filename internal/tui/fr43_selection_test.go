@@ -162,9 +162,9 @@ func TestCharSelExitStartsAtAnchor(t *testing.T) {
 	if !r.m.chat.residualSelShown() {
 		t.Fatal("die feine Auswahl bleibt ausserhalb des Modus sichtbar")
 	}
-	if r.m.chat.charFromBlock != 1 || r.m.chat.charFrom != 0 {
+	if r.m.chat.char.fromBlock != 1 || r.m.chat.char.from != 0 {
 		t.Fatalf("Anker muss (b1,c0) bleiben, got (b%d,c%d)",
-			r.m.chat.charFromBlock, r.m.chat.charFrom)
+			r.m.chat.char.fromBlock, r.m.chat.char.from)
 	}
 	// c kopiert AB DEM ANKER bis zum Caret — nicht den ganzen Block.
 	r.key("c")
@@ -185,9 +185,9 @@ func TestCharSelExitStartsAtAnchor(t *testing.T) {
 	if got := r.m.chat.charMarkdown(); got != "aaa\n\n" {
 		t.Fatalf("Klassische Auswahl ab dem Anker nach oben: %q", got)
 	}
-	if r.m.chat.charFromBlock != 1 || r.m.chat.charFrom != 0 {
+	if r.m.chat.char.fromBlock != 1 || r.m.chat.char.from != 0 {
 		t.Fatalf("Anker muss (b1,c0) halten, got (b%d,c%d)",
-			r.m.chat.charFromBlock, r.m.chat.charFrom)
+			r.m.chat.char.fromBlock, r.m.chat.char.from)
 	}
 	r.key("esc")
 	if r.m.chat.selActive() || r.m.chat.residualSelShown() {
@@ -218,15 +218,15 @@ func TestCharSelCrossesDiagramAsSource(t *testing.T) {
 		t.Fatalf("tab muss Block 2 fokussieren, got %d", r.m.chat.focus)
 	}
 	r.key("shift+tab")
-	if !r.m.chat.charActive() || r.m.chat.charBlock != 2 {
+	if !r.m.chat.charActive() || r.m.chat.char.block != 2 {
 		t.Fatal("Zeichen-Cursor muss in Block 2 starten")
 	}
 	// EIN shift+left am Blockrand: Das Bild darueber schaltet automatisch
 	// auf Quelltext, das Caret laeuft ans ENDE der Quelle HINEIN.
 	r.key("shift+left")
-	if r.m.chat.charBlock != 1 {
+	if r.m.chat.char.block != 1 {
 		t.Fatalf("Caret muss in die Diagramm-Quelle (Block 1) laufen, got %d",
-			r.m.chat.charBlock)
+			r.m.chat.char.block)
 	}
 	img, ok := r.m.chat.items[1].(ImageBlock)
 	if !ok || !img.showSrc {
@@ -272,9 +272,9 @@ func TestCharSelMermaidEdgeBlockSelectable(t *testing.T) {
 	}
 	r.key("shift+tab") // Zeichen-Cursor im Text (kein Auto-t noetig)
 	r.key("shift+down")
-	if r.m.chat.charBlock != 1 {
+	if r.m.chat.char.block != 1 {
 		t.Fatalf("Caret muss in die Mermaid-Quelle wachsen, got Block %d",
-			r.m.chat.charBlock)
+			r.m.chat.char.block)
 	}
 	img, ok := r.m.chat.items[1].(ImageBlock)
 	if !ok || !img.showSrc {
@@ -321,7 +321,7 @@ func TestCharSelSrclessImageTakenWhole(t *testing.T) {
 	r.key("tab")
 	r.key("up").key("up") // Fokus Block 0 ("vorher") — ueber das Bild
 	r.key("shift+tab")
-	if r.m.chat.charBlock != 0 {
+	if r.m.chat.char.block != 0 {
 		t.Fatal("Zeichen-Cursor muss in Block 0 starten")
 	}
 	// shift+right bis ans Textende, der ERSTE Rand-Druck ueberquert das
@@ -330,9 +330,9 @@ func TestCharSelSrclessImageTakenWhole(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		r.key("shift+right")
 	}
-	if r.m.chat.charBlock != 2 {
+	if r.m.chat.char.block != 2 {
 		t.Fatalf("Cursor muss das quellenlose Bild ueberspringen (Block 2), got %d",
-			r.m.chat.charBlock)
+			r.m.chat.char.block)
 	}
 	focus := "38;2;" + hexSgr(r.m.theme.FocusColor())
 	fl := frameLines(r.m.chat)
@@ -409,7 +409,7 @@ func TestCharSelUpStopsAtFirstDiagramOnPath(t *testing.T) {
 	// Bloecke: 0=Text, 1=Bild ohne Quelle, 2=Bild mit Quelle, 3=Text.
 	r.key("tab") // Fokus: letztes Segment ("text unten")
 	r.key("shift+tab")
-	if r.m.chat.charBlock != 3 {
+	if r.m.chat.char.block != 3 {
 		t.Fatal("Zeichen-Cursor muss in Block 3 starten")
 	}
 	// EIN up: Der Sprung endet IM Diagramm (Block 2, automatisch Quell-
@@ -417,9 +417,9 @@ func TestCharSelUpStopsAtFirstDiagramOnPath(t *testing.T) {
 	// ist Block 2 der direkte Nachbar; das quellenlose Bild folgt beim
 	// WEITEREN Weg nach oben.
 	r.key("up")
-	if r.m.chat.charBlock != 2 {
+	if r.m.chat.char.block != 2 {
 		t.Fatalf("up muss im ERSTEN Diagramm auf dem Pfad (Block 2) enden, got %d",
-			r.m.chat.charBlock)
+			r.m.chat.char.block)
 	}
 	if img, ok := r.m.chat.items[2].(ImageBlock); !ok || !img.showSrc {
 		t.Fatal("Block 2 muss automatisch im Quelltext-Modus stehen")
@@ -427,9 +427,9 @@ func TestCharSelUpStopsAtFirstDiagramOnPath(t *testing.T) {
 	// Quelle zeilenweise hoch (3 Zeilen), der Rand-Sprung danach ueber-
 	// springt NUR das quellenlose Bild (Block 1) — ein Sprung, ein Ziel.
 	r.key("up").key("up").key("up")
-	if r.m.chat.charBlock != 0 {
+	if r.m.chat.char.block != 0 {
 		t.Fatalf("Rand-Sprung muss im Text (Block 0) enden — quellenloses Bild uebersprungen, got %d",
-			r.m.chat.charBlock)
+			r.m.chat.char.block)
 	}
 }
 
@@ -459,9 +459,9 @@ func TestCharSelAnchorSurvivesToggleRoundTrip(t *testing.T) {
 	if got := r.m.chat.charMarkdown(); got != "abc" {
 		t.Fatalf("Anker muss den Kreislauf exakt ueberleben ('abc'), got %q", got)
 	}
-	if r.m.chat.charFrom != 0 || r.m.chat.charTo != 3 {
+	if r.m.chat.char.from != 0 || r.m.chat.char.to != 3 {
 		t.Fatalf("Anker 0 / Caret 3 erwartet, got %d..%d",
-			r.m.chat.charFrom, r.m.chat.charTo)
+			r.m.chat.char.from, r.m.chat.char.to)
 	}
 	// ESC ist der einzige Reset: Stufe 1 kollabiert die eigene Auswahl
 	// aufs Caret, Stufe 2 verlaesst den Cursor UND raeumt die Reste —
@@ -471,7 +471,7 @@ func TestCharSelAnchorSurvivesToggleRoundTrip(t *testing.T) {
 		t.Fatal("esc Stufe 1 kollabiert die eigene Auswahl aufs Caret")
 	}
 	r.key("esc")
-	if r.m.chat.charActive() || r.m.chat.charFromBlock >= 0 {
+	if r.m.chat.charActive() || r.m.chat.char.fromBlock >= 0 {
 		t.Fatal("esc Stufe 2 verlaesst den Cursor und raeumt die Anker-Reste")
 	}
 	r.key("shift+tab") // frischer Eintritt (Fokus auf der Leseposition)
@@ -494,15 +494,15 @@ func TestCharSelExitOutsideAnchorKeepsFineSelection(t *testing.T) {
 	r.key("tab")       // Fokus: letztes Segment (Block 1)
 	r.key("up")        // Fokus auf Block 0
 	r.key("shift+tab") // Zeichen-Cursor in Block 0
-	if r.m.chat.charBlock != 0 {
+	if r.m.chat.char.block != 0 {
 		t.Fatal("Caret muss in Block 0 starten")
 	}
 	// Haelfte von Block 0 markiert, dann Caret in Block 1 bewegt
 	// (FR-43: Anker haelt, die Auswahl folgt dem Caret).
 	r.key("shift+right").key("shift+right")
 	r.key("down")
-	if r.m.chat.charBlock != 1 {
-		t.Fatalf("Caret muss in Block 1 stehen, got %d", r.m.chat.charBlock)
+	if r.m.chat.char.block != 1 {
+		t.Fatalf("Caret muss in Block 1 stehen, got %d", r.m.chat.char.block)
 	}
 	// Austritt AUSSERHALB des Anker-Blocks: KEINE Ganz-Block-Auswahl —
 	// die Auswahl bleibt die feine Zeichen-Auswahl (erhalten bis esc).
@@ -579,9 +579,9 @@ func TestCharSelShiftOutsideRunsClassic(t *testing.T) {
 		t.Fatal("Vorbedingung: Caret auf c3, OHNE Auswahl")
 	}
 	r.key("shift+tab") // Austritt — die Position IST der Anker
-	if r.m.chat.charFromBlock != 1 || r.m.chat.charFrom != 3 {
+	if r.m.chat.char.fromBlock != 1 || r.m.chat.char.from != 3 {
 		t.Fatalf("Position (b1,c3) muss als Anker halten, got (b%d,c%d)",
-			r.m.chat.charFromBlock, r.m.chat.charFrom)
+			r.m.chat.char.fromBlock, r.m.chat.char.from)
 	}
 	// shift+up: Auswahl = der Ausschnitt UEBER dem Anker (b1, c0..c3) —
 	// NICHT der ganze Block, nichts UNTERHALB des Ankers.
@@ -603,9 +603,9 @@ func TestCharSelShiftOutsideRunsClassic(t *testing.T) {
 	// 2x shift+down: Der Caret laeuft klassisch ZURUECK und UEBER den
 	// Anker hinweg — die Auswahl kippt nach unten, der ANKER haelt c3.
 	r.key("shift+down").key("shift+down")
-	if r.m.chat.charFromBlock != 1 || r.m.chat.charFrom != 3 {
+	if r.m.chat.char.fromBlock != 1 || r.m.chat.char.from != 3 {
 		t.Fatalf("Anker muss (b1,c3) bleiben, got (b%d,c%d)",
-			r.m.chat.charFromBlock, r.m.chat.charFrom)
+			r.m.chat.char.fromBlock, r.m.chat.char.from)
 	}
 	if got := r.m.chat.charMarkdown(); got != "def" {
 		t.Fatalf("nach 2x shift+down Auswahl UNTER dem Anker 'def', got %q", got)
@@ -617,7 +617,7 @@ func TestCharSelShiftOutsideRunsClassic(t *testing.T) {
 	// esc ist der EINZIGE Anker-Reset — danach startet shift neu als
 	// frische Block-Auswahl (Leseposition, sofortiger Griff).
 	r.key("esc")
-	if r.m.chat.residualSelShown() || r.m.chat.charFromBlock >= 0 {
+	if r.m.chat.residualSelShown() || r.m.chat.char.fromBlock >= 0 {
 		t.Fatal("esc setzt den Anker auf null")
 	}
 	r.key("shift+up")
@@ -641,9 +641,9 @@ func TestCharSelAnchorSurvivesBlockWalkReentry(t *testing.T) {
 	r.key("shift+up")                       // Ausschnitt ueber dem Caret
 	r.key("shift+up")                       // Anker-Rand (leer) -> Block darueber
 	r.key("shift+up")                       // noch ein Block darueber: (b0,c0)
-	if r.m.chat.charBlock != 0 || r.m.chat.charTo != 0 {
+	if r.m.chat.char.block != 0 || r.m.chat.char.to != 0 {
 		t.Fatalf("Vorbedingung Caret (b0,c0), got (b%d,c%d)",
-			r.m.chat.charBlock, r.m.chat.charTo)
+			r.m.chat.char.block, r.m.chat.char.to)
 	}
 	// Wiedereintritt: Anker bleibt der FEINE Punkt im Anker-Block (kein
 	// Neubau von der Blockkante), Caret an der Lauf-Kante.
@@ -651,9 +651,9 @@ func TestCharSelAnchorSurvivesBlockWalkReentry(t *testing.T) {
 	if !r.m.chat.charActive() {
 		t.Fatal("Wiedereintritt muss den Cursor-Modus oeffnen")
 	}
-	if r.m.chat.charFromBlock != 2 || r.m.chat.charFrom != 0 {
+	if r.m.chat.char.fromBlock != 2 || r.m.chat.char.from != 0 {
 		t.Fatalf("Anker muss (b2,c0) exakt halten, got (b%d,c%d)",
-			r.m.chat.charFromBlock, r.m.chat.charFrom)
+			r.m.chat.char.fromBlock, r.m.chat.char.from)
 	}
 	if got := r.m.chat.charMarkdown(); got != "aaa\n\nbbb\n\n" {
 		t.Fatalf("Zeichen-Auswahl Anker..Caret: %q", got)

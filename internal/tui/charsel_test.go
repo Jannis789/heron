@@ -24,9 +24,9 @@ func TestShiftEnterIsTheCursor(t *testing.T) {
 	if !r.m.chat.charActive() {
 		t.Fatal("shift+enter muss DIREKT den Zeichen-Cursor setzen")
 	}
-	if r.m.chat.charBlock != 0 || r.m.chat.charTo != 0 {
+	if r.m.chat.char.block != 0 || r.m.chat.char.to != 0 {
 		t.Fatalf("Caret an der Leseposition (Block 0, Offset 0): block=%d to=%d",
-			r.m.chat.charBlock, r.m.chat.charTo)
+			r.m.chat.char.block, r.m.chat.char.to)
 	}
 	if !r.m.chat.charEmptySelection() {
 		t.Fatal("Frisches Caret hat keine Auswahl")
@@ -78,19 +78,19 @@ func TestCaretBlinks(t *testing.T) {
 		t.Fatal("Caret startet SICHTBAR (erste Blink-Phase an)")
 	}
 	r.do(charBlinkMsg{}) // ein Takt: Phase auf abgeblendet
-	if !r.m.chat.charBlinkHide {
+	if !r.m.chat.char.blinkHide {
 		t.Fatal("charBlinkMsg muss die Blink-Phase umschalten")
 	}
 	if strings.Contains(r.view(), "\x1b[7mH") {
 		t.Fatal("abgeblendete Phase darf das Caret NICHT zeichnen")
 	}
 	r.do(charBlinkMsg{}) // zweiter Takt: wieder da
-	if r.m.chat.charBlinkHide || !strings.Contains(r.view(), "\x1b[7mH") {
+	if r.m.chat.char.blinkHide || !strings.Contains(r.view(), "\x1b[7mH") {
 		t.Fatal("zweiter Takt blendet das Caret wieder ein")
 	}
 	r.do(charBlinkMsg{}) // abgeblendet …
 	r.key("right")       // … Bewegung blendet sofort ein (Blink startet neu)
-	if r.m.chat.charBlinkHide {
+	if r.m.chat.char.blinkHide {
 		t.Fatal("Bewegung muss das Caret einblenden")
 	}
 	if !strings.Contains(r.view(), "\x1b[7ma") {
@@ -118,8 +118,8 @@ func TestCaretBlinks(t *testing.T) {
 func TestPlainArrowsMoveCaretWithoutSelecting(t *testing.T) {
 	r := enterCursor(newRig(t).seed("Hallo Welt"))
 	r.key("right").key("right").key("right")
-	if r.m.chat.charTo != 3 {
-		t.Fatalf("right x3: Caret bei 3, got %d", r.m.chat.charTo)
+	if r.m.chat.char.to != 3 {
+		t.Fatalf("right x3: Caret bei 3, got %d", r.m.chat.char.to)
 	}
 	if !r.m.chat.charEmptySelection() {
 		t.Fatal("Pfeile duerfen NICHT auswaehlen (Editor-Semantik)")
@@ -142,9 +142,9 @@ func TestPlainArrowsMoveCaretWithoutSelecting(t *testing.T) {
 func TestShiftArrowsSelectFromAnchor(t *testing.T) {
 	r := enterCursor(newRig(t).seed("abcdef"))
 	r.key("shift+right").key("shift+right").key("shift+right")
-	if r.m.chat.charFrom != 0 || r.m.chat.charTo != 3 {
+	if r.m.chat.char.from != 0 || r.m.chat.char.to != 3 {
 		t.Fatalf("shift+right x3: Anker 0, Caret 3 — got from=%d to=%d",
-			r.m.chat.charFrom, r.m.chat.charTo)
+			r.m.chat.char.from, r.m.chat.char.to)
 	}
 	bg := r.m.chat.charSelBgSgr()
 	if !strings.Contains(r.view(), bg+"abc\x1b[0m") {
@@ -171,13 +171,13 @@ func TestCaretWalksAcrossSections(t *testing.T) {
 	// Leseposition: letztes Segment = Block 1 — caret dort, dann zurueck.
 	r.key("tab")
 	r.key("shift+tab")
-	if r.m.chat.charBlock != 1 {
-		t.Fatalf("Caret am fokussierten Block 1, got %d", r.m.chat.charBlock)
+	if r.m.chat.char.block != 1 {
+		t.Fatalf("Caret am fokussierten Block 1, got %d", r.m.chat.char.block)
 	}
 	r.key("left") // vom Blockanfang 1: ein Sprung ans ENDE von Block 0
-	if r.m.chat.charBlock != 0 || r.m.chat.charTo != 4 {
+	if r.m.chat.char.block != 0 || r.m.chat.char.to != 4 {
 		t.Fatalf("left vom Blockanfang 1 muss in Block 0 ans ENDE springen: block=%d to=%d",
-			r.m.chat.charBlock, r.m.chat.charTo)
+			r.m.chat.char.block, r.m.chat.char.to)
 	}
 }
 
@@ -190,14 +190,14 @@ func TestCaretUpDownAcrossSections(t *testing.T) {
 	r2 := newRig(t).seed("one\ntwo\n\nthree")
 	r2.key("tab").key("shift+tab") // Caret auf Block 1 ("three")
 	r2.key("up")
-	if r2.m.chat.charBlock != 0 || r2.m.chat.charTo != 4 {
+	if r2.m.chat.char.block != 0 || r2.m.chat.char.to != 4 {
 		t.Fatalf("up von Block 1 muss in die LETZTE Zeile von Block 0 (Offset 4): block=%d to=%d",
-			r2.m.chat.charBlock, r2.m.chat.charTo)
+			r2.m.chat.char.block, r2.m.chat.char.to)
 	}
 	r2.key("down")
-	if r2.m.chat.charBlock != 1 || r2.m.chat.charTo != 0 {
+	if r2.m.chat.char.block != 1 || r2.m.chat.char.to != 0 {
 		t.Fatalf("down von der letzten Zeile muss in Block 1 Zeile 0: block=%d to=%d",
-			r2.m.chat.charBlock, r2.m.chat.charTo)
+			r2.m.chat.char.block, r2.m.chat.char.to)
 	}
 	_ = r
 }
@@ -208,8 +208,8 @@ func TestCaretUpDownAcrossSections(t *testing.T) {
 func TestSelectionSpansSections(t *testing.T) {
 	r := newRig(t).seed("AAAA\n\nBBBB")
 	r.key("tab").key("shift+tab") // Fokus/Caret auf Block 1? nein — letzter
-	if r.m.chat.charBlock != 1 {
-		t.Fatalf("Setup: Caret auf Block 1, got %d", r.m.chat.charBlock)
+	if r.m.chat.char.block != 1 {
+		t.Fatalf("Setup: Caret auf Block 1, got %d", r.m.chat.char.block)
 	}
 	// Caret auf Block 0 Offset 0 bringen: 5x left (Blockanfang -> Ende 0).
 	for i := 0; i < 5; i++ {
@@ -316,15 +316,15 @@ func TestCaretReentryHoldsPosition(t *testing.T) {
 	r.key("right").key("right").key("right")
 	r.key("shift+tab") // Toggle raus: Position bleibt Wiedereintritts-Merk
 	r.key("shift+tab") // Toggle rein
-	if r.m.chat.charTo != 3 {
-		t.Fatalf("Toggle-Wiedereintritt haelt Position 3, got %d", r.m.chat.charTo)
+	if r.m.chat.char.to != 3 {
+		t.Fatalf("Toggle-Wiedereintritt haelt Position 3, got %d", r.m.chat.char.to)
 	}
 	// esc ist Abbruch: Rest-Position weg, der naechste Einstieg startet
 	// frisch an der Leseposition (Offset 0), nicht am alten Caret.
 	r.key("esc")
 	r.key("tab").key("shift+tab")
-	if r.m.chat.charTo != 0 {
-		t.Fatalf("nach esc startet der Wiedereintritt frisch (0), got %d", r.m.chat.charTo)
+	if r.m.chat.char.to != 0 {
+		t.Fatalf("nach esc startet der Wiedereintritt frisch (0), got %d", r.m.chat.char.to)
 	}
 }
 
@@ -333,12 +333,12 @@ func TestCaretReentryHoldsPosition(t *testing.T) {
 func TestCaretHomeEnd(t *testing.T) {
 	r := enterCursor(newRig(t).seed("erste Zeile\nzweite Zeile"))
 	r.key("end")
-	if r.m.chat.charTo != 11 {
-		t.Fatalf("end: Offset 11 (Zeilenende), got %d", r.m.chat.charTo)
+	if r.m.chat.char.to != 11 {
+		t.Fatalf("end: Offset 11 (Zeilenende), got %d", r.m.chat.char.to)
 	}
 	r.key("home")
-	if r.m.chat.charTo != 0 {
-		t.Fatalf("home: Offset 0, got %d", r.m.chat.charTo)
+	if r.m.chat.char.to != 0 {
+		t.Fatalf("home: Offset 0, got %d", r.m.chat.char.to)
 	}
 }
 
@@ -394,8 +394,8 @@ func TestCaretSpawnsFromNonCharFocus(t *testing.T) {
 	if !r.m.chat.charActive() {
 		t.Fatal("shift+enter muss den Cursor spawnen, auch wenn der Fokus-Block kein Text ist")
 	}
-	if r.m.chat.charBlock != 0 {
-		t.Fatalf("Cursor im naechsten faehigen Block davor (0), got %d", r.m.chat.charBlock)
+	if r.m.chat.char.block != 0 {
+		t.Fatalf("Cursor im naechsten faehigen Block davor (0), got %d", r.m.chat.char.block)
 	}
 	if !strings.Contains(r.view(), "\x1b[7me") {
 		t.Fatalf("Caret-Buchstabe e muss unterstrichen sein: %q", r.view())
@@ -463,15 +463,15 @@ func TestPlantumlShiftEnterAutoSource(t *testing.T) {
 	if !ok || !img.showSrc {
 		t.Fatal("shift+enter muss das Diagramm automatisch auf Quelltext schalten")
 	}
-	if c.charBlock != 1 {
-		t.Fatalf("Caret muss im Quelltext-Block (1) spawnen, got %d", c.charBlock)
+	if c.char.block != 1 {
+		t.Fatalf("Caret muss im Quelltext-Block (1) spawnen, got %d", c.char.block)
 	}
 	if c.charEmptySelection() {
 		t.Fatal("die Block-Auswahl muss als Zeichen-Auswahl mitkommen")
 	}
-	if c.charFromBlock != 2 || c.charTo != 0 {
+	if c.char.fromBlock != 2 || c.char.to != 0 {
 		t.Fatalf("Anker unten (Block 2), Caret oben (Offset 0): fromBlock=%d to=%d",
-			c.charFromBlock, c.charTo)
+			c.char.fromBlock, c.char.to)
 	}
 	if !strings.Contains(r.view(), "\x1b[7mQ") {
 		t.Fatalf("Caret-Buchstabe Q (Quell-Anfang) muss invertiert sein: %q", r.view())
