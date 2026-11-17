@@ -79,6 +79,12 @@ func nodeText(n ast.Node, src []byte) string {
 
 // WrapDisplay splits s into lines of at most w display cells (rune/emoji-aware).
 // Hard break — used for code; table cells use wrapWords.
+//
+// ANSI-bewusst: Escape-Sequenzen werden GANZ uebernommen — sie zaehlen keine
+// Zellen und duerfen nie zerschnitten werden (ein halber SGR erscheint im
+// Terminal als sichtbarer Muell). Die aktive Formatierung (letztes voll-
+// staendige SGR) wird an Folgeseiten wiederholt, damit ein hart gesplittetes
+// Token weiter in seinem Stil bleibt.
 func WrapDisplay(s string, w int) []string {
 	if w <= 0 || s == "" {
 		return []string{s}
@@ -86,19 +92,39 @@ func WrapDisplay(s string, w int) []string {
 	var lines []string
 	var cur []rune
 	curW := 0
-	for _, r := range s {
+	lastSGR := "" // letztes vollstaendige SGR (aktiv ab hier)
+	rs := []rune(s)
+	for i := 0; i < len(rs); {
+		if rs[i] == 0x1b {
+			j := i + ansiSeqLen(rs, i)
+			seq := string(rs[i:j])
+			if strings.HasSuffix(seq, "m") {
+				if seq == "\x1b[0m" {
+					lastSGR = ""
+				} else {
+					lastSGR = seq
+				}
+			}
+			cur = append(cur, rs[i:j]...)
+			i = j
+			continue
+		}
+		r := rs[i]
 		if r == '\n' {
 			lines = append(lines, string(cur))
 			cur, curW = []rune{}, 0
+			i++
 			continue
 		}
 		ww := runewidth.RuneWidth(r)
 		if len(cur) > 0 && curW+ww > w {
 			lines = append(lines, string(cur))
-			cur, curW = []rune{}, 0
+			// Aktive Formatierung auf der Folgeseite fortsetzen.
+			cur, curW = []rune(lastSGR), 0
 		}
 		cur = append(cur, r)
 		curW += ww
+		i++
 	}
 	lines = append(lines, string(cur))
 	return lines
