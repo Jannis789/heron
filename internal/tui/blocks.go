@@ -162,14 +162,17 @@ func cardBorderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
 }
 
 // stackDivider rendert die Trennlinie zwischen zwei gestapelten Karten:
-// ├─ <Label der nächsten Karte> ──┤ (User-Skizze "thinking | tool").
+// ├─ <Label der nächsten Karte> ──┤ (User-Skizze "thinking | tool"). Das
+// Label traegt denselben Stil wie die Rahmenzeichen — die Zeile ist EINE
+// durchgehende Flaeche (bg-Fuellung auch unter dem Label, sonst laeuft
+// die Horizontale auf Nicht-Default-Terminals unschoen ueber).
 func stackDivider(bs lipgloss.Style, label string, width int) string {
 	lw := runewidth.StringWidth(label)
 	dashes := width - 5 - lw
 	if dashes < 0 {
 		dashes = 0
 	}
-	return bs.Render("├─ ") + label + bs.Render(" "+strings.Repeat("─", dashes)+"┤")
+	return bs.Render("├─ ") + bs.Render(label) + bs.Render(" "+strings.Repeat("─", dashes)+"┤")
 }
 
 func actionStyle(th *render.Theme, hover bool) lipgloss.Style {
@@ -918,11 +921,10 @@ type ThinkBlock struct {
 	joinAsDivider bool
 	dividerLabel  string
 	th            *render.Theme
-	// Hover ist ZIELGENAU, nicht blockweit: Kopfzeile und Footer-Aktion
-	// sind getrennte Klickziele — nur die tatsaechlich getroffene Zelle
-	// highlightet (frueher leuchteten beide gleichzeitig).
+	// Hover ist ZIELGENAU, nicht blockweit: nur die Kopfzeile highlightet
+	// — die Falt-Marke (▸/▾) lebt im Kopf, der Footer ist eine reine
+	// Rahmenlinie (kein "+ show more" mehr).
 	hoverHead bool
-	hoverFoot bool
 }
 
 func NewThinkBlock(text string, th *render.Theme) ThinkBlock {
@@ -990,26 +992,6 @@ func (b ThinkBlock) label() string {
 	return l
 }
 
-func (b ThinkBlock) actionLabel() string {
-	if b.expanded {
-		return "- show less"
-	}
-	return "+ show more"
-}
-
-// action returns the plain fold label and its styled variant: der
-// aktivierende Buchstabe (+ bzw. -) ist IMMER Neon-Violett — er sagt,
-// welche Taste aufklappt/zuklappt. Der Rest: Action-Farbe, beim Hover der
-// Footer-Zelle weiß + unterstrichen.
-func (b ThinkBlock) action() (string, string) {
-	action := b.actionLabel()
-	key := "+"
-	if b.expanded {
-		key = "-"
-	}
-	return action, styledAction(b.th, action, key, b.hoverFoot)
-}
-
 // truncateCells cuts a line to w display cells, marking the cut with an
 // ellipsis.
 func truncateCells(s string, w int) string {
@@ -1024,13 +1006,20 @@ func (b ThinkBlock) View(width int) string {
 		width = 16
 	}
 	inner := codeInnerWidth(width)
-	// Fokus ODER Auswahl zeigen sich am RAHMEN: Neon-Violett statt Theme-
-	// Border — die Markierung faerbt den GESAMTEN Block (wie ImageBlock),
-	// nicht nur die Aktionszeile. Die VERGANGENE Auswahl (stale, FR-43)
-	// traegt den Rahmen in der Sekundaer-Farbe — kein "✓" (nicht aktuell).
-	// Normalzustand: Rahmen in der TEXT-Farbe der Karte (cardBorderStyle).
-	bs := cardBorderStyleFor(b.th, b.focused || b.marked, b.stale)
+	// Die AKTUELLE Auswahl (Fokus ODER Markierung) faerbt die GESAMTE
+	// Kastenflaeche — bg + Rahmen in einer Farbe, symmetrisch von Rand zu
+	// Rand (User-Feedback: die nur umgefaerbten Rahmenzeichen liessen die
+	// Horizontal-Linien an den ungestylten Mittelsegmenten ueberlaufen).
+	// Die VERGANGENE Auswahl (stale, FR-43) traegt weiter nur den Rahmen
+	// in der Sekundaer-Farbe. Normalzustand: Rahmen in der TEXT-Farbe der
+	// Karte (cardBorderStyle).
+	sel := b.focused || b.marked
+	bs := cardBorderStyleFor(b.th, false, b.stale)
 	ls := b.th.LabelStyle()
+	if sel {
+		bs = b.th.FocusFillStyle()
+		ls = bs
+	}
 
 	label := b.label()
 	labelW := runewidth.StringWidth(label)
@@ -1046,36 +1035,34 @@ func (b ThinkBlock) View(width int) string {
 		// The caption is a fold hit target (HitAction y==0) — die gleiche
 		// Hover-Behandlung wie die Footer-Aktion, aber nur wenn SIE getroffen
 		// ist (hoverHead), nie gleichzeitig mit dem Footer.
-		lines = append(lines, bs.Render("┌─ ")+actionStyle(b.th, b.hoverHead).Render(label)+
+		headSt := actionStyle(b.th, b.hoverHead)
+		if sel {
+			headSt = ls // auf der Fuellflaeche: Kontrast-Text statt Action-Farbe
+		}
+		lines = append(lines, bs.Render("┌─ ")+headSt.Render(label)+
 			bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
 	}
 
 	// Collapsed shows the END of the thinking — the conclusion lives there
-	// (visibleRows wraps only that tail, so streaming stays cheap).
+	// (visibleRows wraps only that tail, so streaming stays cheap). Der
+	// Innenraum wird als EINE Zelle durch den Zeilenstil gerendert — die
+	// Fuellung (Theme-bg im Ruhe-Zustand, Akzentfarbe bei Auswahl) geht
+	// lueckenlos von Rahmenzeichen zu Rahmenzeichen.
 	rows := b.visibleRows(inner)
 	for _, ln := range rows {
-		txt := ls.Render(ln)
-		gap := inner - lipgloss.Width(txt)
+		gap := inner - runewidth.StringWidth(ln)
 		if gap < 0 {
 			gap = 0
 		}
-		lines = append(lines, bs.Render("│")+" "+txt+strings.Repeat(" ", gap)+" "+bs.Render("│"))
+		lines = append(lines, bs.Render("│")+ls.Render(" "+ln+strings.Repeat(" ", gap+1))+bs.Render("│"))
 	}
 
-	// The fold action sits centered, GitHub-style, and only when content is
-	// actually hidden — a short block gets a plain closing border (FR-30).
-	if b.hidden(inner) {
-		// Der ThinkBlock ist selbst eine Auf-/Zuklapp-Widget — seine Fold-
-		// Aktion bleibt immer sichtbar (kein Progressive Disclosure), sonst
-		// gaebe es nach dem Aufklappen per Klick keinen sichtbaren Weg
-		// zurueck. Code/Table/Bild haengen ihre Aktion dagegen bei Bedarf.
-		action, styled := b.action()
-		// Aktionszeile: gleiche Rahmenfarbe (bs ist bei Fokus ODER
-		// Markierung bereits neon).
-		lines = append(lines, render.CenteredActionLine(width, action, styled,
-			runewidth.StringWidth(action), bs))
-	} else if b.joinAsDivider {
-		// Stacked: Boden ist die Trennlinie zur nächsten Karte, nicht └┘.
+	// Der Boden ist reine Rahmenlinie: im Stack die Trennlinie zur naechsten
+	// Karte (├─ <Label> ─┤), sonst der Schluss └┘. Ein zugeklappter Inhalt
+	// zeigt sich allein an der Falt-Marke im Kopf (▸) — es gibt keine
+	// "+ show more"-Zeile mehr, die den Kasten mitten im Stack vorzeitig
+	// geschlossen haette (User-Report: "nur die ersten 2 verbinden").
+	if b.joinAsDivider {
 		lines = append(lines, stackDivider(bs, b.dividerLabel, width))
 	} else {
 		lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
@@ -1117,24 +1104,16 @@ func (b ThinkBlock) SetFocused(f bool) Widget {
 }
 func (b ThinkBlock) SetHover(h bool) Widget {
 	nb := b
-	nb.hoverHead, nb.hoverFoot = false, h
+	nb.hoverHead = h
 	return nb
 }
 
-// SetHoverAt setzt den Hover zielgenau auf die getroffene Zelle: Kopfzeile
-// ODER Footer-Aktion — nie beide gleichzeitig (blockweiter Hover war
-// irrefuehrend: zwei Highlights fuer eine Mausposition).
+// SetHoverAt setzt den Hover zielgenau auf die Kopfzeile — sie ist das
+// einzige Falt-Ziel geblieben (▸/▾ im Kopf; die "+ show more"-Zeile ist
+// weg, User-Wunsch). Body-Hover highlightet nichts.
 func (b ThinkBlock) SetHoverAt(width, x, y int) Widget {
 	nb := b
-	nb.hoverHead, nb.hoverFoot = false, false
-	if !b.HitAction(width, x, y) {
-		return nb
-	}
-	if y == 0 {
-		nb.hoverHead = true
-	} else {
-		nb.hoverFoot = true
-	}
+	nb.hoverHead = y == 0 && b.HitAction(width, x, y)
 	return nb
 }
 func (b ThinkBlock) SetMarked(m bool) Widget {
@@ -1159,18 +1138,14 @@ func (b ThinkBlock) HitAction(width, x, y int) bool {
 		// Nothing hidden — no fold affordance anywhere, not even the header.
 		return false
 	}
-	// The header caption ("denken ▸ n Zeilen") folds too — clicking the
-	// section title is the natural unfold, and it must NOT toggle the
-	// selection mark (FR-30).
-	if y == 0 {
-		return x >= 3 && x < 3+runewidth.StringWidth(b.label())
-	}
-	if y != 1+b.bodyRows(width) {
+	// The header caption ("denken ▸ n Zeilen") is the fold affordance —
+	// clicking the section title is the natural unfold, and it must NOT
+	// toggle the selection mark (FR-30). Der Footer ist reine Rahmenlinie
+	// (kein "+ show more" mehr) — kein Klickziel.
+	if y != 0 {
 		return false
 	}
-	// The fold action sits centered in the footer.
-	start, end := render.CenteredActionRange(width, runewidth.StringWidth(b.actionLabel()))
-	return x >= start && x < end
+	return x >= 3 && x < 3+runewidth.StringWidth(b.label())
 }
 func (b ThinkBlock) Copy() (Widget, tea.Cmd) { return b, nil }
 

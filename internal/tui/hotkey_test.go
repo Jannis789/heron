@@ -72,27 +72,27 @@ func TestFocusSignalsBorderNotLabel(t *testing.T) {
 	}
 }
 
-// TestThinkHoverTargetsSingleCell: Hover trifft GENAU EINE Zelle — Kopfzeile
-// ODER Footer-Aktion, nie beide gleichzeitig (der alte blockweite Hover
-// leuchtete zwei Dinge fuer eine Mausposition auf).
+// TestThinkHoverTargetsSingleCell: Hover trifft GENAU die Kopfzeile — die
+// Falt-Marke (▸/▾) lebt im Kopf, der Footer ist reine Rahmenlinie (kein
+// "+ show more" mehr): Body- und Footer-Hover highlighten nichts.
 func TestThinkHoverTargetsSingleCell(t *testing.T) {
 	withTrueColor(t)
 	th, _ := render.DefaultTheme()
 	b := NewThinkBlock("a\nb\nc\nd\ne", th) // > thinkCollapsed Zeilen → faltbar
 	w := 40
-	if b.Height(w) != 5 { // Kopf + 3 (gekappte) Zeilen + Footer
+	if b.Height(w) != 5 { // Kopf + 3 (gekappte) Zeilen + Rahmen-Footer
 		t.Fatalf("unexpected height %d", b.Height(w))
 	}
 	foot := b.SetHoverAt(w, w/2, 4).(ThinkBlock)
-	if foot.hoverHead || !foot.hoverFoot {
-		t.Fatal("footer hover must hit only the footer")
+	if foot.hoverHead {
+		t.Fatal("footer hover must highlight nothing (no fold action there)")
 	}
 	head := b.SetHoverAt(w, 5, 0).(ThinkBlock)
-	if !head.hoverHead || head.hoverFoot {
-		t.Fatal("header hover must hit only the header")
+	if !head.hoverHead {
+		t.Fatal("header hover must highlight the header")
 	}
 	none := b.SetHoverAt(w, 5, 1).(ThinkBlock)
-	if none.hoverHead || none.hoverFoot {
+	if none.hoverHead {
 		t.Fatal("body hover must hit nothing")
 	}
 }

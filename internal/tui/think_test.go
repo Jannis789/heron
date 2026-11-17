@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+
+	"heron/internal/render"
 )
 
 // TestThinkBlockCollapsesLongThinking (FR-30): a long thinking stream shows
@@ -47,160 +47,91 @@ func TestThinkBlockCollapsesLongThinking(t *testing.T) {
 	// Unfold: focus the block and press enter.
 	r.do(tea.KeyMsg{Type: tea.KeyTab})
 	r.do(tea.KeyMsg{Type: tea.KeyEnter})
-	r.contains("fünf")
-	r.contains("show less")
+	r.contains("eins")
 }
 
-// TestThinkActionHoverMatchesCopy (FR-30): hovering AUFKLAPPEN highlights it
-// — the hit area must match the rendered footer exactly like COPY, and the
-// hover treatment must be the same as the copy action's.
-func TestThinkActionHoverMatchesCopy(t *testing.T) {
-	r := newRig(t)
-	w := r.m.width
-	if w == 0 {
-		w = 80
-	}
-	b := NewThinkBlock("eins\nzwei\ndrei\nvier\nfünf", r.m.theme)
-	// Fokussiert rendern, damit die Fold-Aktion sichtbar ist (Progressive
-	// Disclosure: ohne Fokus schliesst der Block mit leerer Bahn).
-	lines := strings.Split(stripANSI(b.SetFocused(true).(ThinkBlock).View(w)), "\n")
-	footer := lines[len(lines)-1]
-	// Byte offsets are not cell offsets: box-drawing chars are 3 bytes but
-	// one cell — measure the prefix in cells.
-	cellX := len([]rune(footer[:strings.Index(footer, "show more")]))
-	if cellX < 0 {
-		t.Fatal("footer does not show the fold action")
-	}
-	y := len(lines) - 1 // footer row: header + body rows, 0-based
-	if !b.HitAction(w, cellX+2, y) {
-		t.Fatalf("HitAction misses the fold action at cell x=%d y=%d", cellX+2, y)
-	}
-	// ... and does not fire outside the action box.
-	if b.HitAction(w, 10, y) {
-		t.Fatal("HitAction hits outside the action box")
-	}
-	// Hover/Hotkey-Verhalten: Der aktivierende Buchstabe (+) ist IMMER
-	// Neon-Violett fett — auch im Hover sagt er die Taste. Der REST des
-	// Labels wird beim Hover weiß + unterstrichen. go test läuft mit Ascii-
-	// Profil, deshalb fuer diesen Check TrueColor erzwingen.
-	rp := lipgloss.DefaultRenderer()
-	old := rp.ColorProfile()
-	rp.SetColorProfile(termenv.TrueColor)
-	t.Cleanup(func() { rp.SetColorProfile(old) })
+// TestThinkHeaderHoverAndSelectionFill (FR-30): hovering trifft nur die
+// Kopfzeile (dort lebt die Falt-Marke), und die AKTUELLE Auswahl faerbt
+// die GESAMTE Kastenflaeche — bg + Rahmen in der Akzentfarbe, symmetrisch
+// ueber jede Zeile (User-Feedback: nur farbige Rahmenzeichen liessen die
+// Horizontal-Linien an den ungestylten Mittelsegmenten ueberlaufen).
+func TestThinkHeaderHoverAndSelectionFill(t *testing.T) {
+	withTrueColor(t)
+	th, _ := render.DefaultTheme()
+	w := 60
+	b := NewThinkBlock("eins\nzwei\ndrei\nvier\nfünf", th)
 
-	hb := b.SetHover(true).(ThinkBlock)
-	hoverLabel, hoverStyled := hb.action()
-	if hoverLabel != "+ show more" || stripANSI(hoverStyled) != "+ show more" {
-		t.Fatal("hover styling changed the label")
+	// Hit-Geometrie: nur die Kopfzeile ist Falt-Ziel, sonst nichts.
+	if !b.HitAction(w, 5, 0) {
+		t.Fatal("HitAction misses the header caption")
 	}
-	runs := strings.Split(hoverStyled, "\x1b[0m")
-	if len(runs) < 2 {
-		t.Fatalf("hotkey run missing: %q", hoverStyled)
+	if b.HitAction(w, 2, 0) || b.HitAction(w, 3+w, 0) {
+		t.Fatal("HitAction fires outside the header label")
 	}
-	// Run 0 ist der Neon-Hotkey: fett + unterstrichen (wie der Rest beim
-	// Hover) + #BF00FF (191;0;255) — nur die Farbe bleibt Neon.
-	if !strings.HasPrefix(runs[0], "\x1b[1;4;38;2;191;0;255") {
-		t.Fatalf("hotkey run is not bold+underlined neon purple: %q", runs[0])
+	if b.HitAction(w, w/2, b.Height(w)-1) || b.HitAction(w, w/2, 1) {
+		t.Fatal("HitAction offers a fold target on body or footer")
 	}
-	// Alle Folgeruns (der Label-Rest) sind weiß + unterstrichen.
-	for i, run := range runs[1:] {
-		if run == "" {
-			continue
-		}
-		if !strings.Contains(run, "38;2;255;255;255") {
-			t.Fatalf("hover run %d is not white: %q", i+1, run)
+
+	// Hover auf der Kopfzeile: Label weiß + unterstrichen (wie die alten
+	// Footer-Aktionen), der Rest des Kastens bleibt im Ruhe-Stil.
+	hb := b.SetHoverAt(w, 5, 0).(ThinkBlock)
+	hv := hb.View(w)
+	hl := strings.Split(hv, "\n")[0]
+	if !strings.Contains(hl, "38;2;255;255;255") || !strings.Contains(hl, "\x1b[4;") {
+		t.Fatalf("header hover is not white+underlined: %q", hl)
+	}
+
+	// Auswahl (Fokus ODER Markierung): der ganze Kasten traegt die
+	// Akzentfarbe als HINTERGRUND (48;2;191;0;255) und den Theme-Grund
+	// als Textfarbe (38;2;20;20;25) — in jeder Zeile, symmetrisch.
+	for name, sb := range map[string]ThinkBlock{
+		"focused": b.SetFocused(true).(ThinkBlock),
+		"marked":  b.SetMarked(true).(ThinkBlock),
+	} {
+		for i, ln := range strings.Split(sb.View(w), "\n") {
+			if !strings.Contains(ln, "48;2;191;0;255") {
+				t.Fatalf("%s row %d is not filled with the focus color: %q", name, i, ln)
+			}
 		}
 	}
-
-	// Ohne Hover bleibt der Hotkey Neon-Violett (immer, nicht nur bei
-	// Fokus/Hover) — das ist das Tastatur-Angebot.
-	_, plain := b.action()
-	if !strings.Contains(plain, "38;2;191;0;255") {
-		t.Fatalf("resting action lost the neon hotkey: %q", plain)
-	}
-
-	// Fokus zeigt sich NICHT mehr am Label (kein Reverse), sondern am
-	// RAMEN des Blocks: Neon-Violett statt Theme-Border.
-	fb := b.SetFocused(true).(ThinkBlock)
-	_, focusedStyled := fb.action()
-	if strings.Contains(focusedStyled, "\x1b[7;") {
-		t.Fatalf("focus must not reverse the action: %q", focusedStyled)
-	}
-	view := fb.View(w)
-	if !strings.Contains(view, "38;2;191;0;255") {
-		t.Fatal("focused block border is not neon purple")
-	}
-	// Die Fold-Aktion des ThinkBlocks bleibt IMMER sichtbar → unfocused
-	// traegt sie genau einen Neon-Run (der +-Hotkey).
-	if u := b.View(w); strings.Count(u, "38;2;191;0;255") != 1 {
-		t.Fatalf("unfocused view must carry exactly one neon run (hotkey), got %d",
-			strings.Count(u, "38;2;191;0;255"))
+	// Ruhe-Zustand: kein Neon-Fuell-Werk.
+	if u := b.View(w); strings.Contains(u, "48;2;191;0;255") {
+		t.Fatalf("unfocused view must not carry the fill background: %q", u)
 	}
 }
 
-// TestThinkBlockUnfoldsOnClick (FR-30): clicking AUFKLAPPEN unfolds the
-// block — the mouse path dispatches the block's own action, never Copy.
+// TestThinkBlockUnfoldsOnClick (FR-30): clicking the header caption unfolds
+// the block — the mouse path dispatches the block's own action, never Copy.
+// Die "+ show more"-Zeile ist weg: der Kopf (▸/▾) ist das einzige Klickziel.
 func TestThinkBlockUnfoldsOnClick(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "eins\nzwei\ndrei\nvier\nfünf"})
 
-	l := r.m.chat
-	w := l.Width()
-	b, ok := l.items[0].(ThinkBlock)
-	if !ok {
-		t.Fatal("thought did not produce a think block")
+	if strings.Contains(stripANSI(r.m.View()), "show more") {
+		t.Fatal("collapsed block still shows a fold action line")
 	}
-	h := b.Height(w)
-	// Die Fold-Aktion rendert nur bei Fokus/Copy (Disclosure) — Geometrie
-	// zum Klicken also aus einer fokussierten Ansicht ziehen.
-	footer := strings.Split(stripANSI(b.SetFocused(true).(ThinkBlock).View(w)), "\n")[h-1]
-	i := strings.Index(footer, "show more")
-	if i < 0 {
-		t.Fatal("footer does not show the fold action")
-	}
-	x := len([]rune(footer[:i])) + 2 // cell offset, +2 lands inside the label
-	y := chatTop + h - 1             // only block → list top = chatTop
 
-	r.click(x, y)
+	// Clicking the header caption unfolds — and must NOT set the selection
+	// mark (the ✓ that did nothing).
+	r.click(5, chatTop)
 	nb, ok := r.m.chat.items[0].(ThinkBlock)
 	if !ok || !nb.expanded {
-		t.Fatal("clicking the fold action did not unfold the block")
-	}
-	r.contains("eins") // the beginning appears only when unfolded
-	r.contains("show less")
-
-	// Clicking the fold action folds it back. The expanded block is taller —
-	// recompute footer row and screen y, they moved with the height.
-	h2 := nb.Height(w)
-	footer2 := strings.Split(stripANSI(nb.SetFocused(true).(ThinkBlock).View(w)), "\n")[h2-1]
-	i2 := strings.Index(footer2, "show less")
-	if i2 < 0 {
-		t.Fatal("footer does not show the fold action")
-	}
-	x2 := len([]rune(footer2[:i2])) + 2
-	r.click(x2, chatTop+h2-1)
-	if nb2, _ := r.m.chat.items[0].(ThinkBlock); nb2.expanded {
-		t.Fatal("clicking the fold action did not fold the block")
-	}
-	r.notContains("eins")
-
-	// Clicking the header caption folds/unfolds as well — and must NOT set
-	// the selection mark (the ✓ that did nothing).
-	r.click(5, chatTop)
-	nb3, ok := r.m.chat.items[0].(ThinkBlock)
-	if !ok || !nb3.expanded {
 		t.Fatal("clicking the header caption did not unfold the block")
 	}
-	if nb3.Marked() {
+	if nb.Marked() {
 		t.Fatal("clicking the header caption set the selection mark")
 	}
+	r.contains("eins") // the beginning appears only when unfolded
+
+	// Clicking the header caption folds it back.
 	r.click(5, chatTop)
-	nb4, _ := r.m.chat.items[0].(ThinkBlock)
-	if nb4.expanded {
+	nb2, _ := r.m.chat.items[0].(ThinkBlock)
+	if nb2.expanded {
 		t.Fatal("second header click did not fold the block")
 	}
-	if nb4.Marked() {
+	r.notContains("eins")
+	if nb2.Marked() {
 		t.Fatal("header clicks set the selection mark")
 	}
 }

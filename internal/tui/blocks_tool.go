@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 
 	"heron/internal/render"
@@ -60,10 +59,10 @@ type ToolBlock struct {
 	dividerLabel  string
 	th            *render.Theme
 	copyFn        CopyFunc
-	// Hover ist ZIELGENAU wie beim ThinkBlock: Kopfzeile und Footer-
-	// Aktion sind getrennte Ziele, nie gleichzeitig.
+	// Hover ist ZIELGENAU wie beim ThinkBlock: nur die Kopfzeile
+	// highlightet — die Falt-Marke (▸/▾) lebt im Kopf, der Footer ist
+	// eine reine Rahmenlinie (kein "+ show more" mehr).
 	hoverHead bool
-	hoverFoot bool
 }
 
 // ToolData bündelt die Anzeige-Daten eines Tool-Call-Stands: Identität
@@ -229,32 +228,23 @@ func (b ToolBlock) stateLabel(width int) string {
 	return l
 }
 
-func (b ToolBlock) actionLabel() string {
-	if b.expanded {
-		return "- show less"
-	}
-	return "+ show more"
-}
-
-func (b ToolBlock) action() (string, string) {
-	action := b.actionLabel()
-	key := "+"
-	if b.expanded {
-		key = "-"
-	}
-	return action, styledAction(b.th, action, key, b.hoverFoot)
-}
-
 func (b ToolBlock) View(width int) string {
 	if width < 16 {
 		width = 16
 	}
 	inner := codeInnerWidth(width)
-	// Fokus ODER Auswahl am RAHMEN (Neon-Violett), wie Think/CodeBlock.
-	// Die VERGANGENE Auswahl (stale, FR-43) traegt die Sekundaer-Farbe.
-	// Normalzustand: Rahmen in der TEXT-Farbe der Karte — nicht weiß.
-	bs := cardBorderStyleFor(b.th, b.focused || b.marked, b.stale)
+	// Die AKTUELLE Auswahl faerbt die GESAMTE Kastenflaeche (bg + Rahmen
+	// in einer Farbe, symmetrisch von Rand zu Rand — wie ThinkBlock);
+	// die VERGANGENE Auswahl (stale, FR-43) traegt weiter nur den Rahmen
+	// in der Sekundaer-Farbe. Normalzustand: Rahmen in der TEXT-Farbe der
+	// Karte — nicht weiß.
+	sel := b.focused || b.marked
+	bs := cardBorderStyleFor(b.th, false, b.stale)
 	ls := b.th.LabelStyle()
+	if sel {
+		bs = b.th.FocusFillStyle()
+		ls = bs
+	}
 
 	label := b.stateLabel(width)
 	labelW := runewidth.StringWidth(label)
@@ -262,28 +252,29 @@ func (b ToolBlock) View(width int) string {
 	if dashes < 0 {
 		dashes = 0
 	}
-	// hidden entscheidet ueber die Fold-Aktion OHNE den ganzen Output zu
-	// wrappen (sourceExceeds: die Zeilenzahl beweist es bereits).
-	hidden := sourceExceeds(b.bodyLines(), inner, toolCollapsed)
 	lines := make([]string, 0, b.Height(width))
 	if !b.joinTop {
-		lines = append(lines, bs.Render("┌─ ")+actionStyle(b.th, b.hoverHead).Render(label)+
+		headSt := actionStyle(b.th, b.hoverHead)
+		if sel {
+			headSt = ls // auf der Fuellflaeche: Kontrast-Text statt Action-Farbe
+		}
+		lines = append(lines, bs.Render("┌─ ")+headSt.Render(label)+
 			bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
 	}
+	// Innenraum als EINE Zelle durch den Zeilenstil — die Fuellung geht
+	// lueckenlos von Rahmenzeichen zu Rahmenzeichen (keine bg-Luecken an
+	// den Pad-Zellen, User-Feedback "ganzen bg faerben").
 	for _, ln := range b.visibleRows(width) {
-		txt := ls.Render(ln)
-		gap := inner - lipgloss.Width(txt)
+		gap := inner - runewidth.StringWidth(ln)
 		if gap < 0 {
 			gap = 0
 		}
-		lines = append(lines, bs.Render("│")+" "+txt+strings.Repeat(" ", gap)+" "+bs.Render("│"))
+		lines = append(lines, bs.Render("│")+ls.Render(" "+ln+strings.Repeat(" ", gap+1))+bs.Render("│"))
 	}
-	if hidden {
-		action, styled := b.action()
-		lines = append(lines, render.CenteredActionLine(width, action, styled,
-			runewidth.StringWidth(action), bs))
-	} else if b.joinAsDivider {
-		// Stacked: Boden ist die Trennlinie zur nächsten Karte, nicht └┘.
+	// Der Boden ist reine Rahmenlinie: im Stack die Trennlinie zur
+	// naechsten Karte, sonst └┘ — keine "+ show more"-Zeile mehr, die den
+	// Kasten mitten im Stack vorzeitig geschlossen haette.
+	if b.joinAsDivider {
 		lines = append(lines, stackDivider(bs, b.dividerLabel, width))
 	} else {
 		lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
@@ -323,22 +314,15 @@ func (b ToolBlock) SetFocused(f bool) Widget {
 }
 func (b ToolBlock) SetHover(h bool) Widget {
 	nb := b
-	nb.hoverHead, nb.hoverFoot = false, h
+	nb.hoverHead = h
 	return nb
 }
 
-// SetHoverAt: Hover zielgenau auf Kopfzeile ODER Footer-Aktion.
+// SetHoverAt: Hover zielgenau auf die Kopfzeile — das einzige Falt-Ziel
+// (▸/▾ im Kopf; die "+ show more"-Zeile ist weg).
 func (b ToolBlock) SetHoverAt(width, x, y int) Widget {
 	nb := b
-	nb.hoverHead, nb.hoverFoot = false, false
-	if !nb.HitAction(width, x, y) {
-		return nb
-	}
-	if y == 0 {
-		nb.hoverHead = true
-	} else {
-		nb.hoverFoot = true
-	}
+	nb.hoverHead = y == 0 && b.HitAction(width, x, y)
 	return nb
 }
 
@@ -366,14 +350,13 @@ func (b ToolBlock) HitAction(width, x, y int) bool {
 	if !sourceExceeds(b.bodyLines(), codeInnerWidth(width), toolCollapsed) {
 		return false // nichts versteckt — keine Klappe, auch nicht im Kopf
 	}
-	if y == 0 {
-		return x >= 3 && x < 3+runewidth.StringWidth(b.stateLabel(width))
-	}
-	if y != 1+b.bodyRows(width) {
+	// Die Kopf-Caption ("$ bash ✓ ▸") ist die Falt-Stelle — Klick klappt
+	// die Karte, ohne die Markierung anzufassen. Der Footer ist reine
+	// Rahmenlinie (kein "+ show more" mehr) — kein Klickziel.
+	if y != 0 {
 		return false
 	}
-	start, end := render.CenteredActionRange(width, runewidth.StringWidth(b.actionLabel()))
-	return x >= start && x < end
+	return x >= 3 && x < 3+runewidth.StringWidth(b.stateLabel(width))
 }
 
 // Action: Klick auf Kopf/Fuss klappt die Karte (wie ThinkBlock).
@@ -425,7 +408,7 @@ func (l BlockList) upsertToolBlock(d ToolData, th *render.Theme, copyFn CopyFunc
 		ntb := NewToolBlock(d, th, copyFn)
 		ntb.id = tb.id
 		ntb.expanded = tb.expanded
-		ntb.hoverHead, ntb.hoverFoot = tb.hoverHead, tb.hoverFoot
+		ntb.hoverHead = tb.hoverHead
 		l.items[i] = ntb.SetFocused(tb.focused).SetMarked(tb.marked)
 		return l
 	}

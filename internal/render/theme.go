@@ -88,6 +88,28 @@ func (t *Theme) FocusBorderStyle() lipgloss.Style {
 	return s
 }
 
+// BackgroundColor liefert die Terminal-Hintergrundfarbe mit Fallback —
+// nil-theme safe (Default: Schwarz).
+func (t *Theme) BackgroundColor() string {
+	if t == nil || t.Background == "" {
+		return "#000000"
+	}
+	return t.Background
+}
+
+// FocusFillStyle ist der Zellen-Fuellstil der AKTUELLEN Auswahl: Die
+// GESAMTE Kastenflaeche traegt die Akzentfarbe — Innenraum UND Rahmen
+// zugleich — und der Text liegt im Terminal-Hintergrund (klassisches
+// Reverse). Der Fuellwechsel laeuft ueber die volle Breite symmetrisch
+// von Rand zu Rand, sodass auch die Horizontal-Linien (Divider mit Label
+// in der Mitte) lueckenlos durchgehen (User-Feedback: "den ganzen bg
+// faerben" — die nur farbigen Rahmenzeichen liessen die Horizontale
+// sonst an den ungestylten Mittelsegmenten ueberlaufen).
+func (t *Theme) FocusFillStyle() lipgloss.Style {
+	s := lipgloss.NewStyle().Foreground(lipgloss.Color(t.BackgroundColor()))
+	return s.Background(lipgloss.Color(t.FocusColor()))
+}
+
 // DefaultPanColor ist Amber: die Rahmen-Farbe des Pan-&-Zoom-Modus —
 // bewusst KEIN Violett, damit der Unterschied zum Fokus (Select-Modus)
 // auf den ersten Blick klar bleibt. Fehlt "pan" im Theme-JSON, greift

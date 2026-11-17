@@ -54,17 +54,24 @@ func TestToolCardUpsertsInPlace(t *testing.T) {
 }
 
 // TestToolCardCollapsesAndExpands: Zugeklappt zeigt die Karte die LETZTEN
-// Zeilen (das Resultat lebt am Ende) plus [+ show more]; enter am
-// fokussierten Block klappt auf, Footer verschwindet bei kurzem Inhalt.
+// Zeilen (das Resultat lebt am Ende); die Falt-Marke (▸) lebt im Kopf,
+// es gibt keine "+ show more"-Zeile mehr. enter am fokussierten Block
+// klappt auf, kurzer Inhalt bleibt ohne Mark.
 func TestToolCardCollapsesAndExpands(t *testing.T) {
 	long := "line1\nline2\nline3\nline4\nline5"
 	r := newRig(t).seed("x")
 	r.do(toolMsg{callID: "c", name: "bash", text: long, done: true})
-	r.contains("+ show more").notContains("line1").notContains("line2")
+	if strings.Contains(r.screen(), "show more") {
+		t.Fatal("collapsed card still shows a fold action line")
+	}
+	r.contains("▸").notContains("line1").notContains("line2")
 	// Fokus auf die Karte (letztes Segment) und aufklappen.
 	r.key("tab")
 	r.key("enter")
-	r.contains("line1").contains("- show less")
+	r.contains("line1")
+	if strings.Contains(r.screen(), "show less") {
+		t.Fatal("expanded card still shows a fold action line")
+	}
 	// Copy-Payload: Titel + Inhalt.
 	r.key("c")
 	got := r.copiedAll()
