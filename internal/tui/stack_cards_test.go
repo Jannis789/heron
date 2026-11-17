@@ -8,23 +8,24 @@ import (
 )
 
 // FR stack: think- und tool-Karten direkt hintereinander teilen EINEN
-// Rahmen (User-Skizze) — ┌┐ nur oben, ├┤ je Übergang, └┘ nur unten.
+// Rail-Lauf (User-Skizze). Seit dem User-Feedback "horizontale
+// Rahmenzeichen entfernt" sind das KEINE ┌┐/├┤/└┘-Kaesten mehr: Es gibt
+// NUR NOCH linke Rails "│" — der Stack zeigt eine Kopfzeile oben und
+// getrennte Inhalte durch reine Leerzeilen (Rail-Abstand).
 func TestStackJoinAdjacentCards(t *testing.T) {
 	th := &render.Theme{}
-	mk := func(l BlockList, w ...Widget) BlockList { return l.Append(w...) }
-	l := BlockList{}
-	l = mk(l, NewThinkBlock("ich denke nach", th))
-	l = mk(l, NewToolBlock(ToolData{CallID: "c1", Title: "fetch_mooncheese", Kind: "fetch", Text: "flurb"}, th, nil))
+	l := BlockList{}.Append(
+		NewThinkBlock("ich denke nach", th),
+		NewToolBlock(ToolData{CallID: "c1", Title: "fetch_mooncheese", Kind: "fetch", Text: "flurb"}, th, nil))
 
 	view := l.View()
-	if got := strings.Count(view, "┌"); got != 1 {
-		t.Fatalf("want 1 top border, got %d:\n%s", got, view)
+	if strings.Contains(view, "┌") || strings.Contains(view, "└") ||
+		strings.Contains(view, "├") || strings.Contains(view, "┐") ||
+		strings.Contains(view, "┘") || strings.Contains(view, "┤") {
+		t.Fatalf("horizontale Rahmenzeichen sind verboten:\n%s", view)
 	}
-	if got := strings.Count(view, "└"); got != 1 {
-		t.Fatalf("want 1 bottom border, got %d:\n%s", got, view)
-	}
-	if !strings.Contains(view, "├─") {
-		t.Fatalf("divider missing:\n%s", view)
+	if strings.Count(view, "thinking") != 1 || strings.Count(view, "↯ fetch_mooncheese") != 1 {
+		t.Fatalf("jede Karte traegt ihren Kopf:\n%s", view)
 	}
 	// Höhe = Summe der gejointen Einzelhöhen — View und heightAt müssen
 	// exakt übereinstimmen, sonst driften Offset/Clip/Fenster.
@@ -37,70 +38,56 @@ func TestStackJoinAdjacentCards(t *testing.T) {
 	}
 }
 
-// Drei Karten hintereinander: zwei Divider, ein Rahmen.
+// Drei Karten hintereinander: nur die erste traegt eine Kopfzeile.
 func TestStackJoinThreeCards(t *testing.T) {
 	th := &render.Theme{}
-	l := BlockList{}
-	l = l.Append(NewThinkBlock("schritt 1", th))
-	l = l.Append(NewToolBlock(ToolData{CallID: "c1", Title: "t1", Kind: "execute", Text: "x"}, th, nil))
-	l = l.Append(NewToolBlock(ToolData{CallID: "c2", Title: "t2", Kind: "edit", Text: "y"}, th, nil))
+	l := BlockList{}.Append(
+		NewThinkBlock("schritt 1", th),
+		NewToolBlock(ToolData{CallID: "c1", Title: "t1", Kind: "execute", Text: "x"}, th, nil),
+		NewToolBlock(ToolData{CallID: "c2", Title: "t2", Kind: "edit", Text: "y"}, th, nil))
 	view := l.View()
-	if got := strings.Count(view, "├─"); got != 2 {
-		t.Fatalf("want 2 dividers, got %d:\n%s", got, view)
-	}
-	if got := strings.Count(view, "┌"); got != 1 {
-		t.Fatalf("want 1 frame top, got %d:\n%s", got, view)
+	if strings.Count(view, "thinking") != 1 || strings.Count(view, "$ t1") != 1 || strings.Count(view, "✎ t2") != 1 {
+		t.Fatalf("jede Karte traegt ihren Kopf:\n%s", view)
 	}
 }
 
-// Text zwischen den Karten beendet den Stack — zwei eigene Rahmen.
+// Text zwischen den Karten beendet den Stack — zwei Rail-Laeufe mit je
+// einer Kopfzeile.
 func TestStackBrokenByText(t *testing.T) {
 	th := &render.Theme{}
-	l := BlockList{}
-	l = l.Append(NewThinkBlock("denke", th))
-	l = l.Append(NewTextBlock("Antwort des Agents", "1"))
-	l = l.Append(NewToolBlock(ToolData{CallID: "c1", Title: "t1", Kind: "fetch", Text: "x"}, th, nil))
+	l := BlockList{}.Append(
+		NewThinkBlock("denke", th),
+		NewTextBlock("Antwort des Agents", "1"),
+		NewToolBlock(ToolData{CallID: "c1", Title: "t1", Kind: "fetch", Text: "x"}, th, nil))
 	view := l.View()
-	if got := strings.Count(view, "┌"); got != 2 {
-		t.Fatalf("text must break the stack, want 2 frames, got %d:\n%s", got, view)
-	}
-	if strings.Contains(view, "├─") {
-		t.Fatalf("no divider expected across text:\n%s", view)
+	if strings.Count(view, "thinking") != 1 || strings.Count(view, "↯ t1") != 1 {
+		t.Fatalf("want one header per rail run:\n%s", view)
 	}
 }
 
 // Der User-Fall: DENKEN → TOOL → DENKEN → TOOL → DENKEN mit jeweils
-// verstecktem Inhalt — ALLE Karten verbinden sich zu EINEM Kasten (1 ┌,
-// 1 └, 4 Divider). Zugeklappte Karten schliessen NICHT vorzeitig mit
-// └[+ show more]┘ — die Falt-Marke lebt im Kopf, der Boden ist immer die
-// Rahmenlinie (User-Report: "nur die ersten 2 verbinden" / "Boxen enden
-// zu früh mit dem Border").
+// verstecktem Inhalt — ALLE Karten laufen in EINEM Rail-Lauf (1 Kopfzeile).
+// Die Falt-Marke lebt in DEREN Kopfzeile, es gibt keine show-more-Zeile.
 func TestStackConnectsFoldedCards(t *testing.T) {
 	th := &render.Theme{}
 	long := func(seed string) string {
 		return seed + "\naaa\nbbb\nccc\nddd\neee\nfff" // > collapsed-Cap → ▸
 	}
-	l := BlockList{}
-	l = l.Append(NewThinkBlock(long("gedanke 1"), th))
-	l = l.Append(NewToolBlock(ToolData{CallID: "c1", Title: "t1", Kind: "execute", Text: long("out 1")}, th, nil))
-	l = l.Append(NewThinkBlock(long("gedanke 2"), th))
-	l = l.Append(NewToolBlock(ToolData{CallID: "c2", Title: "t2", Kind: "fetch", Text: long("out 2")}, th, nil))
-	l = l.Append(NewThinkBlock(long("gedanke 3"), th))
+	l := BlockList{}.Append(
+		NewThinkBlock(long("gedanke 1"), th),
+		NewToolBlock(ToolData{CallID: "c1", Title: "t1", Kind: "execute", Text: long("out 1")}, th, nil),
+		NewThinkBlock(long("gedanke 2"), th),
+		NewToolBlock(ToolData{CallID: "c2", Title: "t2", Kind: "fetch", Text: long("out 2")}, th, nil),
+		NewThinkBlock(long("gedanke 3"), th))
 
 	view := l.View()
-	if got := strings.Count(view, "┌"); got != 1 {
-		t.Fatalf("want exactly 1 top border, got %d:\n%s", got, view)
-	}
-	if got := strings.Count(view, "└"); got != 1 {
-		t.Fatalf("want exactly 1 bottom border, got %d:\n%s", got, view)
-	}
-	if got := strings.Count(view, "├─"); got != 4 {
-		t.Fatalf("want 4 dividers between the 5 cards, got %d:\n%s", got, view)
+	if strings.Contains(view, "┌") || strings.Contains(view, "└") || strings.Contains(view, "├─") {
+		t.Fatalf("horizontale Rahmenzeichen sind verboten:\n%s", view)
 	}
 	if strings.Contains(view, "show more") || strings.Contains(view, "show less") {
 		t.Fatalf("fold action line must be gone:\n%s", view)
 	}
-	// Jede Karte traegt ihre Falt-Marke im Kopf (▸): 5 Cards, 5 Marks.
+	// Jede Karte traegt Kopf UND Falt-Marke (▸) im Rail-Lauf: 5 Karten.
 	if got := strings.Count(view, "▸"); got != 5 {
 		t.Fatalf("want 5 fold marks (one per card header), got %d:\n%s", got, view)
 	}
@@ -116,8 +103,7 @@ func TestStackConnectsFoldedCards(t *testing.T) {
 }
 
 // Auswahl highlightet NUR die Kopfzeile: Der Neon lebt im Caption-Text
-// (fg), die Kartenflaeche bleibt in der ruhigen Pink-Purple-Farbe — die
-// Vollflaechen-Fuellung las sich als Alarm (User-Feedback).
+// (fg), die Kartenflaeche bleibt grau wie der Text (User-Feedback).
 func TestStackSelectionHighlightsHeaderOnly(t *testing.T) {
 	withTrueColor(t)
 	th, _ := render.DefaultTheme()
@@ -130,7 +116,7 @@ func TestStackSelectionHighlightsHeaderOnly(t *testing.T) {
 	if !strings.Contains(rows[0], "38;2;191;0;255") {
 		t.Fatalf("selected tool header is not neon: %q", rows[0])
 	}
-	// Kein Fuell-Neon mehr: NIRGENDWO traegt eine Zeile den Akzent als
+	// Kein Fuell-Neon: NIRGENDWO traegt eine Zeile den Akzent als
 	// Hintergrund — die Auswahl zeigt sich allein im Kopf.
 	for i, ln := range rows {
 		if strings.Contains(ln, "48;2;191;0;255") {
@@ -144,5 +130,19 @@ func TestStackSelectionHighlightsHeaderOnly(t *testing.T) {
 	// kein Neon.
 	if rest := NewThinkBlock("gedanke", th).View(l.Width()); strings.Contains(rest, "191;0;255") {
 		t.Fatalf("unselected card carries neon: %q", rest)
+	}
+}
+
+// Rails sind GRAU wie der Text in den Karten (User-Feedback): Der
+// Ruhe-Rahmen traegt NICHT mehr die Pink-Purple-Akzentfarbe.
+func TestCardRailsAreGreyLikeText(t *testing.T) {
+	withTrueColor(t)
+	th, _ := render.DefaultTheme()
+	b := NewThinkBlock("eins", th)
+	rows := strings.Split(b.View(60), "\n")
+	for i, ln := range rows {
+		if strings.Contains(ln, "205;116;243") {
+			t.Fatalf("row %d still pink-purple, want grey rails: %q", i, ln)
+		}
 	}
 }

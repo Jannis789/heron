@@ -442,12 +442,13 @@ func (l BlockList) joinTopAt(i, w int) bool {
 }
 
 // heightAt ist DIE Höhen-Quelle für Offset/Clip/Fenster: sie kennt das
-// Stack-Joining (joinTop spart die Kopfzeile). Jede Height-Stelle in
-// diesem File läuft über diesen Helfer — Höhe und gerenderte Zeilen
-// können nicht driften.
+// Stack-Joining — ohne horizontale Rahmenzeichen heißt Joining: die
+// Leerzeile VOR einer Folgekarte entfällt (die Kopfzeile der Folgekarte
+// trennt selbst). Jede Height-Stelle in diesem File läuft über diesen
+// Helfer — Höhe und gerenderte Zeilen können nicht driften.
 func (l BlockList) heightAt(i, w int) int {
 	h := l.items[i].Height(w)
-	if l.joinTopAt(i, w) {
+	if i+1 < len(l.items) && l.joinTopAt(i+1, w) {
 		h--
 	}
 	return h
@@ -526,24 +527,16 @@ func (l BlockList) stack(windowed bool) (lines []string, top, total int) {
 	// dort neon (header-only-Auswahl, wie die eigene Kopfzeile).
 	jT := l.joinTopAt(i, w)
 	jB := i+1 < len(l.items) && l.joinTopAt(i+1, w)
-		if jT || jB {
-			switch c := it.(type) {
-			case ThinkBlock:
-				c.joinTop, c.joinAsDivider = jT, jB
-				if jB {
-					c.dividerLabel, _ = stackCardLabel(l.items[i+1], w)
-					c.dividerSel = l.cardSel(i+1, selLo, selHi, charBa, charBb)
-				}
-				it = c
-			case ToolBlock:
-				c.joinTop, c.joinAsDivider = jT, jB
-				if jB {
-					c.dividerLabel, _ = stackCardLabel(l.items[i+1], w)
-					c.dividerSel = l.cardSel(i+1, selLo, selHi, charBa, charBb)
-				}
-				it = c
-			}
+	if jT || jB {
+		switch c := it.(type) {
+		case ThinkBlock:
+			c.joinTop, c.joinAsDivider = jT, jB
+			it = c
+		case ToolBlock:
+			c.joinTop, c.joinAsDivider = jT, jB
+			it = c
 		}
+	}
 		// Nur Bloecke rendern, die das Fenster beruehren. Vorher lief
 		// View() fuer JEDEN Block der Historie und View() schnitt danach
 		// zu — ein langer Chat kostete damit pro Frame O(Historie)

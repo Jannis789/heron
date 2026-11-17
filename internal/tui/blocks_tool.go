@@ -53,13 +53,11 @@ type ToolBlock struct {
 	// der verblichenen Sekundaer-Farbe.
 	stale bool
 	// Stack-Joining (nur auf RENDER-KOPIEN in BlockList.stack gesetzt):
-	// wie beim ThinkBlock — joinTop ohne ┌─┐, joinAsDivider mit ├─┤-Boden.
+	// wie beim ThinkBlock — joinTop ohne eigene Kopfzeile, der Stack
+	// laeuft als EIN Rail-Lauf durch.
 	joinTop       bool
 	joinAsDivider bool
 	dividerLabel  string
-	// dividerSel: die Folgekarte (deren Caption in der Trennlinie lebt)
-	// ist ausgewaehlt — das Label leuchtet neon wie eine Kopfzeile.
-	dividerSel bool
 	th         *render.Theme
 	copyFn     CopyFunc
 	// Hover ist ZIELGENAU wie beim ThinkBlock: nur die Kopfzeile
@@ -236,15 +234,14 @@ func (b ToolBlock) View(width int) string {
 		width = 16
 	}
 	inner := codeInnerWidth(width)
-	// Die AKTUELLE Auswahl highlightet NUR die Kopfzeile in Neon — der
-	// Kasten bleibt in der ruhigen Karten-Farbe (wie ThinkBlock, User-
-	// Feedback: "statt alles auszuwaehlen einfach nur die Ueberschrift
-	// highlighten"); die VERGANGENE Auswahl (stale, FR-43) traegt weiter
-	// nur den Rahmen in der Sekundaer-Farbe. Normalzustand: Rahmen in der
-	// Pink-Purple-Karten-Farbe.
+	// Schienen-Layout wie ThinkBlock: linke Border-Spalte "│", rechts frei,
+	// KEINE horizontalen Rahmenzeichen (User-Feedback: die Horizontale
+	// markierte sich im Cursor-Modus selbst und frass Auswahl-Zellen).
+	// Ruhe: Rails grau wie der Text; Auswahl: Neon-Rails + Neon-Kopf.
 	sel := b.focused || b.marked
 	bs := cardBorderStyleFor(b.th, false, b.stale)
 	ls := b.th.LabelStyle()
+	rail := "│"
 
 	label := b.stateLabel(width)
 	labelW := runewidth.StringWidth(label)
@@ -253,37 +250,30 @@ func (b ToolBlock) View(width int) string {
 		dashes = 0
 	}
 	lines := make([]string, 0, b.Height(width))
-	if !b.joinTop {
+	// JEDE Karte traegt ihre Kopfzeile (Schienen-Design, s. ThinkBlock).
+	{
 		headSt := actionStyle(b.th, b.hoverHead)
 		if sel {
 			// Auswahl: Neon im Kopf — hover unterstreicht weiter.
 			headSt = hotkeyStyle(b.th, b.hoverHead)
 		}
-		lines = append(lines, bs.Render("┌─ ")+headSt.Render(label)+
-			bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
+		lines = append(lines, bs.Render(rail+" ")+headSt.Render(label)+
+			bs.Render(strings.Repeat(" ", max(dashes, 1))))
 	}
-	// Innenraum als EINE Zelle durch den Zeilenstil — die Fuellung geht
-	// lueckenlos von Rahmenzeichen zu Rahmenzeichen (keine bg-Luecken an
-	// den Pad-Zellen, User-Feedback "ganzen bg faerben").
+	// Innenraum als EINE Zelle durch den Zeilenstil — die Rails laufen
+	// lueckenlos von Zeile zu Zeile.
 	for _, ln := range b.visibleRows(width) {
 		gap := inner - runewidth.StringWidth(ln)
 		if gap < 0 {
 			gap = 0
 		}
-		lines = append(lines, bs.Render("│")+ls.Render(" "+ln+strings.Repeat(" ", gap+1))+bs.Render("│"))
+		lines = append(lines, bs.Render(rail)+ls.Render(" "+ln+strings.Repeat(" ", gap+1)))
 	}
-	// Der Boden ist reine Rahmenlinie: im Stack die Trennlinie zur
-	// naechsten Karte, sonst └┘ — keine "+ show more"-Zeile mehr, die den
-	// Kasten mitten im Stack vorzeitig geschlossen haette.
-	if b.joinAsDivider {
-		dls := bs
-		if b.dividerSel {
-			// Ausgewaehlte Folgekarte: ihr Label in der Trennlinie neon.
-			dls = hotkeyStyle(b.th, false)
-		}
-		lines = append(lines, stackDivider(bs, dls, b.dividerLabel, width))
-	} else {
-		lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
+	// Kein Boden-Rahmen: im Stack folgt die Kopfzeile der naechsten Karte
+	// (die ist der Trenner — heightAt spart VOR ihr die Leerzeile), sonst
+	// eine reine Leerzeile in der Rail-Farbe (unsichtbarer Abschluss).
+	if !b.joinAsDivider {
+		lines = append(lines, bs.Render(rail))
 	}
 	return strings.Join(lines, "\n")
 }

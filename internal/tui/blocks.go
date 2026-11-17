@@ -146,13 +146,11 @@ func borderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
 	return th.BorderStyle()
 }
 
-// cardBorderStyleFor ist der Rahmen der Think-/Tool-Karten: im Normal-
-// Zustand in der sanften Pink-Purple-Karten-Farbe (Theme.CardBorderStyle)
-// statt faint-Grau — die Karte gehoert zur Akzentwelt (User-Feedback:
-// "leicht pink purple wie bei der Ueberschrift", fuer ALLE Karten). Der
-// Rahmen bleibt nevertheless ruhig: Neon ist Auswahl/Hover vorbehalten.
-// Fokus-/Markierungs- und Stale-Rahmen bleiben unangetastet, damit die
-// Auswahl weiterhin herausliest.
+// cardBorderStyleFor ist der Rahmen der Think-/Tool-Karten: faint-grau wie
+// der Text IN den Karten (LabelStyle) — der Rahmen tritt zurueck, die
+// Karte gehoert zur Konversation (User-Feedback: Border grau wie der
+// Text). Fokus-/Markierungs- und Stale-Rahmen bleiben unangetastet, damit
+// die Auswahl weiterhin herausliest.
 func cardBorderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
 	if sel {
 		return th.FocusBorderStyle()
@@ -160,7 +158,7 @@ func cardBorderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
 	if stale {
 		return th.StaleBorderStyle()
 	}
-	return th.CardBorderStyle()
+	return th.LabelStyle()
 }
 
 // stackDivider rendert die Trennlinie zwischen zwei gestapelten Karten:
@@ -916,15 +914,12 @@ type ThinkBlock struct {
 	// der verblichenen Sekundaer-Farbe, ohne das "✓" der Markierung.
 	stale bool
 	// Stack-Joining (nur auf RENDER-KOPIEN in BlockList.stack gesetzt):
-	// aufeinanderfolgende Think-/Tool-Karten teilen EINEN Rahmen —
-	// joinTop laesst die eigene ┌─┐-Zeile weg, joinAsDivider ersetzt die
-	// eigene └─┘-Zeile durch ├─ <dividerLabel> ─┤.
+	// aufeinanderfolgende Think-/Tool-Karten teilen EINEN Rail-Lauf —
+	// joinTop laesst die eigene Kopfzeile weg, die Karte endet mit leerer
+	// Rail-Zeile und die Folgekarte setzt die Rails direkt fort.
 	joinTop       bool
 	joinAsDivider bool
 	dividerLabel  string
-	// dividerSel: die Folgekarte (deren Caption in der Trennlinie lebt)
-	// ist ausgewaehlt — das Label leuchtet neon wie eine Kopfzeile.
-	dividerSel bool
 	th         *render.Theme
 	// Hover ist ZIELGENAU, nicht blockweit: nur die Kopfzeile highlightet
 	// — die Falt-Marke (▸/▾) lebt im Kopf, der Footer ist eine reine
@@ -1011,16 +1006,16 @@ func (b ThinkBlock) View(width int) string {
 		width = 16
 	}
 	inner := codeInnerWidth(width)
-	// Die AKTUELLE Auswahl (Fokus ODER Markierung) highlightet NUR die
-	// Kopfzeile in Neon — der Kasten bleibt in der ruhigen Karten-Farbe
-	// (User-Feedback: "statt alles auszuwaehlen einfach nur die
-	// Ueberschrift highlighten" — die Vollflaeche liest sich als Alarm).
-	// Die VERGANGENE Auswahl (stale, FR-43) traegt weiter nur den Rahmen
-	// in der Sekundaer-Farbe. Normalzustand: Rahmen in der Pink-Purple-
-	// Karten-Farbe (CardBorderStyle).
+	// Karten sind jetzt SCHIENEN (User-Feedback): Eine linke Border-Spalte
+	// "│", rechts freie Zelle — KEINE horizontalen Rahmenzeichen mehr
+	// (┌─┐/├─┤/└─┘ sind weg). Die Horizontale schnitt dem Cursor-Modus
+	// die Markierung ab und frass Auswahl-Zellen (User-Report: "es sollte
+	// keine Zeile visuell markiert sein, die horizontale Rahmenzeichen
+	// entfernt"). Ruhe: Rails grau wie der Text; Auswahl: Neon-Rails.
 	sel := b.focused || b.marked
 	bs := cardBorderStyleFor(b.th, false, b.stale)
 	ls := b.th.LabelStyle()
+	rail := "│"
 
 	label := b.label()
 	labelW := runewidth.StringWidth(label)
@@ -1029,10 +1024,10 @@ func (b ThinkBlock) View(width int) string {
 		dashes = 0
 	}
 	lines := make([]string, 0, b.Height(width))
-	// Stack-Joining: nicht-erste Karte einer Stacks hat keine ┌─┐-Zeile —
-	// der Vorgänger schließt mit ├─ <dieses Label> ─┤ ab. Height/Offset
-	// rechnen das über BlockList.heightAt mit (eine Zeile weniger).
-	if !b.joinTop {
+	// JEDE Karte traegt ihre Kopfzeile (Schienen-Design: die Kopfzeile ist
+	// der Karten-Trenner — joinTop unterdrueckt nichts mehr, sonst waere
+	// Fold-Marke/Zustand/neon-Auswahl der Folgekarte unsichtbar).
+	{
 		// The caption is a fold hit target (HitAction y==0) — die gleiche
 		// Hover-Behandlung wie die Footer-Aktion, aber nur wenn SIE getroffen
 		// ist (hoverHead), nie gleichzeitig mit dem Footer.
@@ -1042,38 +1037,28 @@ func (b ThinkBlock) View(width int) string {
 			// unterstreicht weiter, auch im ausgewaehlten Zustand.
 			headSt = hotkeyStyle(b.th, b.hoverHead)
 		}
-		lines = append(lines, bs.Render("┌─ ")+headSt.Render(label)+
-			bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
+		lines = append(lines, bs.Render(rail+" ")+headSt.Render(label)+
+			bs.Render(strings.Repeat(" ", max(dashes, 1))))
 	}
 
 	// Collapsed shows the END of the thinking — the conclusion lives there
 	// (visibleRows wraps only that tail, so streaming stays cheap). Der
 	// Innenraum wird als EINE Zelle durch den Zeilenstil gerendert — die
-	// Fuellung (Theme-bg im Ruhe-Zustand, Akzentfarbe bei Auswahl) geht
-	// lueckenlos von Rahmenzeichen zu Rahmenzeichen.
+	// Rails laufen lueckenlos von Zeile zu Zeile.
 	rows := b.visibleRows(inner)
 	for _, ln := range rows {
 		gap := inner - runewidth.StringWidth(ln)
 		if gap < 0 {
 			gap = 0
 		}
-		lines = append(lines, bs.Render("│")+ls.Render(" "+ln+strings.Repeat(" ", gap+1))+bs.Render("│"))
+		lines = append(lines, bs.Render(rail)+ls.Render(" "+ln+strings.Repeat(" ", gap+1)))
 	}
 
-	// Der Boden ist reine Rahmenlinie: im Stack die Trennlinie zur naechsten
-	// Karte (├─ <Label> ─┤), sonst der Schluss └┘. Ein zugeklappter Inhalt
-	// zeigt sich allein an der Falt-Marke im Kopf (▸) — es gibt keine
-	// "+ show more"-Zeile mehr, die den Kasten mitten im Stack vorzeitig
-	// geschlossen haette (User-Report: "nur die ersten 2 verbinden").
-	if b.joinAsDivider {
-		dls := bs
-		if b.dividerSel {
-			// Ausgewaehlte Folgekarte: ihr Label in der Trennlinie neon.
-			dls = hotkeyStyle(b.th, false)
-		}
-		lines = append(lines, stackDivider(bs, dls, b.dividerLabel, width))
-	} else {
-		lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
+	// Kein Boden-Rahmen: im Stack folgt die Kopfzeile der naechsten Karte
+	// (die ist der Trenner — heightAt spart VOR ihr die Leerzeile), sonst
+	// eine reine Leerzeile in der Rail-Farbe (unsichtbarer Abschluss).
+	if !b.joinAsDivider {
+		lines = append(lines, bs.Render(rail))
 	}
 	return strings.Join(lines, "\n")
 }
