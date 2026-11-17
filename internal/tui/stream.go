@@ -249,6 +249,26 @@ func (l BlockList) upsertStreamWidgets(widgets []Widget) BlockList {
 // below the streaming range to never collide with it.
 const ThinkBlockID = 999900
 
+// finishThinkBlock closes the live thinking section: the transient block
+// gets a STABLE block number. Thinking that resumes afterwards opens a NEW
+// block at the end of the chain — below the tool card that interrupted it —
+// instead of growing the old block above that card (User-Report: "der Think-
+// Block expandiert, obwohl Tool-Calls den Denkprozess unterbrechen").
+func (l BlockList) finishThinkBlock() BlockList {
+	for i, it := range l.items {
+		if it.ID() != ThinkBlockID {
+			continue
+		}
+		if _, ok := it.(ThinkBlock); !ok {
+			continue
+		}
+		l.nextID++
+		l.items[i] = it.SetID(l.nextID)
+		return l
+	}
+	return l
+}
+
 // upsertThinkBlock creates or refreshes the collapsible thinking block and
 // keeps the pager pinned while follow is active (FR-30). The fold state
 // survives the refresh so streaming does not collapse an unfolded block.

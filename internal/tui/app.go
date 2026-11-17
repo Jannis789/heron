@@ -841,10 +841,29 @@ func (m *Model) startTurn() {
 	m.toolStatus = ""
 	m.spinner = 0
 	m.turnTools = nil // FR-31: der Zaehler gehoert zum EINEN Turn
-	// A fresh turn starts without the previous thinking block (FR-30) and
+	// A fresh turn starts without the previous thinking blocks (FR-30) and
 	// without stale streaming preview blocks.
-	m.chat = m.chat.removeBlock(ThinkBlockID)
+	m.dropThinkBlocks()
 	m.chat = m.chat.removeStreamBlocks()
+}
+
+// dropThinkBlocks removes every thinking block (the live one and the
+// sections closed by a tool call during the previous turn) and repairs the
+// inline print cursor: it counts blocks, not lines, so entries removed
+// BEFORE it must shrink it — otherwise flushPrinted would skip the first
+// blocks of the new turn.
+func (m *Model) dropThinkBlocks() {
+	kept := m.chat.items[:0]
+	for i, it := range m.chat.items {
+		if _, ok := it.(ThinkBlock); ok {
+			if i < m.printedUpTo {
+				m.printedUpTo--
+			}
+			continue
+		}
+		kept = append(kept, it)
+	}
+	m.chat.items = kept
 }
 
 // endTurn clears the live state once the turn settles.
@@ -1259,6 +1278,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.toolStatus = msg.name
 		}
+		// FR-30: Ein NEUER Tool-Call UNTERBRICHT den Denkprozess. Die
+		// laufende Denk-Sektion wird geschlossen (stabile Blocknummer);
+		// Thinking, das danach kommt, oeffnet eine NEUE Karte HINTER der
+		// Tool-Karte. Vorher wuchs der alte Block oberhalb der Tool-Aufrufe
+		// weiter — "der Think-Block expandiert, obwohl Tool-Calls den
+		// Denkprozess unterbrechen" (User-Report).
+		if m.thinking != "" && !m.turnTools[msg.callID] {
+			m.chat = m.chat.finishThinkBlock()
+			m.thinking = ""
+		}
 		// FR-31: distinct callIDs zaehlen — Updates derselben Karte
 		// (gleiche callID) erhoehen den Turn-Zaehler nicht.
 		if m.turnTools == nil {
@@ -1497,7 +1526,10 @@ func (m *Model) flushPrinted() tea.Cmd {
 		if id <= StreamBlockID && id > StreamBlockID-streamIDRange {
 			break
 		}
-		if _, ok := it.(ThinkBlock); ok && m.running {
+		// Nur die LAUFENDE Denk-Sektion darf nicht gedruckt werden; von
+		// einem Tool-Call geschlossene Sektionen sind fertig (eine stabile
+		// ID) und wuerden den Flush sonst fuer den Rest des Turns blockieren.
+		if _, ok := it.(ThinkBlock); ok && it.ID() == ThinkBlockID && m.running {
 			break
 		}
 		for _, line := range strings.Split(it.View(m.width), "\n") {
