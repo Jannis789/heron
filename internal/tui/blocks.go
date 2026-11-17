@@ -68,6 +68,34 @@ func textColorFor(th *render.Theme) string {
 	return th.Text.Color
 }
 
+// wrapCache haelt den Umbruch EINES Prosa-Blocks fuer seine Breite fest:
+// Height()/View()/CharLines() fragen denselben Umbruch mehrfach pro Frame
+// ab (Scroll-Clamp, View, Fokus-Reveal). Ohne Cache kostet jeder Frame
+// O(Textlaenge) pro Block — bei langen Chats der Grund, warum Scrollen und
+// tab traege wurden. Bloecke sind Werte (Fokus/Markierung werden kopiert);
+// der Zeiger teilt den Cache zwischen den Kopien.
+//
+// Kein Mutex: Widgets werden ausschliesslich auf der UI-Goroutine benutzt
+// (Update/View des Elm-Modells); Zulieferer aus anderen Goroutinen gehen
+// ueber tea.Program.Send. Ein Lock pro Height() waere bei jeder
+// Layout-Wanderung durch die ganze Historie spuerbar (gemessen).
+type wrapCache struct {
+	width int
+	lines []string
+}
+
+func (c *wrapCache) get(text string, w int) []string {
+	if w <= 0 {
+		w = 80
+	}
+	if c.lines != nil && c.width == w {
+		return c.lines
+	}
+	c.lines = textWrapped(text, w)
+	c.width = w
+	return c.lines
+}
+
 // textWrapped wraps prose to w display cells at word boundaries, preserving
 // line structure. Hard-wrapping would split words mid-syllable.
 func textWrapped(s string, w int) []string {
@@ -169,8 +197,10 @@ func styledAction(th *render.Theme, label, key string, hover bool) string {
 
 // TextBlock is a plain, non-interactive chat message.
 type TextBlock struct {
-	id     int
-	text   string
+	id   int
+	text string
+	// cache memoizes the wrap for this text/width (shared between copies).
+	cache  *wrapCache
 	style  lipgloss.Style
 	marked bool
 	// stale markiert den Block als Teil der VERGANGENEN Auswahl (FR-43):
@@ -210,7 +240,7 @@ func NewTextBlock(text, color string) TextBlock {
 	// Cursor erreicht damit auch "Codeblock gefolgt von Text ohne
 	// Ueberschrift" als eigenen Anlaufpunkt (Neonrahmen, y, alt+<n>),
 	// statt ihn zu ueberspringen.
-	return TextBlock{id: -1, text: text, style: s, focusable: true}
+	return TextBlock{id: -1, text: text, style: s, focusable: true, cache: &wrapCache{}}
 }
 
 // NewUserBlock rendert die eigene Eingabe mit DICKER Links-Schiene plus
@@ -231,6 +261,7 @@ func NewUserBlock(text string) TextBlock {
 		id:    -1,
 		user:  true,
 		text:  text,
+		cache: &wrapCache{},
 		frame: lipgloss.NewStyle().Foreground(lipgloss.Color(ec)),
 		// Eine Leerzeile davor und danach: Die Frage soll von Seed oben und
 		// Antwort unten atmen — Gaps gehoeren zur Height (Scroll/Hit-Test
@@ -265,12 +296,20 @@ func (b TextBlock) wrapWidth(width int) int {
 	return width
 }
 
+// wrapped liefert den Prosa-Umbruch (gecacht je Breite).
+func (b TextBlock) wrapped(w int) []string {
+	if b.cache == nil {
+		return textWrapped(b.text, w)
+	}
+	return b.cache.get(b.text, w)
+}
+
 func (b TextBlock) Height(width int) int {
 	w := b.wrapWidth(width)
 	if b.user {
 		w = userWrapWidth(width) // Schiene + Pfeil kosten 4 Zellen extra
 	}
-	return b.beforeGap + len(textWrapped(b.text, w)) + b.afterGap
+	return b.beforeGap + len(b.wrapped(w)) + b.afterGap
 }
 func (b TextBlock) View(width int) string {
 	if b.user {
@@ -281,7 +320,7 @@ func (b TextBlock) View(width int) string {
 	if wrapW == width {
 		pad = "" // too narrow for a gutter
 	}
-	lines := textWrapped(b.text, wrapW)
+	lines := b.wrapped(wrapW)
 	st := b.style
 	if b.focused {
 		// Fokussierte Ueberschrift: Unterstrich — das Anker-Signal der
@@ -323,7 +362,7 @@ func (b TextBlock) userView(width int) string {
 	if wrapW == width {
 		rail, first, cont = "", "", "" // zu schmal: Schmuck entfaellt
 	}
-	lines := textWrapped(b.text, wrapW)
+	lines := b.wrapped(wrapW)
 	st := b.style
 	if b.marked {
 		// Auswahl invertiert den Text; Schiene und Pfeil bleiben Akzent-
@@ -373,7 +412,7 @@ func (b TextBlock) CharLines(width int) []string {
 	if b.user {
 		return nil
 	}
-	return textWrapped(b.text, b.wrapWidth(width))
+	return b.wrapped(b.wrapWidth(width))
 }
 
 // CharPad: gerenderte Zeilen vor der ersten Inhalt-Zeile (Leerzeilen der
@@ -764,47 +803,16 @@ func (b TableBlock) SetID(i int) Widget {
 	return nb
 }
 
-// ---- ThinkBlock ------------------------------------------------------------
+// ---- Body-Wrapping (gemeinsam fuer die Rahmen-Karten) ----------------------
 
-// thinkCollapsed caps the visible body lines of a collapsed ThinkBlock (FR-30).
-const thinkCollapsed = 3
-
-// ThinkBlock shows the model's thinking as a collapsible chat block: long
-// thinking is truncated to a few lines until unfolded (FR-30).
-type ThinkBlock struct {
-	id       int
-	text     string
-	expanded bool
-	focused  bool
-	marked   bool
-	// stale: Block ist Teil der VERGANGENEN Auswahl (FR-43) — Rahmen in
-	// der verblichenen Sekundaer-Farbe, ohne das "✓" der Markierung.
-	stale    bool
-	th       *render.Theme
-	// Hover ist ZIELGENAU, nicht blockweit: Kopfzeile und Footer-Aktion
-	// sind getrennte Klickziele — nur die tatsaechlich getroffene Zelle
-	// highlightet (frueher leuchteten beide gleichzeitig).
-	hoverHead bool
-	hoverFoot bool
-}
-
-func NewThinkBlock(text string, th *render.Theme) ThinkBlock {
-	return ThinkBlock{id: -1, text: text, th: th}
-}
-
-func (b ThinkBlock) bodyLines() []string {
-	return strings.Split(strings.TrimRight(b.text, "\n"), "\n")
-}
-
-// wrappedBody wraps the thinking to the inner width. The model streams
-// thoughts as one long line — truncating per row would hide everything but
-// the start, so lines break at word boundaries instead (FR-30).
-func (b ThinkBlock) wrappedBody(inner int) []string {
+// wrapSourceLines bricht rohe Quellzeilen an Wortgrenzen um (leere Zeilen
+// bleiben leer) — der gemeinsame Body-Formatierer von Think-/Tool-Karten.
+func wrapSourceLines(src []string, inner int) []string {
 	if inner <= 0 {
-		return b.bodyLines()
+		return src
 	}
 	var out []string
-	for _, ln := range b.bodyLines() {
+	for _, ln := range src {
 		if ln == "" {
 			out = append(out, "")
 			continue
@@ -814,13 +822,122 @@ func (b ThinkBlock) wrappedBody(inner int) []string {
 	return out
 }
 
+// wrapSourceTail bricht nur so viele Quellzeilen vom ENDE um, wie fuer n
+// Zeilen gebraucht werden. Zugeklappte Karten zeigen ohnehin nur den
+// Schluss (FR-30) — ein 20k-Zeilen-Tool-Output darf dafuer nicht in jedem
+// Frame komplett neu gewrappt werden.
+func wrapSourceTail(src []string, inner, n int) []string {
+	if n <= 0 || len(src) == 0 {
+		return nil
+	}
+	if inner <= 0 {
+		if len(src) <= n {
+			return src
+		}
+		return src[len(src)-n:]
+	}
+	var rows []string
+	for i := len(src) - 1; i >= 0 && len(rows) < n; i-- {
+		ln := src[i]
+		var w []string
+		if ln == "" {
+			w = []string{""}
+		} else {
+			w = render.WrapWords(ln, inner)
+		}
+		rows = append(w, rows...)
+	}
+	if len(rows) > n {
+		rows = rows[len(rows)-n:]
+	}
+	return rows
+}
+
+// sourceExceeds meldet, ob src mehr als n Zeilen belegt — OHNE den ganzen
+// Text zu wrappen: jede Quellzeile ist mindestens eine Zeile, also beweist
+// schon die Zeilenzahl alles ueber n. Damit bleibt Height() einer grossen,
+// zugeklappten Karte O(1) statt O(Text).
+func sourceExceeds(src []string, inner, n int) bool {
+	if len(src) > n {
+		return true
+	}
+	return len(wrapSourceLines(src, inner)) > n
+}
+
+// ---- ThinkBlock ------------------------------------------------------------
+
+// thinkCollapsed caps the visible body lines of a collapsed ThinkBlock (FR-30).
+const thinkCollapsed = 3
+
+// ThinkBlock shows the model's thinking as a collapsible chat block: long
+// thinking is truncated to a few lines until unfolded (FR-30).
+type ThinkBlock struct {
+	id   int
+	text string
+	// body caches the split source lines: Height()/View() fragen die Zeilen
+	// mehrfach pro Frame ab — ein 2000-Zeilen-Denktext wurde sonst pro
+	// Aufruf neu gesplittet.
+	body     []string
+	expanded bool
+	focused  bool
+	marked   bool
+	// stale: Block ist Teil der VERGANGENEN Auswahl (FR-43) — Rahmen in
+	// der verblichenen Sekundaer-Farbe, ohne das "✓" der Markierung.
+	stale bool
+	th    *render.Theme
+	// Hover ist ZIELGENAU, nicht blockweit: Kopfzeile und Footer-Aktion
+	// sind getrennte Klickziele — nur die tatsaechlich getroffene Zelle
+	// highlightet (frueher leuchteten beide gleichzeitig).
+	hoverHead bool
+	hoverFoot bool
+}
+
+func NewThinkBlock(text string, th *render.Theme) ThinkBlock {
+	return ThinkBlock{id: -1, text: text, th: th, body: splitBody(text)}
+}
+
+// splitBody teilt einen Roh-Text in Zeilen (einmal je Widget-Aufbau).
+func splitBody(s string) []string {
+	return strings.Split(strings.TrimRight(s, "\n"), "\n")
+}
+
+func (b ThinkBlock) bodyLines() []string {
+	if b.body != nil {
+		return b.body
+	}
+	return splitBody(b.text)
+}
+
+// wrappedBody wraps the thinking to the inner width. The model streams
+// thoughts as one long line — truncating per row would hide everything but
+// the start, so lines break at word boundaries instead (FR-30).
+func (b ThinkBlock) wrappedBody(inner int) []string {
+	return wrapSourceLines(b.bodyLines(), inner)
+}
+
+// hidden reports whether the fold hides anything — the same predicate the
+// rendered rows use, so the "+ show more" action never promises content
+// that is already visible.
+func (b ThinkBlock) hidden(inner int) bool {
+	return sourceExceeds(b.bodyLines(), inner, thinkCollapsed)
+}
+
+// visibleRows are the rows this fold state actually shows: everything when
+// expanded, otherwise the LAST thinkCollapsed rows. While collapsed only the
+// tail is wrapped — a long thinking stream stays cheap to lay out.
+func (b ThinkBlock) visibleRows(inner int) []string {
+	if b.expanded || !b.hidden(inner) {
+		return b.wrappedBody(inner)
+	}
+	return wrapSourceTail(b.bodyLines(), inner, thinkCollapsed)
+}
+
 // bodyRows is the rendered body row count for the current fold state: all
-// wrapped rows when expanded, otherwise the LAST thinkCollapsed rows (the
-// conclusion of the thinking).
+// wrapped rows when expanded, otherwise thinkCollapsed.
 func (b ThinkBlock) bodyRows(width int) int {
-	rows := b.wrappedBody(codeInnerWidth(width))
-	if b.expanded || len(rows) <= thinkCollapsed {
-		return len(rows)
+	inner := codeInnerWidth(width)
+	if b.expanded || !b.hidden(inner) {
+		return len(b.wrappedBody(inner))
 	}
 	return thinkCollapsed
 }
@@ -894,13 +1011,10 @@ func (b ThinkBlock) View(width int) string {
 	lines = append(lines, bs.Render("┌─ ")+actionStyle(b.th, b.hoverHead).Render(label)+
 		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
 
-	rows := b.wrappedBody(inner)
-	// Collapsed shows the END of the thinking — the conclusion lives there.
-	start := 0
-	if !b.expanded && len(rows) > thinkCollapsed {
-		start = len(rows) - thinkCollapsed
-	}
-	for _, ln := range rows[start:] {
+	// Collapsed shows the END of the thinking — the conclusion lives there
+	// (visibleRows wraps only that tail, so streaming stays cheap).
+	rows := b.visibleRows(inner)
+	for _, ln := range rows {
 		txt := ls.Render(ln)
 		gap := inner - lipgloss.Width(txt)
 		if gap < 0 {
@@ -911,7 +1025,7 @@ func (b ThinkBlock) View(width int) string {
 
 	// The fold action sits centered, GitHub-style, and only when content is
 	// actually hidden — a short block gets a plain closing border (FR-30).
-	if len(rows) > thinkCollapsed {
+	if b.hidden(inner) {
 		// Der ThinkBlock ist selbst eine Auf-/Zuklapp-Widget — seine Fold-
 		// Aktion bleibt immer sichtbar (kein Progressive Disclosure), sonst
 		// gaebe es nach dem Aufklappen per Klick keinen sichtbaren Weg
@@ -999,8 +1113,7 @@ func (b ThinkBlock) Resize(width int) Widget {
 	return b
 }
 func (b ThinkBlock) HitAction(width, x, y int) bool {
-	rows := b.wrappedBody(codeInnerWidth(width))
-	if len(rows) <= thinkCollapsed {
+	if !b.hidden(codeInnerWidth(width)) {
 		// Nothing hidden — no fold affordance anywhere, not even the header.
 		return false
 	}

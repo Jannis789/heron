@@ -383,14 +383,28 @@ type rangedWidget interface {
 	ViewRange(width, from, to int) string
 }
 
-// all stacks every widget into a full-height line list (with blank padding).
+// all stacks the WHOLE document into one line list (with blank padding) —
+// der Diagnose-/Test-Pfad: Tests lesen den gesamten Chat unabhaengig vom
+// Scrollpunkt. View() nutzt stack(true) und rendert nur das Fenster.
+func (l BlockList) all() (lines []string, total int) {
+	lines, _, total = l.stack(false)
+	return lines, total
+}
+
+// stack stacks the widgets into a line list and reports the absolute line
+// index of lines[0] (top). windowed=true renders only the widgets that
+// intersect the viewport; heights are still accumulated for ALL widgets so
+// offsets and the clipping stay exact.
 // Bildbloecke liefern nur ihre sichtbaren Zeilen: Der Transmit-Escape landet
 // auf der ersten sichtbaren Zeile, damit hohe Bilder das Terminal auch dann
 // erreichen, wenn ihr Blockanfang ausserhalb des Fensters liegt (FR-27).
-func (l BlockList) all() (lines []string, total int) {
+func (l BlockList) stack(windowed bool) (lines []string, top, total int) {
 	w := l.Width()
+	if windowed && (l.height <= 0 || l.inline) {
+		windowed = false
+	}
 	winL, winR := 0, 0 // sichtbares Fenster im Zeilenraum, nur wenn Hoehe bekannt
-	if l.height > 0 && !l.inline {
+	if windowed {
 		winL = l.offset
 		if winL < 0 {
 			winL = 0
@@ -398,9 +412,10 @@ func (l BlockList) all() (lines []string, total int) {
 		winR = winL + l.height
 	}
 	start := 0
+	top = -1 // absolute Zeile von lines[0]; -1 = noch nichts gerendert
 	selLo, selHi := -1, -1
 	charBa, charBb := -1, -1 // Zeichen-Auswahl: Blockgrenzen (FR-42)
-	cursorLine := -1          // absolute Zeilennummer der ersten Cursor-Zeile
+	cursorLine := -1         // absolute Zeilennummer der ersten Cursor-Zeile
 	if l.selActive() {
 		selLo, selHi = l.selBounds()
 	}
@@ -448,6 +463,17 @@ func (l BlockList) all() (lines []string, total int) {
 				cursorLine = start + h - 1
 			}
 		}
+		// Nur Bloecke rendern, die das Fenster beruehren. Vorher lief
+		// View() fuer JEDEN Block der Historie und View() schnitt danach
+		// zu — ein langer Chat kostete damit pro Frame O(Historie)
+		// (User-Report: "laggy bei grossem Chat-Verlauf"). Die Hoehen
+		// werden weiter berechnet (Offset/Clip brauchen sie), der teure
+		// Render-Aufruf entfaellt fuer alles ausserhalb des Fensters.
+		if windowed && (start >= winR || start+h <= winL) {
+			total += h
+			start += h
+			continue
+		}
 		blk := make([]string, h)
 		if rw, ok := it.(rangedWidget); ok && h > 0 && winR > winL {
 			from := winL - start
@@ -476,19 +502,25 @@ func (l BlockList) all() (lines []string, total int) {
 		if l.charSelVisible() {
 			blk = l.charDecorate(i, blk, w)
 		}
+		if top < 0 {
+			top = start
+		}
 		lines = append(lines, blk...)
 		total += h
 		start += h
+	}
+	if top < 0 {
+		top = 0
 	}
 	// Underscore-Cursor: nicht-leere Zeile der Cursor-KANTE unterstreichen
 	// (die Blockrandzeilen koennen Gap-Leerzeilen sein). Bei shift+down
 	// (Richtung +1) die ERSTE nicht-leere Zeile des Cursor-Blocks (Anfang
 	// der Einheit), bei shift+up (Richtung -1) die LETZTE (Ende der Einheit)
 	// — der Selection-Cursor zeigt die Kante, von der die Auswahl waechst.
-	if cursorLine >= 0 && cursorLine < len(lines) {
+	if rel := cursorLine - top; cursorLine >= 0 && rel >= 0 && rel < len(lines) {
 		blkH := max(l.items[l.selCur].Height(w), 1)
-		lo := max(cursorLine-blkH+1, 0)
-		hi := min(cursorLine+blkH-1, len(lines)-1)
+		lo := max(rel-blkH+1, 0)
+		hi := min(rel+blkH-1, len(lines)-1)
 		target := -1
 		if l.selDir < 0 {
 			for i := hi; i >= lo; i-- {
@@ -509,11 +541,11 @@ func (l BlockList) all() (lines []string, total int) {
 			lines[target] = undercursor(lines[target])
 		}
 	}
-	return lines, total
+	return lines, top, total
 }
 
 func (l BlockList) View() string {
-	lines, total := l.all()
+	lines, top, total := l.stack(l.height > 0 && !l.inline)
 	if total == 0 {
 		return ""
 	}
@@ -521,18 +553,20 @@ func (l BlockList) View() string {
 		// timg-Modell: alles rendern, der Terminal-Scrollback scrollt.
 		return strings.Join(lines, "\n")
 	}
-	left := l.offset
-	if left < 0 {
-		left = 0
+	left := max(l.offset, 0)
+	right := min(left+l.height, total)
+	if right < left {
+		right = left
 	}
-	right := left + l.height
-	if right > total {
-		right = total
+	// lines beginnt bei der absoluten Zeile top (im Fenster-Modus sind das
+	// nur die sichtbaren Bloecke) — der Ausschnitt schneidet daher relativ
+	// zu top, nicht absolut.
+	from := min(max(left-top, 0), len(lines))
+	to := min(max(right-top, 0), len(lines))
+	if from > to {
+		from = to
 	}
-	if left > right {
-		left = right
-	}
-	return strings.Join(lines[left:right], "\n")
+	return strings.Join(lines[from:to], "\n")
 }
 
 // Update routes a message to the pager and returns the next state plus an
@@ -895,8 +929,11 @@ func (l BlockList) markedMarkdown() string {
 // clearMarks unmarks every block (FR-29).
 func (l BlockList) clearMarks() BlockList {
 	l.marks = map[int]bool{}
+	// LAZY (wie clearFocus): nur markierte Bloecke neu kopieren.
 	for i, it := range l.items {
-		l.items[i] = it.SetMarked(false)
+		if it.Marked() {
+			l.items[i] = it.SetMarked(false)
+		}
 	}
 	return l
 }
@@ -1475,8 +1512,14 @@ func (l BlockList) setFocus(idx int) BlockList {
 			l = l.demoteSelRange()
 		}
 	}
+	// LAZY: nur Bloecke anfassen, deren Fokus-Zustand sich wirklich
+	// aendert. Vorher bekam jeder Block der Historie eine neue Kopie —
+	// bei 1000 Bloecken 1000 Allocations pro Pfeiltaste/tab (User-Report:
+	// "tab laggy"). Der Vergleich heilt zugleich inkonsistente Zustaende.
 	for i, it := range l.items {
-		l.items[i] = it.SetFocused(i == idx)
+		if want := i == idx; it.Focused() != want {
+			l.items[i] = it.SetFocused(want)
+		}
 	}
 	l.focus = idx
 	return l.reveal(idx)
@@ -1484,18 +1527,27 @@ func (l BlockList) setFocus(idx int) BlockList {
 
 func (l BlockList) clearFocus() BlockList {
 	for i, it := range l.items {
-		l.items[i] = it.SetFocused(false)
+		if it.Focused() {
+			l.items[i] = it.SetFocused(false)
+		}
 	}
 	l.focus = -1
 	return l
 }
 
-// reveal scrolls so the focused widget is visible.
+// reveal scrolls so the focused widget is visible. The walk collects the
+// total height in the SAME pass — clamp() would otherwise walk the whole
+// chain a second time on every focus step (a tab/arrow in a long chat cost
+// two full layouts).
 func (l BlockList) reveal(idx int) BlockList {
 	w := l.Width()
-	y := 0
-	for i := 0; i < idx; i++ {
-		y += l.items[i].Height(w)
+	y, total := 0, 0
+	for i := 0; i < len(l.items); i++ {
+		h := l.items[i].Height(w)
+		if i < idx {
+			y += h
+		}
+		total += h
 	}
 	h := l.items[idx].Height(w)
 	if y < l.offset {
@@ -1504,7 +1556,14 @@ func (l BlockList) reveal(idx int) BlockList {
 	}
 	if l.height > 0 && y+h > l.offset+l.height {
 		l.offset = y + h - l.height
-		l.follow = l.offset >= l.totalLines()-l.height
+		l.follow = l.offset >= total-l.height
 	}
-	return l.clamp()
+	// clamp() mit dem bereits bekannten total — ohne zweite Wanderung.
+	if l.height > 0 && l.offset > total-l.height {
+		l.offset = total - l.height
+	}
+	if l.offset < 0 {
+		l.offset = 0
+	}
+	return l
 }

@@ -68,7 +68,7 @@ func BenchmarkBlockListAllOnce(b *testing.B) {
 	l := buildRenderTestList(b)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		l.all()
+		_, _ = l.all()
 	}
 }
 

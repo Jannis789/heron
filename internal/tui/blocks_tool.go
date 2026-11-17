@@ -34,13 +34,17 @@ type ToolBlock struct {
 	// goose-Frames liefern Struktur: command (rawInput) als $-Zeile,
 	// stdout/stderr/exit (rawOutput) und live als akkumulierter Live-Output
 	// waehrend des Laufs. bodyLines setzt das zusammen.
-	content  string
-	command  string
-	stdout   string
-	stderr   string
-	exit     int
-	hasOut   bool
-	live     string
+	content string
+	command string
+	stdout  string
+	stderr  string
+	exit    int
+	hasOut  bool
+	live    string
+	// body caches the assembled body lines: Height()/View()/stateLabel()
+	// fragen sie mehrfach pro Frame ab — ein 20k-Zeilen-Output wurde sonst
+	// pro Aufruf neu gesplittet.
+	body     []string
 	running  bool
 	failed   bool
 	expanded bool
@@ -80,10 +84,12 @@ type ToolData struct {
 // NewToolBlock baut die Karte; Append vergibt die stabile Blocknummer.
 // kind ist die ACP-Tool-Kategorie (Icon), failed der Fehler-Zustand (✗).
 func NewToolBlock(d ToolData, th *render.Theme, copyFn CopyFunc) ToolBlock {
-	return ToolBlock{id: -1, callID: d.CallID, title: d.Title, kind: d.Kind,
+	b := ToolBlock{id: -1, callID: d.CallID, title: d.Title, kind: d.Kind,
 		content: d.Text, command: d.Command, stdout: d.Stdout, stderr: d.Stderr,
 		exit: d.Exit, hasOut: d.HasOutput, live: d.Live,
 		running: d.Running, failed: d.Failed, th: th, copyFn: copyFn}
+	b.body = assembleToolBody(b)
+	return b
 }
 
 // kindGlyph waehlt das Kopf-Icon nach ACP-Tool-Kategorie: $ execute (Shell),
@@ -111,6 +117,14 @@ func kindGlyph(kind string) string {
 // generische Text (Legacy/Demo). Waehrend des Laufs zeigt live den bisher
 // gestreamten Output.
 func (b ToolBlock) bodyLines() []string {
+	if b.body != nil {
+		return b.body
+	}
+	return assembleToolBody(b)
+}
+
+// assembleToolBody baut die Body-Zeilen der Karte (einmal je Aufbau).
+func assembleToolBody(b ToolBlock) []string {
 	var out []string
 	if b.command != "" {
 		out = append(out, "$ "+b.command)
@@ -150,31 +164,33 @@ func bodyText(s string) []string {
 
 // wrappedBody wrappt den Inhalt an der Innenbreite (Wortgrenzen, FR-30-Geist).
 func (b ToolBlock) wrappedBody(inner int) []string {
-	if inner <= 0 {
-		return b.bodyLines()
-	}
-	var out []string
-	for _, ln := range b.bodyLines() {
-		if ln == "" {
-			out = append(out, "")
-			continue
-		}
-		out = append(out, render.WrapWords(ln, inner)...)
-	}
-	return out
+	return wrapSourceLines(b.bodyLines(), inner)
 }
 
 // visibleRows: alle Zeilen aufgeklappt, sonst die LETZTEN toolCollapsed
 // (das Resultat des Calls lebt am Ende) — die $-Kommandozeile bleibt
 // gepinnt sichtbar, sie identifiziert den Call.
+//
+// Zugeklappt wird nur der SCHLUSS gewrappt: ein langer Output (ls -R,
+// Build-Log) wurde vorher in jedem Frame komplett umbrochen — der
+// groesste Einzelposten im Render-Pfad (User-Report: "laggy bei grossem
+// Chat-Verlauf").
 func (b ToolBlock) visibleRows(width int) []string {
-	rows := b.wrappedBody(codeInnerWidth(width))
-	if b.expanded || len(rows) <= toolCollapsed {
-		return rows
+	inner := codeInnerWidth(width)
+	src := b.bodyLines()
+	if b.expanded || !sourceExceeds(src, inner, toolCollapsed) {
+		return wrapSourceLines(src, inner)
 	}
-	tail := rows[len(rows)-toolCollapsed:]
-	if b.command != "" && strings.HasPrefix(rows[0], "$ ") {
-		return append([]string{rows[0]}, tail...)
+	body := src
+	cmdPinned := false
+	if b.command != "" && len(src) > 0 && strings.HasPrefix(src[0], "$ ") {
+		body, cmdPinned = src[1:], true
+	}
+	tail := wrapSourceTail(body, inner, toolCollapsed)
+	if cmdPinned {
+		if head := render.WrapWords("$ "+b.command, inner); len(head) > 0 {
+			return append([]string{head[0]}, tail...)
+		}
 	}
 	return tail
 }
@@ -195,7 +211,7 @@ func (b ToolBlock) stateLabel(width int) string {
 		state = "✗"
 	}
 	l := kindGlyph(b.kind) + " " + b.title + " " + state
-	if len(b.wrappedBody(codeInnerWidth(width))) > toolCollapsed {
+	if sourceExceeds(b.bodyLines(), codeInnerWidth(width), toolCollapsed) {
 		if b.expanded {
 			l += " ▾"
 		} else {
@@ -240,7 +256,9 @@ func (b ToolBlock) View(width int) string {
 	if dashes < 0 {
 		dashes = 0
 	}
-	rows := b.wrappedBody(inner)
+	// hidden entscheidet ueber die Fold-Aktion OHNE den ganzen Output zu
+	// wrappen (sourceExceeds: die Zeilenzahl beweist es bereits).
+	hidden := sourceExceeds(b.bodyLines(), inner, toolCollapsed)
 	lines := make([]string, 0, b.Height(width))
 	lines = append(lines, bs.Render("┌─ ")+actionStyle(b.th, b.hoverHead).Render(label)+
 		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
@@ -252,7 +270,7 @@ func (b ToolBlock) View(width int) string {
 		}
 		lines = append(lines, bs.Render("│")+" "+txt+strings.Repeat(" ", gap)+" "+bs.Render("│"))
 	}
-	if len(rows) > toolCollapsed {
+	if hidden {
 		action, styled := b.action()
 		lines = append(lines, render.CenteredActionLine(width, action, styled,
 			runewidth.StringWidth(action), bs))
@@ -334,7 +352,7 @@ func (b ToolBlock) Markdown() string {
 func (b ToolBlock) Resize(width int) Widget { return b }
 
 func (b ToolBlock) HitAction(width, x, y int) bool {
-	if len(b.wrappedBody(codeInnerWidth(width))) <= toolCollapsed {
+	if !sourceExceeds(b.bodyLines(), codeInnerWidth(width), toolCollapsed) {
 		return false // nichts versteckt — keine Klappe, auch nicht im Kopf
 	}
 	if y == 0 {
