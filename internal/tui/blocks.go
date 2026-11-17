@@ -147,10 +147,12 @@ func borderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
 }
 
 // cardBorderStyleFor ist der Rahmen der Think-/Tool-Karten: im Normal-
-// Zustand in der TEXT-Farbe der Karte (faint Frame-Farbe) statt weiß —
-// der Rahmen gehört zur Karte, nicht zur Konversation (User-Feedback:
-// "grenzt sich nicht genug an"). Fokus-/Markierungs- und Stale-Rahmen
-// bleiben unangetastet, damit die Auswahl weiterhin herausliest.
+// Zustand in der sanften Pink-Purple-Karten-Farbe (Theme.CardBorderStyle)
+// statt faint-Grau — die Karte gehoert zur Akzentwelt (User-Feedback:
+// "leicht pink purple wie bei der Ueberschrift", fuer ALLE Karten). Der
+// Rahmen bleibt nevertheless ruhig: Neon ist Auswahl/Hover vorbehalten.
+// Fokus-/Markierungs- und Stale-Rahmen bleiben unangetastet, damit die
+// Auswahl weiterhin herausliest.
 func cardBorderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
 	if sel {
 		return th.FocusBorderStyle()
@@ -158,7 +160,7 @@ func cardBorderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
 	if stale {
 		return th.StaleBorderStyle()
 	}
-	return th.LabelStyle()
+	return th.CardBorderStyle()
 }
 
 // stackDivider rendert die Trennlinie zwischen zwei gestapelten Karten:
@@ -166,13 +168,13 @@ func cardBorderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
 // Label traegt denselben Stil wie die Rahmenzeichen — die Zeile ist EINE
 // durchgehende Flaeche (bg-Fuellung auch unter dem Label, sonst laeuft
 // die Horizontale auf Nicht-Default-Terminals unschoen ueber).
-func stackDivider(bs lipgloss.Style, label string, width int) string {
+func stackDivider(bs, dls lipgloss.Style, label string, width int) string {
 	lw := runewidth.StringWidth(label)
 	dashes := width - 5 - lw
 	if dashes < 0 {
 		dashes = 0
 	}
-	return bs.Render("├─ ") + bs.Render(label) + bs.Render(" "+strings.Repeat("─", dashes)+"┤")
+	return bs.Render("├─ ") + dls.Render(label) + bs.Render(" "+strings.Repeat("─", dashes)+"┤")
 }
 
 func actionStyle(th *render.Theme, hover bool) lipgloss.Style {
@@ -920,7 +922,10 @@ type ThinkBlock struct {
 	joinTop       bool
 	joinAsDivider bool
 	dividerLabel  string
-	th            *render.Theme
+	// dividerSel: die Folgekarte (deren Caption in der Trennlinie lebt)
+	// ist ausgewaehlt — das Label leuchtet neon wie eine Kopfzeile.
+	dividerSel bool
+	th         *render.Theme
 	// Hover ist ZIELGENAU, nicht blockweit: nur die Kopfzeile highlightet
 	// — die Falt-Marke (▸/▾) lebt im Kopf, der Footer ist eine reine
 	// Rahmenlinie (kein "+ show more" mehr).
@@ -1006,20 +1011,16 @@ func (b ThinkBlock) View(width int) string {
 		width = 16
 	}
 	inner := codeInnerWidth(width)
-	// Die AKTUELLE Auswahl (Fokus ODER Markierung) faerbt die GESAMTE
-	// Kastenflaeche — bg + Rahmen in einer Farbe, symmetrisch von Rand zu
-	// Rand (User-Feedback: die nur umgefaerbten Rahmenzeichen liessen die
-	// Horizontal-Linien an den ungestylten Mittelsegmenten ueberlaufen).
+	// Die AKTUELLE Auswahl (Fokus ODER Markierung) highlightet NUR die
+	// Kopfzeile in Neon — der Kasten bleibt in der ruhigen Karten-Farbe
+	// (User-Feedback: "statt alles auszuwaehlen einfach nur die
+	// Ueberschrift highlighten" — die Vollflaeche liest sich als Alarm).
 	// Die VERGANGENE Auswahl (stale, FR-43) traegt weiter nur den Rahmen
-	// in der Sekundaer-Farbe. Normalzustand: Rahmen in der TEXT-Farbe der
-	// Karte (cardBorderStyle).
+	// in der Sekundaer-Farbe. Normalzustand: Rahmen in der Pink-Purple-
+	// Karten-Farbe (CardBorderStyle).
 	sel := b.focused || b.marked
 	bs := cardBorderStyleFor(b.th, false, b.stale)
 	ls := b.th.LabelStyle()
-	if sel {
-		bs = b.th.FocusFillStyle()
-		ls = bs
-	}
 
 	label := b.label()
 	labelW := runewidth.StringWidth(label)
@@ -1037,7 +1038,9 @@ func (b ThinkBlock) View(width int) string {
 		// ist (hoverHead), nie gleichzeitig mit dem Footer.
 		headSt := actionStyle(b.th, b.hoverHead)
 		if sel {
-			headSt = ls // auf der Fuellflaeche: Kontrast-Text statt Action-Farbe
+			// Auswahl: Neon im Kopf (wie der Hotkey-Buchstabe) — hover
+			// unterstreicht weiter, auch im ausgewaehlten Zustand.
+			headSt = hotkeyStyle(b.th, b.hoverHead)
 		}
 		lines = append(lines, bs.Render("┌─ ")+headSt.Render(label)+
 			bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
@@ -1063,7 +1066,12 @@ func (b ThinkBlock) View(width int) string {
 	// "+ show more"-Zeile mehr, die den Kasten mitten im Stack vorzeitig
 	// geschlossen haette (User-Report: "nur die ersten 2 verbinden").
 	if b.joinAsDivider {
-		lines = append(lines, stackDivider(bs, b.dividerLabel, width))
+		dls := bs
+		if b.dividerSel {
+			// Ausgewaehlte Folgekarte: ihr Label in der Trennlinie neon.
+			dls = hotkeyStyle(b.th, false)
+		}
+		lines = append(lines, stackDivider(bs, dls, b.dividerLabel, width))
 	} else {
 		lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
 	}
@@ -1161,6 +1169,31 @@ func (b ThinkBlock) SetID(i int) Widget {
 	nb := b
 	nb.id = i
 	return nb
+}
+
+// ---- Zeichen-Modus (FR-42): Buchstaben-Cursor im Thinking-Text -------------
+
+// CharLines liefert die SICHTBAREN Thinking-Zeilen (aufgeklappt alles, zu-
+// geklappt die letzten thinkCollapsed Zeilen) — exakt wie der Block sie
+// rendert. Damit ist der Denktext buchstabenweise adressierbar (User-
+// Report: "du kannst nicht bei einem aktiven thinking block in den cursor
+// mode wechseln" — ohne CharLines galt die Karte als unfaehig, der Cursor
+// spawnte woanders oder gar nicht).
+func (b ThinkBlock) CharLines(width int) []string {
+	return b.visibleRows(codeInnerWidth(width))
+}
+
+func (b ThinkBlock) CharPad(width int) int  { return 1 }
+func (b ThinkBlock) CharLeft(width int) int { return 2 }
+
+// ensureExpanded klappt eine zugeklappte Karte auf (Cursor adressiert den
+// VOLLSTAENDIGen Inhalt) — unverändert sonst.
+func (b ThinkBlock) ensureExpanded() ThinkBlock {
+	inner := codeInnerWidth(100)
+	if !b.expanded && b.hidden(inner) {
+		b.expanded = true
+	}
+	return b
 }
 
 // ---- build -----------------------------------------------------------------

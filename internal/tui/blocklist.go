@@ -73,32 +73,48 @@ type BlockList struct {
 	prevLo  int
 	prevHi  int
 	// Zeichen-Cursor (FR-42): shift+enter IST das Editor-Caret ueber dem
-	// Chat-Text (nur lesend) — Anker (charFromBlock/charFrom) und Caret
-	// (charBlock/charTo) sind Runen-Offsets in den dargestellten Texten
-	// der Zeichen-faehigen Bloecke. Pfeile bewegen das Caret (alle Rich-
-	// tungen, ueber Sektionsgrenzen hinweg), shift+Pfeile waehlen vom
-	// Anker her, esc kollabiert/verlaesst (Details: charsel.go).
-	charSel       bool
-	charFrom      int // Anker-Offset
-	charTo        int // Caret-Offset
-	charBlock     int // Caret-Block (auch Wiedereinstiegs-Merkmal)
-	charFromBlock int // Anker-Block
-	// charFromSel merkt die Herkunft des Zeichen-Cursors: wurde er durch
+	// Chat-Text (nur lesend) — Anker (fromBlock/from) und Caret (block/to)
+	// sind Runen-Offsets in den dargestellten Texten der Zeichen-faehigen
+	// Bloecke. Pfeile bewegen das Caret (alle Richtungen, ueber Sek-
+	// tionsgrenzen hinweg), shift+Pfeile waehlen vom Anker her, esc kollabiert
+	// /verlaesst (Details: charsel.go).
+	//
+	// KAPSELUNG (User-Report: "Zustaende gekapselt und voneinander
+	// unabhaengig"): ALLE Cursor-Zustands-Felder leben in EINEM Sub-Struct.
+	// blockSel (die grobe Shift-Auswahl) und char sind bewusst GETRENNT —
+	// der eine Modus kann den anderen nicht versehentlich anfassen; das
+	// Contract-Feld fromSel (Herkunft Konvertierung) dokumentiert die
+	// EINE legale Uebergangsstelle (enterCursorMode/clearCharSel).
+	char charState
+	// th liefert die Akzent-Farbe der Zeichen-Auswahl (Hintergrund-
+	// Highlight); nil-Themes laufen auf den Neon-Fallback.
+	th *render.Theme
+}
+
+// charState ist der GESAMTE Zustand des Zeichen-Cursor-Modus (FR-42) —
+// gekapselt und von der Block-Auswahl (sel/selFrom/selCur) unabhaengig.
+// charActive() liest active; alle anderen Felder sind Invarianten DES
+// Modus: Sie sind nur bedeutsam, solange active oder als Rest fuer den
+// Wiedereintritt (Toggle-Austritt, residualSelShown).
+type charState struct {
+	active  bool
+	from    int // Anker-Offset
+	to      int // Caret-Offset
+	block   int // Caret-Block (auch Wiedereinstiegs-Merkmal)
+	fromBlock int // Anker-Block
+	// fromSel merkt die Herkunft des Zeichen-Cursors: wurde er durch
 	// KONVERTIERUNG ueber einer laufenden Block-Auswahl geoeffnet, hat der
 	// Eintritt sie konsumiert (l.sel=false — EIN sichtbares Signal) und den
 	// Bereich in selFrom/selCur fuer den Rueckweg stehen lassen. esc (Stufe
 	// 1) kehrt damit in einem Schritt zur wartenden Block-Auswahl zurueck,
 	// statt zu kollabieren (kein Flip-Flop, User-Report).
-	charFromSel bool
-	// charBlinkHide ist die Blink-PHASE des Carets: true = gerade abge-
+	fromSel bool
+	// blinkHide ist die Blink-PHASE des Carets: true = gerade abge-
 	// blendet. Jede Bewegung blendet es ein (Editor-Gefuehl), tea.Tick
 	// (app.go, charBlinkMsg) toggelt im ~530ms-Takt — nur die leere
 	// Auswahl blinkt, eine MARKIERUNG steht stabil (ihr Rand ist das
 	// Caret).
-	charBlinkHide bool
-	// th liefert die Akzent-Farbe der Zeichen-Auswahl (Hintergrund-
-	// Highlight); nil-Themes laufen auf den Neon-Fallback.
-	th *render.Theme
+	blinkHide bool
 }
 
 func NewBlockList() BlockList {
@@ -106,7 +122,7 @@ func NewBlockList() BlockList {
 	// Index und wuerde in enterCursorMode den "Wiedereintritt"-Zweig
 	// spuriously triggern (User-Report: shift+tab leerte die Auswahl, weil
 	// der Nullwert zufaellig auf den Auswahl-Cursor-Block fiel).
-	return BlockList{focus: -1, hoverIdx: -1, charBlock: -1, charFromBlock: -1, width: 100, follow: true, marks: map[int]bool{}}
+	return BlockList{focus: -1, hoverIdx: -1, char: charState{block: -1, fromBlock: -1}, width: 100, follow: true, marks: map[int]bool{}}
 }
 
 // SetCopy wires the clipboard command used by the selection copy (FR-29).
@@ -493,7 +509,7 @@ func (l BlockList) stack(windowed bool) (lines []string, top, total int) {
 			// der NEON-RAHMEN IST die Auswahl-Signatur.
 			it = it.SetMarked(true)
 		}
-		if selLo >= 0 && i == l.selCur && !l.charSel {
+		if selLo >= 0 && i == l.selCur && !l.char.active {
 			// Cursor-Kante je Ausloeserrichtung: shift+down parkt den
 			// Cursor am ANFANG (erste Zeile), shift+up am ENDE (letzte
 			// Zeile) der Einheit.
@@ -502,23 +518,28 @@ func (l BlockList) stack(windowed bool) (lines []string, top, total int) {
 				cursorLine = start + h - 1
 			}
 		}
-		// Stack-Joining (Render-Ebene): nur auf der KOPIE — die Felder
-		// stehen nie in den List-Items, heightAt/joinTopAt leiten die
-		// Regel aus der Nachbarschaft her (Höhe ⇒ Zeilen konsistent).
-		jT := l.joinTopAt(i, w)
-		jB := i+1 < len(l.items) && l.joinTopAt(i+1, w)
+	// Stack-Joining (Render-Ebene): nur auf der KOPIE — die Felder
+	// stehen nie in den List-Items, heightAt/joinTopAt leiten die
+	// Regel aus der Nachbarschaft her (Höhe ⇒ Zeilen konsistent).
+	// dividerSel: Die Caption einer Folgekarte lebt in der Trennlinie
+	// des Vorgaengers — ist die Karte ausgewaehlt, leuchtet ihr Label
+	// dort neon (header-only-Auswahl, wie die eigene Kopfzeile).
+	jT := l.joinTopAt(i, w)
+	jB := i+1 < len(l.items) && l.joinTopAt(i+1, w)
 		if jT || jB {
 			switch c := it.(type) {
 			case ThinkBlock:
 				c.joinTop, c.joinAsDivider = jT, jB
 				if jB {
 					c.dividerLabel, _ = stackCardLabel(l.items[i+1], w)
+					c.dividerSel = l.cardSel(i+1, selLo, selHi, charBa, charBb)
 				}
 				it = c
 			case ToolBlock:
 				c.joinTop, c.joinAsDivider = jT, jB
 				if jB {
 					c.dividerLabel, _ = stackCardLabel(l.items[i+1], w)
+					c.dividerSel = l.cardSel(i+1, selLo, selHi, charBa, charBb)
 				}
 				it = c
 			}
@@ -676,12 +697,12 @@ func (l BlockList) handleKey(k tea.KeyMsg) (BlockList, tea.Cmd, bool) {
 			// ein Bug wirkte (User-Report: "esc bricht Cursor und
 			// Selection ab"). esc raeumt also in STUFEN NACH UNTEN:
 			// Cursor-Modus raus, Auswahl bleibt; das weitere esc loest sie.
-			if l.charFromSel {
+			if l.char.fromSel {
 				// Herkunft Konvertierung: EIN esc zurueck in die Block-
 				// Auswahl — Bereich (selFrom/selCur) und Richtung (selDir)
 				// stehen unveraendert aus dem Eintritt.
-				l.charSel = false
-				l.charFromSel = false
+				l.char.active = false
+				l.char.fromSel = false
 				l = l.resetCharResidual() // esc = einziger Anker-Reset
 				l.sel = true
 				l.follow = false
@@ -834,7 +855,7 @@ func (l BlockList) handleKey(k tea.KeyMsg) (BlockList, tea.Cmd, bool) {
 				// Leseposition ist der CARET-Rest — esc parkt den Fokus
 				// dort (sonst fiel die Kette sofort ins Eingabefeld,
 				// User-Flow: Anker setzen, raus, shift+up, esc).
-				cur = l.charBlock
+				cur = l.char.block
 			}
 			l = l.clearSel()
 			l = l.clearPrevSel()
@@ -892,9 +913,9 @@ func (l BlockList) Clear() BlockList {
 	l.follow = true
 	l.marks = map[int]bool{}
 	l.sel = false
-	l.charSel = false
-	l.charBlock, l.charFromBlock = -1, -1
-	l.charFromSel = false
+	l.char.active = false
+	l.char.block, l.char.fromBlock = -1, -1
+	l.char.fromSel = false
 	l = l.clearPrevSel()
 	return l
 }
@@ -1163,6 +1184,28 @@ func (l BlockList) selBounds() (lo, hi int) {
 	return lo, hi
 }
 
+// cardSel meldet, ob Karte idx als AUSGEWAEHLT rendern wuerde — dieselben
+// Bedingungen wie die Markierung im stack-Loop (Widget-Fokus/-Markierung,
+// Shift-Bereich, Zeichen-Auswahl ueber nicht adressierbare Karten). Sie
+// steuert das Neon-Label der Trennlinie: die Caption einer gestapelten
+// Karte lebt im Vorgaenger und sieht deren Auswahl-Zustand sonst nicht.
+func (l BlockList) cardSel(idx, selLo, selHi, charBa, charBb int) bool {
+	if idx < 0 || idx >= len(l.items) {
+		return false
+	}
+	it := l.items[idx]
+	if it.Focused() || it.Marked() {
+		return true
+	}
+	if selLo >= 0 && idx >= selLo && idx <= selHi {
+		return true
+	}
+	if l.charSelVisible() && idx > charBa && idx < charBb && !l.charCapableAt(idx) {
+		return true
+	}
+	return false
+}
+
 // selAnchorDir liefert die HUEPF-Richtung fuer einen nicht adressierbaren
 // Anker-Block der Shift-Auswahl (enterCursorMode): vom Anker WEG vom
 // Auswahl-Inneren — Anker unten (Wachstum nach oben) => weiter nach unten,
@@ -1297,7 +1340,7 @@ func (l BlockList) extendSel(dir int) BlockList {
 	// Block-Anker von der Leseposition/Viewport, der "den ganzen Schnippsel"
 	// greift. Erst NACH esc (Anker auf null) startet shift neu als Block-
 	// Auswahl.
-	if !l.sel && l.charFromBlock >= 0 && l.charBlock >= 0 {
+	if !l.sel && l.char.fromBlock >= 0 && l.char.block >= 0 {
 		return l.extendResidualSel(dir)
 	}
 	// Startet/erweitert eine Block-Auswahl, weicht eine ERHALTENE Zeichen-
@@ -1400,7 +1443,7 @@ func (l BlockList) scrollSelIntoView() BlockList {
 // clearSel hebt die Shift-Auswahl auf (esc) — inklusive Zeichen-Modus.
 func (l BlockList) clearSel() BlockList {
 	l.sel = false
-	l.charSel = false
+	l.char.active = false
 	return l
 }
 

@@ -115,10 +115,10 @@ func TestStackConnectsFoldedCards(t *testing.T) {
 	}
 }
 
-// Auswahl faerbt die GESAMTE Kartenflaeche: Der fokussierten Karte wird
-// jede Zeile mit der Akzentfarbe gefuellt (bg + Rahmen, symmetrisch) —
-// der Nachbarkartenzustand bleibt unangetastet.
-func TestStackSelectionFillsWholeCard(t *testing.T) {
+// Auswahl highlightet NUR die Kopfzeile: Der Neon lebt im Caption-Text
+// (fg), die Kartenflaeche bleibt in der ruhigen Pink-Purple-Farbe — die
+// Vollflaechen-Fuellung las sich als Alarm (User-Feedback).
+func TestStackSelectionHighlightsHeaderOnly(t *testing.T) {
 	withTrueColor(t)
 	th, _ := render.DefaultTheme()
 	tool := NewToolBlock(ToolData{CallID: "c1", Title: "t1", Kind: "execute", Text: "x"}, th, nil).
@@ -126,12 +126,23 @@ func TestStackSelectionFillsWholeCard(t *testing.T) {
 	l := BlockList{}.Append(NewThinkBlock("gedanke", th), tool)
 
 	view := l.View()
-	for i, ln := range strings.Split(tool.View(l.Width()), "\n") {
-		if !strings.Contains(ln, "48;2;191;0;255") {
-			t.Fatalf("selected tool row %d is not filled: %q", i, ln)
+	rows := strings.Split(tool.View(l.Width()), "\n")
+	if !strings.Contains(rows[0], "38;2;191;0;255") {
+		t.Fatalf("selected tool header is not neon: %q", rows[0])
+	}
+	// Kein Fuell-Neon mehr: NIRGENDWO traegt eine Zeile den Akzent als
+	// Hintergrund — die Auswahl zeigt sich allein im Kopf.
+	for i, ln := range rows {
+		if strings.Contains(ln, "48;2;191;0;255") {
+			t.Fatalf("selected tool row %d still filled: %q", i, ln)
 		}
 	}
-	if !strings.Contains(view, "48;2;191;0;255") {
-		t.Fatal("selection fill missing from the stack view")
+	if !strings.Contains(view, "38;2;191;0;255") {
+		t.Fatal("selection neon missing from the stack view")
+	}
+	// Der Nachbarkartenzustand bleibt unangetastet: die ruhige Karte zeigt
+	// kein Neon.
+	if rest := NewThinkBlock("gedanke", th).View(l.Width()); strings.Contains(rest, "191;0;255") {
+		t.Fatalf("unselected card carries neon: %q", rest)
 	}
 }

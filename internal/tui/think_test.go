@@ -81,22 +81,28 @@ func TestThinkHeaderHoverAndSelectionFill(t *testing.T) {
 		t.Fatalf("header hover is not white+underlined: %q", hl)
 	}
 
-	// Auswahl (Fokus ODER Markierung): der ganze Kasten traegt die
-	// Akzentfarbe als HINTERGRUND (48;2;191;0;255) und den Theme-Grund
-	// als Textfarbe (38;2;20;20;25) — in jeder Zeile, symmetrisch.
+	// Auswahl (Fokus ODER Markierung): NUR die Kopfzeile leuchtet Neon
+	// (38;2;191;0;255 als Vordergrund) — der Kasten selbst bleibt in der
+	// ruhigen Karten-Farbe, die Vollflaechen-Fuellung ist weg (User-
+	// Feedback: "statt alles auszuwaehlen einfach nur die Ueberschrift
+	// highlighten").
 	for name, sb := range map[string]ThinkBlock{
 		"focused": b.SetFocused(true).(ThinkBlock),
 		"marked":  b.SetMarked(true).(ThinkBlock),
 	} {
-		for i, ln := range strings.Split(sb.View(w), "\n") {
-			if !strings.Contains(ln, "48;2;191;0;255") {
-				t.Fatalf("%s row %d is not filled with the focus color: %q", name, i, ln)
+		rows := strings.Split(sb.View(w), "\n")
+		if !strings.Contains(rows[0], "38;2;191;0;255") {
+			t.Fatalf("%s header is not neon: %q", name, rows[0])
+		}
+		for i, ln := range rows {
+			if strings.Contains(ln, "48;2;191;0;255") {
+				t.Fatalf("%s row %d still filled with the focus color: %q", name, i, ln)
 			}
 		}
 	}
-	// Ruhe-Zustand: kein Neon-Fuell-Werk.
-	if u := b.View(w); strings.Contains(u, "48;2;191;0;255") {
-		t.Fatalf("unfocused view must not carry the fill background: %q", u)
+	// Ruhe-Zustand: gar kein Neon-Werk.
+	if u := b.View(w); strings.Contains(u, "191;0;255") {
+		t.Fatalf("unfocused view must not carry neon: %q", u)
 	}
 }
 

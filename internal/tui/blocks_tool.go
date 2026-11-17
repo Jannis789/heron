@@ -57,8 +57,11 @@ type ToolBlock struct {
 	joinTop       bool
 	joinAsDivider bool
 	dividerLabel  string
-	th            *render.Theme
-	copyFn        CopyFunc
+	// dividerSel: die Folgekarte (deren Caption in der Trennlinie lebt)
+	// ist ausgewaehlt — das Label leuchtet neon wie eine Kopfzeile.
+	dividerSel bool
+	th         *render.Theme
+	copyFn     CopyFunc
 	// Hover ist ZIELGENAU wie beim ThinkBlock: nur die Kopfzeile
 	// highlightet — die Falt-Marke (▸/▾) lebt im Kopf, der Footer ist
 	// eine reine Rahmenlinie (kein "+ show more" mehr).
@@ -233,18 +236,15 @@ func (b ToolBlock) View(width int) string {
 		width = 16
 	}
 	inner := codeInnerWidth(width)
-	// Die AKTUELLE Auswahl faerbt die GESAMTE Kastenflaeche (bg + Rahmen
-	// in einer Farbe, symmetrisch von Rand zu Rand — wie ThinkBlock);
-	// die VERGANGENE Auswahl (stale, FR-43) traegt weiter nur den Rahmen
-	// in der Sekundaer-Farbe. Normalzustand: Rahmen in der TEXT-Farbe der
-	// Karte — nicht weiß.
+	// Die AKTUELLE Auswahl highlightet NUR die Kopfzeile in Neon — der
+	// Kasten bleibt in der ruhigen Karten-Farbe (wie ThinkBlock, User-
+	// Feedback: "statt alles auszuwaehlen einfach nur die Ueberschrift
+	// highlighten"); die VERGANGENE Auswahl (stale, FR-43) traegt weiter
+	// nur den Rahmen in der Sekundaer-Farbe. Normalzustand: Rahmen in der
+	// Pink-Purple-Karten-Farbe.
 	sel := b.focused || b.marked
 	bs := cardBorderStyleFor(b.th, false, b.stale)
 	ls := b.th.LabelStyle()
-	if sel {
-		bs = b.th.FocusFillStyle()
-		ls = bs
-	}
 
 	label := b.stateLabel(width)
 	labelW := runewidth.StringWidth(label)
@@ -256,7 +256,8 @@ func (b ToolBlock) View(width int) string {
 	if !b.joinTop {
 		headSt := actionStyle(b.th, b.hoverHead)
 		if sel {
-			headSt = ls // auf der Fuellflaeche: Kontrast-Text statt Action-Farbe
+			// Auswahl: Neon im Kopf — hover unterstreicht weiter.
+			headSt = hotkeyStyle(b.th, b.hoverHead)
 		}
 		lines = append(lines, bs.Render("┌─ ")+headSt.Render(label)+
 			bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
@@ -275,7 +276,12 @@ func (b ToolBlock) View(width int) string {
 	// naechsten Karte, sonst └┘ — keine "+ show more"-Zeile mehr, die den
 	// Kasten mitten im Stack vorzeitig geschlossen haette.
 	if b.joinAsDivider {
-		lines = append(lines, stackDivider(bs, b.dividerLabel, width))
+		dls := bs
+		if b.dividerSel {
+			// Ausgewaehlte Folgekarte: ihr Label in der Trennlinie neon.
+			dls = hotkeyStyle(b.th, false)
+		}
+		lines = append(lines, stackDivider(bs, dls, b.dividerLabel, width))
 	} else {
 		lines = append(lines, bs.Render("└"+strings.Repeat("─", width-2)+"┘"))
 	}

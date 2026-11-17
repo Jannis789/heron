@@ -110,6 +110,32 @@ func (t *Theme) FocusFillStyle() lipgloss.Style {
 	return s.Background(lipgloss.Color(t.FocusColor()))
 }
 
+// CardColor liefert die sanfte Pink-Purple-Farbe der Think-/Tool-Karten:
+// interpoliert zwischen der Neon-Fokus-Farbe und der Text-Farbe — derselbe
+// weiche Verlauf wie bei den Ueberschriften, nur als Dauerzustand fuer die
+// Kartenraeume (User-Wunsch: "leicht pink purple wie bei der ersten
+// Ueberschrift" — aber fuer ALLE Tool-/Think-Boxen).
+func (t *Theme) CardColor() string {
+	if t == nil {
+		return DefaultFocusColor
+	}
+	if t.Text.Color == "" {
+		return t.FocusColor()
+	}
+	return lerpHex(t.FocusColor(), t.Text.Color, 0.55)
+}
+
+// CardBorderStyle ist der Rahmen-Stil der Think-/Tool-Karten im Ruhe-Zustand:
+// sanftes Pink-Purple statt faint-Grau — die Karte gehoert sichtbar zur
+// Akzentwelt, ohne zu alarmieren (der Neon bleibt Auswahl/Hover vorbehalten).
+func (t *Theme) CardBorderStyle() lipgloss.Style {
+	s := lipgloss.NewStyle().Foreground(lipgloss.Color(t.CardColor()))
+	if t != nil && t.Background != "" {
+		s = s.Background(lipgloss.Color(t.Background))
+	}
+	return s
+}
+
 // DefaultPanColor ist Amber: die Rahmen-Farbe des Pan-&-Zoom-Modus —
 // bewusst KEIN Violett, damit der Unterschied zum Fokus (Select-Modus)
 // auf den ersten Blick klar bleibt. Fehlt "pan" im Theme-JSON, greift
