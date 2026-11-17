@@ -1693,6 +1693,12 @@ func (m Model) fillScreen(s string) string {
 // Runen-Buendel dieser Form entstehen nur aus Sequenzmuell (PTY-Beweis).
 var kittyRespFrag = regexp.MustCompile(`^(alt+)?_?G?i=d+(,p=d+)?(;(OK|0K|E[A-Z]+))?$`)
 
+// mouseResidueFrag matcht SGR-Maus-Reports, deren ESC-Byte der Parser
+// verloren hat — der Rest ("[<35;42;55M") landet sonst als Text im
+// Prompt, klassisch beim Scrollen/Bewegen, wenn Maus-Reporting noch
+// aus einem frueheren Lauf an ist (Quellen-Reset: ProbeTerminal).
+var mouseResidueFrag = regexp.MustCompile(`^(alt+\+)?\[?<\d+;\d+;\d+[MHm]`)
+
 // kittyResponseFilter verwirft Tasten, die wie Kitty-Grafik-Antworten
 // aussehen (z. B. ESC_Gi=1,p=1;OK ESC): q=2 unterdrueckt die Antworten der
 // Bildbefehle bereits an der Quelle, aber die PROBE (a=q) WILL Antworten —
@@ -1711,6 +1717,9 @@ func kittyResponseFilter(_ tea.Model, msg tea.Msg) tea.Msg {
 		}
 	}
 	if len(k.Runes) > 1 && kittyRespFrag.MatchString(s) {
+		return nil
+	}
+	if len(k.Runes) > 1 && mouseResidueFrag.MatchString(s) {
 		return nil
 	}
 	return msg

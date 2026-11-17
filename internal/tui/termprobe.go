@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -22,6 +23,24 @@ type TermCaps struct {
 	LightBG      bool
 }
 
+// mouseModeResetSeq schaltet alle ueblichen Maus-Reportings aus (X10-
+// Cells 1000, Button-Event 1002, Any-Event 1003, Focus 1004, UTF-8 1005,
+// SGR 1006, urxvt 1015, SGR-Pixels 1016). DECRST produziert selbst keine
+// Antwort — der Drain danach frisst nur noch Altablagerungen.
+const mouseModeResetSeq = "\x1b[?1000l\x1b[?1002l\x1b[?1003l" +
+	"\x1b[?1004l\x1b[?1005l\x1b[?1006l\x1b[?1015l\x1b[?1016l"
+
+// disableMouseReporting beendet alle Maus-Reportings des Terminals. Der
+// Grund: Ein abgestuerzter frueherer Lauf (Zoom/Alt-Screen per SIGKILL,
+// Panic vor bubbleteas Teardown) hinterlaesst DECSET 1003 im Terminal —
+// der naechste INLINE-Lauf faengt die Motion-Reports dann als "Tastatur"
+// ein ("[<35;42;55M" im Prompt, genau beim Scrollen/Bewegen). Der
+// Bubbletea-seitige Teardown hilft da nicht, weil inline nie selbst
+// Maus-Reporting angeschaltet hat; der Reset muss an der Quelle passieren.
+func disableMouseReporting(w io.Writer) {
+	io.WriteString(w, mouseModeResetSeq)
+}
+
 // ProbeTerminal fragt das Terminal ab: Zellpixel (CSI 16 t), Hintergrund
 // (OSC 11), Kitty-Graphics (a=q) und Unicode-Platzhalter (a=q,U=1). Die
 // Cursorposition (CSI 6 n) dient als garantiertes Antwortende. Ausserhalb
@@ -39,6 +58,11 @@ func ProbeTerminal() TermCaps {
 		return caps
 	}
 	defer term.Restore(int(f.Fd()), old)
+
+	// Maus-Reporting AN DER QUELLE abschalten (Moegliche Ueberbleibsel
+	// abgestuerzter Laeufe), DANN die Reste schlucken — sonst liest
+	// bubbletea fortlaufend Fragmente als Tastatur ("[<35;110;29H").
+	disableMouseReporting(os.Stdout)
 
 	// SGR-Maus-Reste abgestuerzter Laeufe verwerfen, bevor gefragt wird —
 	// sonst liest bubbletea Fragmente als Tastatur ("[<35;110;29H").
