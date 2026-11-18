@@ -8,8 +8,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TestStreamingPreviewGrowsBeforeFinalReply (FR-2): chunks reach the UI as
-// they arrive; the final text then replaces the preview.
+// TestStreamingPreviewGrowsBeforeFinalReply (FR-2, Activity-Tree): Chunks
+// leben in den LETZTEN DREI Textzeilen des Activity-Baums — der Chat bleibt
+// waehrend des Turns stabil; die fertige Antwort ersetzt sie im Chat.
 func TestStreamingPreviewGrowsBeforeFinalReply(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
@@ -18,6 +19,9 @@ func TestStreamingPreviewGrowsBeforeFinalReply(t *testing.T) {
 	r.contains("Hallo")
 	r.do(chunkMsg{text: "Welt, dies streamt."})
 	r.contains("Hallo Welt, dies streamt.")
+	if n := len(r.m.chat.items); n != 0 {
+		t.Fatalf("Chat hat %d Bloecke waehrend des Streams, want 0 (stabil)", n)
+	}
 	if !r.m.running {
 		t.Fatal("turn should still be running while chunks arrive")
 	}
@@ -27,14 +31,11 @@ func TestStreamingPreviewGrowsBeforeFinalReply(t *testing.T) {
 	if r.m.running {
 		t.Fatal("turn should be settled after the reply")
 	}
-	if _, ok := r.m.chat.UpdateBlock(StreamBlockID, NewTextBlock("probe", "")); ok {
-		t.Fatal("stream preview must be retired when the final text arrives")
-	}
 }
 
-// TestStreamBlockDoesNotConsumeNumber (FR-2/FR-3): the transient preview must
-// not burn a user-visible block number.
-func TestStreamBlockDoesNotConsumeNumber(t *testing.T) {
+// TestStreamDoesNotConsumeNumber (FR-3): der Stream brennt keine Block-
+// nummer — er legt nichts im Chat an.
+func TestStreamDoesNotConsumeNumber(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(chunkMsg{text: "Vorschau"})
@@ -42,8 +43,9 @@ func TestStreamBlockDoesNotConsumeNumber(t *testing.T) {
 	r.contains("#1")
 }
 
-// TestStreamingKeepsFollowAtBottom (FR-8): new content keeps the pager pinned
-// to the bottom; scrolling pauses follow.
+// TestStreamingKeepsFollowAtBottom (FR-8): der stabile Chat erlaubt
+// Weiterlesen waehrend des Streams — Follow bleibt gesetzt, Scrollen
+// pausiert es weiter.
 func TestStreamingKeepsFollowAtBottom(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
@@ -59,66 +61,68 @@ func TestStreamingKeepsFollowAtBottom(t *testing.T) {
 	}
 }
 
-// TestThinkingStreamsIntoCollapsedBlock (FR-2/FR-30): thinking streams into
-// the collapsible block — present, but truncated to the first lines.
-func TestThinkingStreamsIntoCollapsedBlock(t *testing.T) {
+// TestThinkingStreamsIntoActivity (FR-2/FR-30, Activity-Tree): Thinking
+// landet im eingeklappten Thinking-Knoten; Working on zeigt den Text.
+func TestThinkingStreamsIntoActivity(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "überlege kurz\nfast fertig"})
 
-	r.contains("thinking ▸")
+	r.contains("Thinking (1)")
+	r.contains("Working on")
 	r.contains("überlege kurz")
 	r.notContains("💭")
 }
 
-// TestRunningSpinnerAnimatesStatusLine (FR-2): while a turn runs the status
-// line shows a rotating spinner; it vanishes once the turn settles.
-func TestRunningSpinnerAnimatesStatusLine(t *testing.T) {
+// TestRunningSpinnerDrivesInputBorder (FR-2): der Spinner-Takt treibt den
+// Neon-Verlauf am Eingaberahmen; im View selbst gibt es KEIN Spinner-
+// Glyph mehr (Activity-Tree-Spec § 10: keine Ladeanimation).
+func TestRunningSpinnerDrivesInputBorder(t *testing.T) {
 	r := newRig(t)
 
-	// Idle: no animation glyph in the status line.
 	if g := r.m.spinnerGlyph(); g != "" {
 		t.Fatalf("idle spinner glyph = %q, want empty", g)
 	}
-
 	r.m.startTurn()
 	a := r.m.spinnerGlyph()
 	if a == "" {
-		t.Fatal("spinner glyph must be visible while the turn runs")
+		t.Fatal("spinner glyph must exist while the turn runs (border clock)")
 	}
-
-	// Advancing frames changes the glyph (real animation).
 	r.do(spinnerTickMsg{})
-	b := r.m.spinnerGlyph()
-	if b == a {
+	if b := r.m.spinnerGlyph(); b == a {
 		t.Fatalf("spinner did not advance: both frames %q", a)
 	}
-
-	// The first frame already appears in the rendered status line.
-	r.contains(r.m.spinnerGlyph())
-
+	if r.m.running && strings.Contains(stripANSI(r.m.View()), a) {
+		t.Fatalf("spinner glyph %q leaked into the view", a)
+	}
 	r.m.endTurn()
 	if g := r.m.spinnerGlyph(); g != "" {
 		t.Fatalf("spinner glyph survived endTurn: %q", g)
 	}
 }
 
-// TestToolStatusShowsAndClears (FR-2): tool activity is visible while the
-// tool runs and disappears when it finishes — die STATUSZEILE raeumt, die
-// Tool-KARTE im Chat bleibt (FR-31: nachvollziehbare Aktivitaet).
-func TestToolStatusShowsAndClears(t *testing.T) {
+// TestToolCallLivesInActivityTree (FR-2/FR-31, Activity-Tree): Tool-
+// Aktivitaet zaehlt im Tool-Call-Knoten und in Working on — laufend ●,
+// abgeschlossen ✓; der Chat bleibt frei von Karten.
+func TestToolCallLivesInActivityTree(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(toolMsg{callID: "c1", name: "read_file.go", done: false})
+	r.contains("Tool Calls (1)")
+	r.contains("Working on")
 	r.contains("read_file.go")
-	if r.m.toolStatus != "read_file.go" {
-		t.Fatalf("Statuszeile muss den Tool-Namen zeigen: %q", r.m.toolStatus)
-	}
+	// Auswahlmodus (tab) statt Modifier-Taste: ↓ auf Tool Calls, enter
+	// klappt auf — derselbe Druck klappt auch wieder zu.
+	r.key("tab")
+	r.key("down")
+	r.key("enter")
+	r.contains("● read_file.go")
 	r.do(toolMsg{callID: "c1", name: "read_file.go", done: true})
-	if r.m.toolStatus != "" {
-		t.Fatalf("done muss die Statuszeile raeumen: %q", r.m.toolStatus)
+	r.contains("Tool Calls (1)") // Update zaehlt nicht doppelt (FR-31)
+	r.contains("✓ read_file.go")
+	if n := len(r.m.chat.items); n != 0 {
+		t.Fatalf("Chat hat %d Bloecke, want 0 — der Prozess lebt im Baum", n)
 	}
-	r.contains("🔧 read_file.go ✓") // Karte bleibt mit fertig-Status
 }
 
 // TestCtrlCAbortsTurnInsteadOfQuitting (FR-7): the first Ctrl+C cancels the

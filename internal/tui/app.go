@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 	"runtime/pprof"
+	"sync"
 	"sync/atomic"
 
 	"heron/internal/render"
@@ -68,9 +69,12 @@ type Model struct {
 	running    bool    // a turn is in flight
 	cancelling bool    // cancel already requested
 	streaming  string  // raw answer received so far
-	thinking   string  // thinking received so far
-	toolStatus string  // last tool label while the turn runs
-	spinner    int     // frame index of the running animation
+	// activity ist der Prozess-Baum des Turns (Activity-Tree-Spec):
+	// Thinking (N) · Tool Calls (N) · Working on + die letzten drei
+	// Agent-Textzeilen. Sie ersetzt die ehemaligen Think-/Tool-Karten und
+	// die Statuszeile — der Chat bleibt waehrend des Turns stabil.
+	activity ActivityTree
+	spinner  int // frame index of the running animation
 	// neonPhase schiebt das Neon-Band am Eingaberahmen pro Spinner-Takt eine
 	// Zelle weiter (crushs Regenbogen-Spinner zyklisiert ebenso); unbounded,
 	// der Render nimmt es modulo Umfang.
@@ -120,15 +124,6 @@ type Model struct {
 	// ctrl+c verwirft die Warteschlange. lastCtrlC erkennt den Doppeldruck.
 	queued    []string
 	lastCtrlC time.Time
-
-	// turnTools zaehlt die Tool-Calls des laufenden/letzten Turns als
-	// distinct callIDs (FR-31: In-place-Updates einer Karte zaehlen nicht
-	// doppelt). startTurn setzt zurueck, endTurn bewahrt den Stand.
-	turnTools map[string]bool
-	// toolLive akkumuliert die live_output-Chunks je CallID (goose streamt
-	// Shell-Ausgabe Stueckweise; das finale Update traegt das Gesamtergebnis
-	// als rawOutput und loescht den Eintrag wieder).
-	toolLive map[string]string
 
 	// Token usage (FR-23): goose reports per-turn usage in the prompt
 	// response. Totals accumulate the session; lastIn/lastOut feed the
@@ -186,7 +181,7 @@ func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
 	// Standard sitzt sie auf dem Eingabefeld (dort wird getippt), tab
 	// toggelt zu den Chat-Segmenten und zurueck, ↑/↓ laufen blockweise —
 	// aber NUR im Antwort-Modus.
-	return Model{input: ta, chat: NewBlockList().SetCopy(copyFn).SetTheme(th), send: send, theme: th, copyFn: copyFn, inline: inlineEnabled(), inputFocus: true, charBlinkInterval: caretBlinkInterval}
+	return Model{input: ta, chat: NewBlockList().SetCopy(copyFn).SetTheme(th), activity: NewActivityTree(th), send: send, theme: th, copyFn: copyFn, inline: inlineEnabled(), inputFocus: true, charBlinkInterval: caretBlinkInterval}
 }
 
 // WithStream wires the live-update bridge used by the backend to push chunk,
@@ -707,7 +702,7 @@ func (m Model) footerView() string {
 	// FR-31: Anzahl der Tool-Calls des (letzten) Turns als eigenes Segment
 	// vor der Token-Anzeige — Updates derselben Karte zaehlen einfach, ein
 	// neuer Turn startet bei 0. Ohne Tool-Calls bleibt das Segment weg.
-	if n := len(m.turnTools); n > 0 {
+	if n := m.activity.ToolCount(); n > 0 {
 		seg := fmt.Sprintf("🔧 %d tool call", n)
 		if n != 1 {
 			seg += "s"
@@ -731,6 +726,11 @@ func (m Model) footerView() string {
 	// verdraengen ihn nur, solange sie gelten.
 	var h string
 	switch {
+	case m.activity.Focused():
+		// Activity-Baum (Auswahlmodus): ↑/↓ laufen die Knoten ab, enter
+		// klappt den Knoten unter dem Cursor auf und zu, esc kehrt zur
+		// Eingabe zurueck.
+		h = "↑↓ knoten · ⏎ auf-/zuklappen · bild scrollen · esc fertig"
 	case m.chat.charActive():
 		// Zeichen-Cursor (FR-42): Editor-Caret ueber dem Chat — Pfeile
 		// bewegen (alle Richtungen), shift+Pfeile waehlen, c/enter
@@ -829,6 +829,7 @@ func (m *Model) setInputFocus(on bool) tea.Cmd {
 		// Eingabefokus und Zeichen-Cursor/Rest-Auswahl schliessen sich aus —
 		// der Rueckweg ins Feld raeumt sie mit esc-Semantik ab (Anker und
 		// Caret-Rest weg, kein Residual beim Tippen).
+		m.activity = m.activity.Blur()
 		m.chat = m.chat.clearCharSelEsc()
 		m.chat = m.chat.clearMarks()
 		return m.input.Focus()
@@ -842,42 +843,22 @@ func (m *Model) startTurn() {
 	m.running = true
 	m.cancelling = false
 	m.streaming = ""
-	m.thinking = ""
-	m.toolStatus = ""
 	m.spinner = 0
-	m.turnTools = nil // FR-31: der Zaehler gehoert zum EINEN Turn
-	// A fresh turn starts without the previous thinking blocks (FR-30) and
-	// without stale streaming preview blocks.
-	m.dropThinkBlocks()
-	m.chat = m.chat.removeStreamBlocks()
+	// Frischer Turn, frischer Prozess-Baum (Activity-Tree-Spec): Der
+	// vorherige Stand (inklusive seiner letzten Textzeilen) weicht der
+	// neuen Aktivitaet; der Chat behaelt seine fertigen Bloecke.
+	m.activity = NewActivityTree(m.theme)
 }
 
-// dropThinkBlocks removes every thinking block (the live one and the
-// sections closed by a tool call during the previous turn) and repairs the
-// inline print cursor: it counts blocks, not lines, so entries removed
-// BEFORE it must shrink it — otherwise flushPrinted would skip the first
-// blocks of the new turn.
-func (m *Model) dropThinkBlocks() {
-	kept := m.chat.items[:0]
-	for i, it := range m.chat.items {
-		if _, ok := it.(ThinkBlock); ok {
-			if i < m.printedUpTo {
-				m.printedUpTo--
-			}
-			continue
-		}
-		kept = append(kept, it)
-	}
-	m.chat.items = kept
-}
-
-// endTurn clears the live state once the turn settles.
+// endTurn clears the live state once the turn settles; the activity tree
+// bleibt als Zusammenfassung des Turns stehen, bis der naechste beginnt.
+// Settle zieht die drei Textzeilen ab — abgeschlossene Prozesse brauchen
+// sie nicht mehr (User-Wunsch).
 func (m *Model) endTurn() {
 	m.running = false
 	m.cancelling = false
 	m.streaming = ""
-	m.thinking = ""
-	m.toolStatus = ""
+	m.activity = m.activity.FlushText().Settle()
 }
 
 // chatTop is the screen row where the chat area starts (title only — the
@@ -934,6 +915,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.flushPrinted()
 	case tea.MouseMsg:
+		// Activity-Tree (§ 5): Die Kopfzeilen der Hauptknoten sind Klick-
+		// ziele (Zeile 0 Thinking, Zeile 1 Tool Calls — sie stehen immer
+		// an denselben Positionen), das Rad scrollt den aufgeklappten
+		// Tool-Call-Bereich. Klicks im Activity-Bereich gehen NIE an den
+		// Chat darunter — die Koordinaten passen nicht mehr.
+		if m.height > 0 {
+			if top, n := m.activityRect(); n > 0 && msg.Y >= top && msg.Y < top+n {
+				switch msg.Button {
+				case tea.MouseButtonLeft:
+					if msg.Action != tea.MouseActionPress {
+						return m, nil
+					}
+					// Der Klick SELEKTIERT den Baum (Ketten-Glied wie der
+					// Chat-Klick) und setzt den Cursor auf den Knoten der
+					// Zeile; auf dessen Kopfzeile klappt er ihn direkt um —
+					// dieselbe Struktur, die ↑/↓ + enter benutzt.
+					m.chat = m.chat.Unfocus()
+					m.chat = m.chat.clearMarks()
+					m.activity = m.activity.Click(msg.Y-top, m.width, m.activityBudget())
+					if !m.activity.Focused() {
+						// Kein Knoten unter dem Klick (winziges Budget,
+						// nur Textzeilen): die Eingabe behaelt den Fokus,
+						// statt in einen toten Zustand zu laufen.
+						return m, m.setInputFocus(true)
+					}
+					return m, m.setInputFocus(false)
+				case tea.MouseButtonWheelUp:
+					m.activity = m.activity.Wheel(1)
+					return m, nil
+				case tea.MouseButtonWheelDown:
+					m.activity = m.activity.Wheel(-1)
+					return m, nil
+				}
+				return m, nil // Region schluckt den Rest (kein Chat-Klick)
+			}
+		}
 		// The [ modell · effort ] footer chip toggles the popup; clicks
 		// inside the open popup select, outside close it (FR-20-lite).
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
@@ -1073,6 +1090,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "enter":
+			// Activity-Auswahlmodus: enter klappt den Knoten unter dem
+			// Cursor auf — und wieder zu (kein gesondertes Zuklappen).
+			if m.activity.Focused() {
+				m.activity = m.activity.Enter()
+				return m, nil
+			}
 			// Zeichen-Modus (FR-42): enter kopiert den markierten Buchstaben-
 			// Bereich (wie c) — die Cursor-Sektion hat keinen Block-Fokus.
 			// Erhaltene Auswahl (22:18): auch von aussen kopierbar.
@@ -1130,6 +1153,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// der Status-Spinner laeuft, bis die Antwort eintrifft (FR-2).
 			return m, tea.Batch(sendCmd, m.flushPrinted(), nextSpinner())
 		case "up", "down", "pgup", "pgdown", "shift+up", "shift+down":
+			// Activity-Auswahlmodus: ↑/↓ laufen die Baum-Zeilen ab (am
+			// Rand des Tool-Bands scrollen sie die Historie weiter),
+			// Bild-Seiten springen im Tool-Fenster — der Chat bekommt
+			// diese Tasten im Baum-Fokus nicht.
+			if m.activity.Focused() {
+				switch msg.String() {
+				case "up", "shift+up":
+					m.activity = m.activity.Move(-1, m.width, m.activityBudget())
+				case "down", "shift+down":
+					m.activity = m.activity.Move(1, m.width, m.activityBudget())
+				case "pgup":
+					m.activity = m.activity.Wheel(5)
+				case "pgdown":
+					m.activity = m.activity.Wheel(-5)
+				}
+				return m, nil
+			}
 			// Eingabe-Modus: ↑/↓ tun NICHTS — sie sind fuer die Eingabe-
 			// History reserviert (spaeter) und springen keinen Fokus. Nur
 			// Bild ↓/↑ scrollen seitenweise (Lesen ohne Fokus-Wechsel).
@@ -1168,14 +1208,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		case "tab":
-			// tab TOGGELT Eingabe-Modus <-> Antwort-Modus: vom Eingabefeld
-			// direkt ins letzte Chat-Segment der KI-Antwort (z. B. ein
-			// Codeblock) und mit EINEM tab zurueck zum Tippen (nicht 10x ↓).
-			// Die Slash-Completion oben faengt tab ab, solange ein Befehl-
-			// Praefix getippt ist.
+			// tab laeuft die Kette: Eingabe → Activity-Baum (falls er
+			// etwas zeigt) → Antwort-Blöcke → Eingabe. Der Baum ist ein
+			// gleichwertiges Ketten-Glied: ↑/↓ navigieren, enter klappt.
+			if m.activity.Focused() {
+				m.activity = m.activity.Blur()
+				nl := m.chat.FocusVisible()
+				if !nl.Focused() {
+					return m, m.setInputFocus(true)
+				}
+				m.chat = nl
+				return m, m.setInputFocus(false)
+			}
 			if m.chat.Focused() || !m.inputFocus {
 				m.chat = m.chat.Unfocus()
 				return m, m.setInputFocus(true)
+			}
+			if m.activityVisible() {
+				m.chat = m.chat.Unfocus()
+				m.chat = m.chat.clearMarks()
+				m.activity = m.activity.Focus(m.width, m.activityBudget())
+				return m, m.setInputFocus(false)
 			}
 			nl := m.chat.FocusVisible()
 			if !nl.Focused() {
@@ -1208,6 +1261,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.copySelection()
 			}
 		case "esc", "t", "+", "=", "-", "_", "r":
+			// Activity-Auswahlmodus: esc gibt den Baum frei und kehrt ins
+			// Eingabefeld zurueck (Stufen wie im Chat).
+			if m.activity.Focused() {
+				if msg.String() == "esc" {
+					m.activity = m.activity.Blur()
+					return m, m.setInputFocus(true)
+				}
+			}
 			// Block-Aktionen am fokussierten Block: t toggelt EIN-TASTIG
 			// zwischen Bild und Quelltext (FR-38 — i ist entfallen), +/-
 			// klappen den Think-Block. Im Zeichen-Cursor kollabiert esc
@@ -1267,62 +1328,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.charBlinkArmed = false
 		return m, nil
 	case chunkMsg:
-		// The answer grows in place under the chat while it streams (FR-2):
-		// prose as raw preview, in-progress tables re-layout per row.
+		// Der Text waechst NICHT mehr als Chat-Vorschau (der Chat bleibt
+		// waehrend des Turns stabil) — er lebt in den letzten drei Zeilen
+		// des Activity-Baums (§ 8); die fertige Antwort ersetzt ihn im
+		// Chat, sobald der Turn endet.
 		m.streaming += msg.text
-		m.chat = m.chat.upsertStreamWidgets(buildStreamWidgets(
-			m.streaming, textColorFor(m.theme), m.theme, m.copyFn))
+		m.activity = m.activity.Text(msg.text)
 		return m, nil
 	case thoughtMsg:
-		m.thinking += msg.text
-		m.chat = m.chat.upsertThinkBlock(m.thinking, m.theme)
+		m.activity = m.activity.Thought(msg.text)
 		return m, nil
 	case toolMsg:
-		if msg.done {
-			m.toolStatus = ""
-		} else {
-			m.toolStatus = msg.name
-		}
-		// FR-30: Ein NEUER Tool-Call UNTERBRICHT den Denkprozess. Die
-		// laufende Denk-Sektion wird geschlossen (stabile Blocknummer);
-		// Thinking, das danach kommt, oeffnet eine NEUE Karte HINTER der
-		// Tool-Karte. Vorher wuchs der alte Block oberhalb der Tool-Aufrufe
-		// weiter — "der Think-Block expandiert, obwohl Tool-Calls den
-		// Denkprozess unterbrechen" (User-Report).
-		if m.thinking != "" && !m.turnTools[msg.callID] {
-			m.chat = m.chat.finishThinkBlock()
-			m.thinking = ""
-		}
-		// FR-31: distinct callIDs zaehlen — Updates derselben Karte
-		// (gleiche callID) erhoehen den Turn-Zaehler nicht.
-		if m.turnTools == nil {
-			m.turnTools = map[string]bool{}
-		}
-		m.turnTools[msg.callID] = true
-		// Live-Output akkumulieren (live_output-Chunks kommen Stueckweise,
-		// jedes Update traegt nur seinen Chunk); das finale Update liefert
-		// das komplette rawOutput und raeumt den Akkumulator.
-		if m.toolLive == nil {
-			m.toolLive = map[string]string{}
-		}
-		if msg.live != "" {
-			m.toolLive[msg.callID] += msg.live
-		}
-		live := m.toolLive[msg.callID]
-		if msg.done {
-			delete(m.toolLive, msg.callID)
-			live = ""
-		}
-		// Tool-Karte im Chat (FR-2/FR-31): tool_call startet die laufende
-		// Karte, tool_call_update aktualisiert dieselbe in Place (callID);
-		// kind waehlt das Icon, failed den ✗-Zustand. Sie ist ein normales
-		// Ketten-Segment — Shift-Auswahl inklusive.
-		m.chat = m.chat.upsertToolBlock(ToolData{
-			CallID: msg.callID, Title: msg.name, Kind: msg.kind, Text: msg.text,
+		// Der Activity-Baum uebernimmt die Karte: neuer Call schliesst die
+		// laufende Denk-Sektion, Updates derselben callID aktualisieren
+		// denselben Eintrag in Place (FR-30/31-Geist).
+		m.activity = m.activity.Tool(ToolUpdate{
+			CallID: msg.callID, Label: msg.name, Kind: msg.kind, Text: msg.text,
 			Command: msg.cmd, Stdout: msg.out, Stderr: msg.errOut,
-			Exit: msg.exit, HasOutput: msg.hasOut, Live: live,
-			Running: !msg.done, Failed: msg.failed,
-		}, m.theme, m.copyFn)
+			Exit: msg.exit, HasOutput: msg.hasOut, Live: msg.live,
+			Done: msg.done, Failed: msg.failed,
+		})
 		return m, nil
 	case infoMsg:
 		// The backend announced the real model/effort/provider (ACP
@@ -1422,7 +1447,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case replyMsg:
 		// The final text supersedes the live preview (FR-2).
 		m.endTurn()
-		m.chat = m.chat.removeStreamBlocks()
 		switch {
 		case msg.err != nil:
 			// API-/RPC-Fehler als eigener Block mit Retry-Aktion (FR-33):
@@ -1528,15 +1552,6 @@ func (m *Model) flushPrinted() tea.Cmd {
 		if pending[id] {
 			break
 		}
-		if id <= StreamBlockID && id > StreamBlockID-streamIDRange {
-			break
-		}
-		// Nur die LAUFENDE Denk-Sektion darf nicht gedruckt werden; von
-		// einem Tool-Call geschlossene Sektionen sind fertig (eine stabile
-		// ID) und wuerden den Flush sonst fuer den Rest des Turns blockieren.
-		if _, ok := it.(ThinkBlock); ok && it.ID() == ThinkBlockID && m.running {
-			break
-		}
 		for _, line := range strings.Split(it.View(m.width), "\n") {
 			cmds = append(cmds, tea.Println(line))
 		}
@@ -1550,42 +1565,70 @@ func (m *Model) flushPrinted() tea.Cmd {
 	return tea.Sequence(cmds...)
 }
 
-// workingLine is the slim "AI is working" row rendered DIRECTLY ABOVE the
-// input box (not under the title): a rotating spinner while the turn runs,
-// plus the current tool label when one is active. It collapses to nothing
-// when idle, so a finished turn leaves no blank row and the input box keeps
-// its place. Keeping it to exactly one row preserves the chat hit-testing.
-func (m Model) workingLine() string {
-	if !m.running && m.toolStatus == "" {
+// activityBudget begrenzt den Activity-Baum auf (hoechstens) die Haelfte
+// der Terminalhoehe (§ 9: die Historie beansprucht nie den ganzen Bereich;
+// Chat, Eingabe und Footer behalten ihren Platz).
+func (m Model) activityBudget() int {
+	if m.height <= 0 {
+		return 12
+	}
+	b := m.height / 2
+	if b < 3 {
+		b = 3
+	}
+	return b
+}
+
+// activityRows liefert die Zeilenzahl des gerenderten Activity-Baums —
+// eine Quelle fuer View, syncInputSize und die Maus-Geometrie, damit
+// Layout und Klickziele nicht driften.
+func (m Model) activityRows() int {
+	return len(m.activityRowsView())
+}
+
+// activityVisible: der Baum zeigt sich mit dem ersten Inhalt — ein
+// laufender Turn ohne jedes Event bleibt unsichtbar (keine Null-Zahlen,
+// § 10); ein abgeschlossener Turn hinterlaesst seine Zusammenfassung, der
+// naechste Start setzt zurueck.
+func (m Model) activityVisible() bool {
+	return !m.activity.Empty()
+}
+
+// activityView rendert den Activity-Baum als Block ueber dem Eingabefeld
+// (Nachfolger der einzeiligen Working-Line). Leer, wenn nichts zu zeigen
+// ist — dann bleibt die Zeile wie bisher ganz weg.
+func (m Model) activityView() string {
+	rows := m.activityRowsView()
+	if len(rows) == 0 {
 		return ""
 	}
-	var line string
-	if m.running {
-		line = m.spinnerGlyph() + " "
+	return strings.Join(rows, "\n")
+}
+
+// activityRowsView rendert die Zeilen (Maus-Geometrie teilt activityRows).
+func (m Model) activityRowsView() []string {
+	if !m.activityVisible() {
+		return nil
 	}
-	if m.toolStatus != "" {
-		line += "🔧 " + m.toolStatus
-	} else if m.running {
-		line += "antwort läuft …"
+	w := m.width
+	if w <= 0 {
+		w = 80
 	}
-	if m.running && len(m.queued) > 0 {
-		line += fmt.Sprintf(" · ⏳ %d wartend (2× ctrl+c verwirft)", len(m.queued))
+	return m.activity.View(w, m.activityBudget())
+}
+
+// activityRect liefert die Bildschirm-Geometrie des Activity-Bereichs:
+// yTop ist die Zeile der Thinking-Kopfzeile, rows die Zeilenzahl. Die
+// Kopfzeilen stehen IMMER an den ersten beiden Positionen (Klickziele
+// fuer das Auf-/Zuklappen, § 5).
+func (m Model) activityRect() (yTop, rows int) {
+	n := m.activityRows()
+	if n == 0 {
+		return 0, 0
 	}
-	if m.width > 0 {
-		if w := render.WrapDisplay(line, m.width); len(w) > 0 {
-			line = w[0]
-		}
-	}
-	styled := lipgloss.NewStyle().Faint(true).Render(line)
-	// Mittig in der Zeile: Der Status gehoert zur Box DARUNTER — zentriert
-	// liest er sich als deren Ueberschrift, nicht als Fliesstext-Rest. Der
-	// Farbstil zaehlt nicht in die Breite (ANSI wird ignoriert).
-	if m.width > 0 {
-		if pad := (m.width - lipgloss.Width(styled)) / 2; pad > 0 {
-			return strings.Repeat(" ", pad) + styled
-		}
-	}
-	return styled
+	inputRows := len(strings.Split(m.inputView(), "\n"))
+	yTop = m.height - 1 - inputRows - n // -1: Footer-Zeile
+	return yTop, n
 }
 
 func (m Model) View() string {
@@ -1623,16 +1666,16 @@ func (m Model) View() string {
 	if m.inline {
 		// timg-Modell mit sichtbarer Basis (FR-27): der Verlauf wird
 		// append-only gedruckt (flushPrinted -> tea.Println), der View
-		// haelt NUR die feste Live-Region — Header + Status + Eingabe +
-		// Footer, immer 6 Zeilen. Sie passt garantiert ins Fenster, also
-		// kann der Renderer nichts verwerfen, und die Eingabe bleibt
-		// bedienbar (gemessen: Input ohne Renderer ist tot — Nur-Druck
-		// scheidet als Endzustand aus).
+		// haelt NUR die feste Live-Region — Header + Activity + Eingabe +
+		// Footer. Sie passt garantiert ins Fenster, also kann der Renderer
+		// nichts verwerfen, und die Eingabe bleibt bedienbar (gemessen:
+		// Input ohne Renderer ist tot — Nur-Druck scheidet als Endzustand
+		// aus).
 		var live strings.Builder
 		live.WriteString(lipgloss.NewStyle().Bold(true).Render("heron · goose acp"))
 		live.WriteString("\n")
-		if wl := m.workingLine(); wl != "" {
-			live.WriteString(wl)
+		if av := m.activityView(); av != "" {
+			live.WriteString(av)
 			live.WriteString("\n")
 		}
 		live.WriteString(prompt)
@@ -1642,11 +1685,11 @@ func (m Model) View() string {
 		perfBytes(len(out))
 		return out
 	}
-	// The "AI is working" row hangs on to the bottom: directly above the box
-	// it belongs to, never at the top next to the title.
+	// Der Activity-Baum haengt unten: direkt ueber der Box, zu der er
+	// gehoert, nie oben neben dem Titel.
 	bottom := prompt
-	if wl := m.workingLine(); wl != "" {
-		bottom = wl + "\n" + bottom
+	if av := m.activityView(); av != "" {
+		bottom = av + "\n" + bottom
 	}
 	if m.height <= 0 {
 		// No terminal size known yet (tests, first paint): render as-is
@@ -1710,6 +1753,52 @@ var mouseResidueFrag = regexp.MustCompile(`^(alt+\+)?\[?<\d+;\d+;\d+[MHm]`)
 // treffen die verspaetet bei bubbletea ein, zerschneidet der Parser sie in
 // Runen-Muell (sichtbare Fragmente "i=31", "[<65;..."). Der Filter dropt
 // beide Formen (FR-27).
+//
+// Der Filter ist ZUSTANDBEHAFtet (bracketBurst): SGR-Maus-Muell trifft
+// FRAGMENTIERT ein — jede Message 1-2 Runen ("[", "[[") — und verkettet
+// sich erst IM Eingabefeld zum "[[[[[[...-Stapel (User-Report beim
+// Scrollen). Ein statischer Schwellwert greift da nie. Die Erkennung ist
+// eine RATE: bracketBurst zaehlt reine '['-Messages im 600ms-Fenster —
+// ab der 3. gilt Schwall (Scrollen liefert Reports im 5ms-Takt, Dutzende
+// je Fenster; menschliches Tippen schafft keine 3 NUR-Klammern-Messages
+// in 600ms, weil zwischen echten Klammern Text kommt — "[[x]]" liefert
+// hoechstens 2, bevor nicht-Klammer-Runen den Stapel brechen).
+var bracketMu sync.Mutex
+
+// bracketTimes sind die Zeitstempel der letzten reinen Klammer-Messages
+// (Ring via Filterung im bracketBurst).
+var bracketTimes []time.Time
+
+// bracketWindow und bracketBurstLimit definieren den Schwall: >=3 reine
+// Klammer-Messages innerhalb von 600ms.
+const (
+	bracketWindow     = 600 * time.Millisecond
+	bracketBurstLimit = 3
+)
+
+// resetBracketTrap setzt die burst-Historie zurueck (Test-Isolation).
+func resetBracketTrap() {
+	bracketMu.Lock()
+	bracketTimes = nil
+	bracketMu.Unlock()
+}
+
+// bracketBurst meldet, ob die Message einen Schwall fortsetzt, und merkt
+// ihren Zeitstempel.
+func bracketBurst(now time.Time) bool {
+	bracketMu.Lock()
+	defer bracketMu.Unlock()
+	cutoff := now.Add(-bracketWindow)
+	kept := bracketTimes[:0]
+	for _, t := range bracketTimes {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	bracketTimes = append(kept, now)
+	return len(bracketTimes) >= bracketBurstLimit
+}
+
 func kittyResponseFilter(_ tea.Model, msg tea.Msg) tea.Msg {
 	k, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -1726,6 +1815,23 @@ func kittyResponseFilter(_ tea.Model, msg tea.Msg) tea.Msg {
 	}
 	if len(k.Runes) > 1 && mouseResidueFrag.MatchString(s) {
 		return nil
+	}
+	// Reine Klammer-Laeufe (User-Report "[[[[[[ beim Scrollen"): SGR-Maus-
+	// Reports, deren ESC UND Parameter verloren gingen — der Rest ist ein
+	// Rune-Stapel aus '['. Statisch ab 3 Klammern je Message (Merge-Muell,
+	// Markdown-Sicherheit: echte Eingabe hat zwischen Klammern anderen
+	// Text), dynamisch per Schwall-Rate fuer die fragmentierten 1-2er.
+	allBrackets := len(k.Runes) > 0
+	for _, r := range k.Runes {
+		if r != '[' {
+			allBrackets = false
+			break
+		}
+	}
+	if allBrackets {
+		if len(k.Runes) >= 3 || bracketBurst(time.Now()) {
+			return nil
+		}
 	}
 	return msg
 }
