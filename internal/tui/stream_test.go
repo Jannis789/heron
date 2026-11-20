@@ -8,19 +8,27 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TestStreamingPreviewGrowsBeforeFinalReply (FR-2, Activity-Tree): Chunks
-// leben in den LETZTEN DREI Textzeilen des Activity-Baums — der Chat bleibt
-// waehrend des Turns stabil; die fertige Antwort ersetzt sie im Chat.
-func TestStreamingPreviewGrowsBeforeFinalReply(t *testing.T) {
+// TestStreamingPreviewGrowsInChat (FR-2): Agent-Text streamt als EIN
+// wachsender Block in den Chat — die Block-ID bleibt stabil (in-place),
+// Thinking und Tool-Calls leben allein im Activity-Baum. Der replyMsg
+// nimmt die Vorschau heraus und haengt die fertig gerenderte Antwort an.
+func TestStreamingPreviewGrowsInChat(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 
 	r.do(chunkMsg{text: "Hallo "})
+	if n := len(r.m.chat.items); n != 1 {
+		t.Fatalf("Chat hat %d Block/N nach dem ersten Chunk, want 1 (Vorschau)", n)
+	}
+	first := r.m.streamID
+	if first < 1 {
+		t.Fatal("die Vorschau muss eine Block-ID tragen")
+	}
 	r.contains("Hallo")
 	r.do(chunkMsg{text: "Welt, dies streamt."})
 	r.contains("Hallo Welt, dies streamt.")
-	if n := len(r.m.chat.items); n != 0 {
-		t.Fatalf("Chat hat %d Bloecke waehrend des Streams, want 0 (stabil)", n)
+	if len(r.m.chat.items) != 1 || r.m.streamID != first {
+		t.Fatal("die Vorschau waechst als derselbe Block (in-place)")
 	}
 	if !r.m.running {
 		t.Fatal("turn should still be running while chunks arrive")
@@ -28,19 +36,41 @@ func TestStreamingPreviewGrowsBeforeFinalReply(t *testing.T) {
 
 	r.do(replyMsg{text: "Finaler Block mit **Formatierung**."})
 	r.contains("Finaler Block")
+	r.notContains("Hallo Welt")
 	if r.m.running {
 		t.Fatal("turn should be settled after the reply")
 	}
+	if r.m.streamID != 0 {
+		t.Fatal("die Stream-Vorschau muss nach dem Turn weg sein")
+	}
+	if id := r.m.chat.items[0].ID(); id != 1 {
+		t.Fatalf("erster finaler Block traegt #%d — die Nummer der Vorschau wandert nicht weiter (FR-3)", id)
+	}
 }
 
-// TestStreamDoesNotConsumeNumber (FR-3): der Stream brennt keine Block-
-// nummer — er legt nichts im Chat an.
-func TestStreamDoesNotConsumeNumber(t *testing.T) {
+// TestStreamPreviewNumberReuse (FR-3): die Vorschau bekommt eine echte,
+// stabile Block-Nummer; nach dem Turn gibt sie die letzte vergebene Nummer
+// an den ersten finalen Block zurueck (sie war nie sichtbar adressiert) —
+// die Nummerierung bleibt lueckenlos 1-basiert.
+func TestStreamPreviewNumberReuse(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(chunkMsg{text: "Vorschau"})
+	if r.m.streamID != 1 {
+		t.Fatalf("erste Vorschau traegt #1, got #%d", r.m.streamID)
+	}
+	r.do(chunkMsg{text: "Vorschau laenger"})
+	if r.m.streamID != 1 {
+		t.Fatalf("Vorschau-Nummer driftet: got #%d, want #1", r.m.streamID)
+	}
+	r.do(replyMsg{text: "fertig"})
+	// Der finale Text selbst rückt auf #1 nach (die Vorschau-Nummer wird
+	// wiederverwendet); SeedMarkdown nummeriert dahinter lückenlos weiter.
+	if id := r.m.chat.items[0].ID(); id != 1 {
+		t.Fatalf("erster finaler Block traegt #%d, want #1 (Vorschau-Nummer wandert weiter)", id)
+	}
 	r.m = r.m.SeedMarkdown("```go\nx := 1\n```")
-	r.contains("#1")
+	r.contains("#2")
 }
 
 // TestStreamingKeepsFollowAtBottom (FR-8): der stabile Chat erlaubt

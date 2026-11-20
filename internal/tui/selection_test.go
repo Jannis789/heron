@@ -174,33 +174,6 @@ func TestMarkColorsWholeFrame(t *testing.T) {
 	if last(tb.SetMarked(true)) == last(tb) {
 		t.Fatal("markierte Tabellen-Abschlusszeile hat NICHT die Auswahl-Farbe")
 	}
-
-	kb := NewThinkBlock("denken\ndenken2", th)
-	cmp("ThinkBlock", kb.SetFocused(true), kb.SetMarked(true), 1, 1)
-}
-
-// TestUpdateBlockKeepsMark: In-Place-Aktualisierung (ThinkBlock-Refresh im
-// Stream) erhaelt die Markierung — sonst Chip weg, Auswahl unsichtbar in
-// der marks-Map.
-func TestUpdateBlockKeepsMark(t *testing.T) {
-	l := NewBlockList()
-	tb := NewThinkBlock("alt", nil).SetID(ThinkBlockID)
-	l = l.Append(tb)
-	l = l.toggleMarkIdx(len(l.items) - 1)
-	if !l.items[0].Marked() {
-		t.Fatal("Vorbedingung: ThinkBlock markiert")
-	}
-	fresh := NewThinkBlock("neu im Stream", nil)
-	nl, ok := l.UpdateBlock(ThinkBlockID, fresh)
-	if !ok {
-		t.Fatal("UpdateBlock fand den Block nicht")
-	}
-	if !nl.items[0].Marked() {
-		t.Fatal("Markierung ging beim Refresh verloren")
-	}
-	if nl.markedCount() != 1 {
-		t.Fatalf("markedCount=%d want 1", nl.markedCount())
-	}
 }
 
 // TestSelectionFrameUnique (FR-39-Invariante inkl. Auswahl): Fokus-Rahmen

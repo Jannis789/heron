@@ -42,6 +42,10 @@ type Model struct {
 	height      int
 	inline      bool // timg-Modell: Primärscreen statt Alt-Screen (HERON_INLINE)
 	printedUpTo int  // Inline: Index des ersten noch nicht append-only gedruckten Blocks
+	// streamID: Block-ID der wachsenden Stream-Vorschau im Chat (0 = keine).
+	// Der Block wird pro Chunk in-place ersetzt; endTurn nimmt ihn heraus
+	// und die fertig gerenderte Antwort rueckt nach (FR-2).
+	streamID int
 
 	// inputFocus: der Zustand der Zwei-Modus-Kette. STANDARD ist der
 	// Eingabe-Modus — das Eingabefeld ist selektiert (Neon-Rahmen,
@@ -70,9 +74,9 @@ type Model struct {
 	cancelling bool    // cancel already requested
 	streaming  string  // raw answer received so far
 	// activity ist der Prozess-Baum des Turns (Activity-Tree-Spec):
-	// Thinking (N) · Tool Calls (N) · Working on + die letzten drei
-	// Agent-Textzeilen. Sie ersetzt die ehemaligen Think-/Tool-Karten und
-	// die Statuszeile — der Chat bleibt waehrend des Turns stabil.
+	// Thinking (N) · Tool Calls (N) · Working on. Sie ersetzt die
+	// ehemaligen Think-/Tool-Karten und die Statuszeile — Agent-Text ist
+	// KEIN Prozess und streamt als wachsender Block in den Chat.
 	activity ActivityTree
 	spinner  int // frame index of the running animation
 	// neonPhase schiebt das Neon-Band am Eingaberahmen pro Spinner-Takt eine
@@ -843,22 +847,49 @@ func (m *Model) startTurn() {
 	m.running = true
 	m.cancelling = false
 	m.streaming = ""
+	if m.streamID > 0 {
+		// Vorsichtshalber: endTurn hat die Vorschau normalerweise schon
+		// weggeraeumt — ein Turn, der sie hinterliess, putzt hier nach.
+		m.chat = m.chat.removeBlock(m.streamID)
+		m.streamID = 0
+	}
 	m.spinner = 0
 	// Frischer Turn, frischer Prozess-Baum (Activity-Tree-Spec): Der
-	// vorherige Stand (inklusive seiner letzten Textzeilen) weicht der
-	// neuen Aktivitaet; der Chat behaelt seine fertigen Bloecke.
-	m.activity = NewActivityTree(m.theme)
+	// vorherige Stand weicht der neuen Aktivitaet; fertige Bloecke
+	// (inklusive der gestreamten Antwort) bleiben im Chat.
+	// Idle armiert die Leerlauf-Zeile (User-Report): Bevor das erste
+	// Event eintrifft, zeigt Working on einen Ladeindikator statt gar
+	// nicht zu erscheinen.
+	m.activity = NewActivityTree(m.theme).Idle(time.Now())
+	// Der Baum aendert seine Zeilenzahl (leer <-> sichtbar): Der Chat-
+	// Viewport muss sofort Platz abgeben — ohne relayout behaelt er die
+	// alte Hoehe, View() laeuft ueber und schneidet Header und erste
+	// Chatzeilen oben ab (User-Report: "TUI verschiebt sich nach oben").
+	m.relayout()
 }
 
 // endTurn clears the live state once the turn settles; the activity tree
 // bleibt als Zusammenfassung des Turns stehen, bis der naechste beginnt.
-// Settle zieht die drei Textzeilen ab — abgeschlossene Prozesse brauchen
-// sie nicht mehr (User-Wunsch).
+// Die Stream-Vorschau weicht hier: replyMsg haengt danach die fertig
+// gerenderten Widgets an (FR-2).
 func (m *Model) endTurn() {
 	m.running = false
 	m.cancelling = false
 	m.streaming = ""
-	m.activity = m.activity.FlushText().Settle()
+	if m.streamID > 0 {
+		// Die Vorschau trug die zuletzt vergebene Block-Nummer — sie ist
+		// mit dem Block weg und wird an den ersten finalen Block wieder
+		// vergeben (FR-3 bleibt lueckenlos 1-basiert).
+		if m.streamID == m.chat.nextID {
+			m.chat.nextID--
+		}
+		m.chat = m.chat.removeBlock(m.streamID)
+		m.streamID = 0
+	}
+	m.activity = m.activity.Settle()
+	// Settle schrumpft den Baum (Working-on faellt weg): Der Chat bekommt
+	// die Zeilen zurueck — ohne relayout bliebe er zu klein.
+	m.relayout()
 }
 
 // chatTop is the screen row where the chat area starts (title only — the
@@ -934,6 +965,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.chat = m.chat.Unfocus()
 					m.chat = m.chat.clearMarks()
 					m.activity = m.activity.Click(msg.Y-top, m.width, m.activityBudget())
+					// Kopfzeilen-Klick klappt Knoten um (Click ruft Enter)
+					// — Zeilenzahl des Baums kann sich aendern: Chat-
+					// Viewport nachfuehren.
+					m.relayout()
 					if !m.activity.Focused() {
 						// Kein Knoten unter dem Klick (winziges Budget,
 						// nur Textzeilen): die Eingabe behaelt den Fokus,
@@ -1094,6 +1129,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Cursor auf — und wieder zu (kein gesondertes Zuklappen).
 			if m.activity.Focused() {
 				m.activity = m.activity.Enter()
+				// Auf-/Zuklappen aendert die Baumzeilenzahl: Der Chat-
+				// Viewport folgt sofort (Relayout-Vertrag wie thought/
+				// toolMsg), sonst verschiebt der Zuschnitt in View()
+				// den ganzen Screen nach oben.
+				m.relayout()
 				return m, nil
 			}
 			// Zeichen-Modus (FR-42): enter kopiert den markierten Buchstaben-
@@ -1307,6 +1347,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.neonPhase += neonPhaseStep
 		if m.running {
 			m.spinner = (m.spinner + 1) % len(spinnerFrames)
+			// Working-on-Leerlaufzeile folgt demselben Frame — Baum und
+			// Statuszeile rotieren synchron (User-Report: Ladeindikator).
+			m.activity = m.activity.IdleFrame(m.spinner)
+			// Sicherheitsnetz: Der Tick laeuft den ganzen Turn — er holt
+			// jeden Baum-Zeilen-Drift nach maximal einem Frame nach, auch
+			// aus Pfaden ohne eigenes relayout.
+			m.relayout()
 			m.neonLevel = min(1, m.neonLevel+neonFadeStep)
 			return m, nextSpinner()
 		}
@@ -1328,15 +1375,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.charBlinkArmed = false
 		return m, nil
 	case chunkMsg:
-		// Der Text waechst NICHT mehr als Chat-Vorschau (der Chat bleibt
-		// waehrend des Turns stabil) — er lebt in den letzten drei Zeilen
-		// des Activity-Baums (§ 8); die fertige Antwort ersetzt ihn im
-		// Chat, sobald der Turn endet.
+		// Agent-Text ist Antwort, kein Prozess (FR-2, User-Wunsch): Er
+		// streamt als EIN wachsender Block in den Chat — Thinking und
+		// Tool-Calls leben allein im Activity-Baum. Die Vorschau ist ein
+		// TextBlock mit stabiler Block-ID und wird pro Chunk in-place
+		// ersetzt; endTurn nimmt ihn heraus, replyMsg haengt die fertig
+		// gerenderten Widgets an. Im Inline-Modus haelt flushPrinted an
+		// der noch mutierenden Vorschau an — der Scrollback sieht nur
+		// das finale Rendering.
 		m.streaming += msg.text
-		m.activity = m.activity.Text(msg.text)
+		preview := NewTextBlock(m.streaming, textColorFor(m.theme))
+		if m.streamID > 0 {
+			m.chat = m.chat.replaceBlock(m.streamID, preview)
+			return m, nil
+		}
+		m.chat = m.chat.Append(preview)
+		m.streamID = m.chat.items[len(m.chat.items)-1].ID()
 		return m, nil
 	case thoughtMsg:
 		m.activity = m.activity.Thought(msg.text)
+		// Der Baum wächst mit jedem Denkschritt — der Chat-Viewport gibt
+		// die Zeilen SOFORT ab (kein Warten auf den naechsten Spinner-
+		// Tick), sonst driften Layout und View auseinander.
+		m.relayout()
 		return m, nil
 	case toolMsg:
 		// Der Activity-Baum uebernimmt die Karte: neuer Call schliesst die
@@ -1348,6 +1409,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Exit: msg.exit, HasOutput: msg.hasOut, Live: msg.live,
 			Done: msg.done, Failed: msg.failed,
 		})
+		// Neuer Call = neue Baumzeile(n): Chat-Viewport sofort nachfuehren
+		// (derselbe Relayout-Vertrag wie thoughtMsg).
+		m.relayout()
 		return m, nil
 	case infoMsg:
 		// The backend announced the real model/effort/provider (ACP
@@ -1549,8 +1613,8 @@ func (m *Model) flushPrinted() tea.Cmd {
 	for m.printedUpTo < len(m.chat.items) {
 		it := m.chat.items[m.printedUpTo]
 		id := it.ID()
-		if pending[id] {
-			break
+		if pending[id] || id == m.streamID {
+			break // Stream-Vorschau mutiert noch — druckt erst nach dem Settle
 		}
 		for _, line := range strings.Split(it.View(m.width), "\n") {
 			cmds = append(cmds, tea.Println(line))
@@ -1704,7 +1768,17 @@ func (m Model) View() string {
 	}
 	topLines := strings.Split(top.String(), "\n")
 	if len(topLines) > avail {
-		topLines = topLines[len(topLines)-avail:]
+		// Defensive bei Layout-Drift (z.B. Baum ohne relayout gewachsen):
+		// Nur der CHAT kuerzt von oben — die TITELZEILE bleibt IMMER
+		// Zeile 1. Der alte Zuschnitt topLines[len-avail:] frass den
+		// Header und die ersten Chatzeilen: Das ganze TUI schien sich
+		// "nach oben zu verschieben" (User-Report 19.11.).
+		head := topLines[0]
+		chat := topLines[1:]
+		if keep := avail - 1; len(chat) > keep {
+			chat = chat[len(chat)-keep:]
+		}
+		topLines = append([]string{head}, chat...)
 	}
 	for len(topLines) < avail {
 		topLines = append(topLines, "")

@@ -77,14 +77,158 @@ func nodeText(n ast.Node, src []byte) string {
 	return b.String()
 }
 
+// SGRChain verfolgt die AKTIVEN SGR-Opener eines Strings: \x1b[0m leert die
+// Kette, Zwei-Code-Closer (\x1b[22m/23m/24m/27m/29m, 39/49/59) entfernen genau
+// ihren Opener, Opener ergaenzen sich. Naives Anhängen (nur die letzte
+// Sequenz merken) schlepte geschlossene Paare ("\x1b[1m\x1b[22m") mit und
+// oeffnete geschlossene Stile auf Folgeseiten wieder. Genutzt vom Umbruch
+// (WrapDisplay/WrapWords), um die aktive Formatierung an Folgelines zu
+// reproduzieren (User-Report: "fettgedruckter text wird nicht richtig
+// angezeigt, wenn ich im auswahlmode mit up/down bin" — ein umgebrochener
+// fett-Absatz verlor ab Zeile 2 sein \x1b[1m), und vom Overlay-Zeichnen
+// (styleRange/undercursor) fuer die Wiederherstellung nach dem markierten
+// Bereich.
+type SGRChain []string
+
+// sgrParams zerlegt die Parameter einer SGR-Sequenz. Composite-Parameter
+// (38/48/58 mit 2→r;g;b bzw. 5→Index) bleiben intakt — sonst wuerde das
+// 0-Byte im TrueColor "38;2;191;0;255" als Reset missverstanden und die
+// Ueberschriften-Kette (\x1b[1;4;38;2;…;4m) wuerde fälschlich geleert.
+func sgrParams(seq string) []string {
+	body := strings.TrimSuffix(strings.TrimPrefix(seq, "\x1b["), "m")
+	if body == "" {
+		return nil
+	}
+	parts := strings.Split(body, ";")
+	out := make([]string, 0, len(parts))
+	for i := 0; i < len(parts); i++ {
+		p := parts[i]
+		if p == "" {
+			p = "0"
+		}
+		out = append(out, p)
+		if p == "38" || p == "48" || p == "58" {
+			if i+1 < len(parts) && parts[i+1] == "2" {
+				i += 4 // 2;r;g;b
+			} else if i+1 < len(parts) && parts[i+1] == "5" {
+				i += 2 // 5;idx
+			}
+		}
+	}
+	return out
+}
+
+// sgrCancels liefert die Opener-Parameter, die ein Closer-Param aufhebt
+// (22→1/2, 23→3, 24→4, 25→5/6, 27→7, 29→9, 39/49→Farb-Familien, 59→58).
+func sgrCancels(closer string) map[string]bool {
+	var m map[string]bool
+	add := func(vals ...int) {
+		if m == nil {
+			m = map[string]bool{}
+		}
+		for _, v := range vals {
+			m[strconv.Itoa(v)] = true
+		}
+	}
+	switch closer {
+	case "22":
+		add(1, 2)
+	case "23":
+		add(3)
+	case "24":
+		add(4)
+	case "25":
+		add(5, 6)
+	case "27":
+		add(7)
+	case "29":
+		add(9)
+	case "39":
+		for n := 30; n <= 37; n++ {
+			add(n)
+		}
+		for n := 90; n <= 97; n++ {
+			add(n)
+		}
+	case "49":
+		for n := 40; n <= 47; n++ {
+			add(n)
+		}
+		for n := 100; n <= 107; n++ {
+			add(n)
+		}
+	case "59":
+		add(58)
+	}
+	return m
+}
+
+// sgrIsCloser meldet, ob der Param ausschliesslich STILE aufhebt (Zwei-Code-
+// Closer bzw. Farb-Defaults) — reine Closer-Sequenzen gehoeren nicht in die
+// Kette, sonst wuerde ein geschlossener Stil spaeter wieder geoeffnet.
+func sgrIsCloser(p string) bool {
+	switch p {
+	case "22", "23", "24", "25", "27", "29", "39", "49", "59":
+		return true
+	}
+	return false
+}
+
+// Apply nimmt eine vollstaendige SGR-Sequenz (Ende 'm') in die Kette auf.
+func (c *SGRChain) Apply(seq string) {
+	ps := sgrParams(seq)
+	if len(ps) == 0 {
+		return
+	}
+	if ps[0] == "0" {
+		*c = (*c)[:0]
+		ps = ps[1:]
+		if len(ps) == 0 {
+			return
+		}
+	}
+	cancelled := map[string]bool{}
+	for _, p := range ps {
+		for k := range sgrCancels(p) {
+			cancelled[k] = true
+		}
+	}
+	if len(cancelled) > 0 {
+		kept := (*c)[:0]
+		for _, s := range *c {
+			drop := false
+			for _, p := range sgrParams(s) {
+				if cancelled[p] {
+					drop = true
+					break
+				}
+			}
+			if !drop {
+				kept = append(kept, s)
+			}
+		}
+		*c = kept
+	}
+	for _, p := range ps {
+		if !sgrIsCloser(p) && !cancelled[p] {
+			*c = append(*c, seq)
+			return
+		}
+	}
+	// Reine Closer-Sequenz: die Kette endet hier (kein Opener zu merken).
+}
+
+// Join liefert die Kette als wiederzuoeffnende SGR-Folge (leer = plain).
+func (c SGRChain) Join() string { return strings.Join(c, "") }
+
 // WrapDisplay splits s into lines of at most w display cells (rune/emoji-aware).
 // Hard break — used for code; table cells use wrapWords.
 //
 // ANSI-bewusst: Escape-Sequenzen werden GANZ uebernommen — sie zaehlen keine
 // Zellen und duerfen nie zerschnitten werden (ein halber SGR erscheint im
-// Terminal als sichtbarer Muell). Die aktive Formatierung (letztes voll-
-// staendige SGR) wird an Folgeseiten wiederholt, damit ein hart gesplittetes
-// Token weiter in seinem Stil bleibt.
+// Terminal als sichtbarer Muell). Die aktive Formatierung (SGR-Kette) wird
+// an Folgeseiten wiederholt, damit ein hart gesplittetes Token weiter in
+// seinem Stil bleibt.
 func WrapDisplay(s string, w int) []string {
 	if w <= 0 || s == "" {
 		return []string{s}
@@ -92,18 +236,14 @@ func WrapDisplay(s string, w int) []string {
 	var lines []string
 	var cur []rune
 	curW := 0
-	lastSGR := "" // letztes vollstaendige SGR (aktiv ab hier)
+	var chain SGRChain // aktive SGR-Opener (aktiv ab hier)
 	rs := []rune(s)
 	for i := 0; i < len(rs); {
 		if rs[i] == 0x1b {
 			j := i + ansiSeqLen(rs, i)
 			seq := string(rs[i:j])
 			if strings.HasSuffix(seq, "m") {
-				if seq == "\x1b[0m" {
-					lastSGR = ""
-				} else {
-					lastSGR = seq
-				}
+				chain.Apply(seq)
 			}
 			cur = append(cur, rs[i:j]...)
 			i = j
@@ -120,7 +260,7 @@ func WrapDisplay(s string, w int) []string {
 		if len(cur) > 0 && curW+ww > w {
 			lines = append(lines, string(cur))
 			// Aktive Formatierung auf der Folgeseite fortsetzen.
-			cur, curW = []rune(lastSGR), 0
+			cur, curW = []rune(chain.Join()), 0
 		}
 		cur = append(cur, r)
 		curW += ww
@@ -137,6 +277,32 @@ func WrapWords(s string, w int) []string {
 		return []string{s}
 	}
 	var lines []string
+	// Aktive SGR-Kette ÜBER den ganzen String (nicht pro Absatz): Inline-
+	// Stile wie **fett** spannen über Wortgrenzen — bricht der Umbruch
+	// mitten in ihnen, muss die Folgeline die Kette WIEDER OEFFNEN, sonst
+	// verliert z. B. ein umgebrochener fett-Absatz ab Zeile 2 sein Bold,
+	// während das \x1b[22m-Schlussbyte dort sichtbar verwaist (User-Report:
+	// "fettgedruckter text wird nicht richtig angezeigt, wenn ich im
+	// auswahlmode mit up/down bin"). SGRChain traegt nur wirklich offene
+	// Opener — geschlossene Stile fallen über ihre Zwei-Code-Closer
+	// natuerlich heraus, es gibt keine leeren "\x1b[1m\x1b[22m"-Paare auf
+	// Folgelines.
+	var chain SGRChain
+	chainScan := func(word string) {
+		rs := []rune(word)
+		for i := 0; i < len(rs); {
+			if rs[i] == 0x1b {
+				j := i + ansiSeqLen(rs, i)
+				if seq := string(rs[i:j]); strings.HasSuffix(seq, "m") {
+					chain.Apply(seq)
+				}
+				i = j
+				continue
+			}
+			i++
+		}
+	}
+	cont := false // naechstes Wort beginnt eine Folgeline nach einem Hard-Break
 	for _, para := range strings.Split(s, "\n") {
 		words := strings.Fields(para)
 		if len(words) == 0 {
@@ -159,19 +325,29 @@ func WrapWords(s string, w int) []string {
 			if ww > w {
 				flush()
 				lines = append(lines, WrapDisplay(word, w)...)
+				chainScan(word)
+				cont = true
 				continue
 			}
-			if cur == "" {
+			switch {
+			case cont:
+				// Folgeline nach Hard-Break: aktive Formatierung fortsetzen
+				// (SGR-Prefix kostet keine Zelle — lipgloss.Width sieht es
+				// sowieso nicht).
+				cur, curW = chain.Join()+word, ww
+				cont = false
+			case cur == "":
 				cur, curW = word, ww
-				continue
-			}
-			if curW+1+ww <= w {
+			case curW+1+ww <= w:
 				cur += " " + word
 				curW += 1 + ww
-			} else {
+			default:
 				flush()
-				cur, curW = word, ww
+				// Wrap mitten im Absatz: aktive Formatierung auf die neue
+				// Zeile uebernehmen (wie WrapDisplay es am Hard-Break tut).
+				cur, curW = chain.Join()+word, ww
 			}
+			chainScan(word)
 		}
 		flush()
 	}

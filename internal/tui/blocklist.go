@@ -117,6 +117,16 @@ type charState struct {
 	blinkHide bool
 }
 
+// wheelStep ist der Zeilenschritt je Wheel-Tick. Terminals liefern fuer
+// einen Wheel-Nocken bzw. smooth-scroll-Schwellen EIN SGR-Event; gemessen
+// (perflog, Ghostty/Wayland) kommen bei langsamer Fingerbewegung Events im
+// ~530ms-Takt — 1 Zeile je Tick fuehlt sich damit glacial an. 3 Zeilen
+// entsprechen vim/less/tmux und sind die komfortable Konvention; schnelle
+// Rad-Spinner feuern Events im 30ms-Takt, bubbletea fasst die Flushes
+// ohnehin auf 60 fps zusammen — mehr Zeilen kosten dann keine zusaetzlichen
+// Frames, nur groessere Spruenge.
+const wheelStep = 3
+
 func NewBlockList() BlockList {
 	// charBlock/charFromBlock starten bei -1: 0 waere ein gueltiger Block-
 	// Index und wuerde in enterCursorMode den "Wiedereintritt"-Zweig
@@ -214,6 +224,27 @@ func (l BlockList) removeBlock(id int) BlockList {
 	return l
 }
 
+// replaceBlock ersetzt den Block mit der gegebenen ID in-place — die
+// Stream-Vorschau waechst als derselbe Block (FR-2): Die Nummer bleibt
+// stabil (FR-3), mit follow scrollt das Ende mit; ohne follow bleibt die
+// Leseposition unangetastet.
+func (l BlockList) replaceBlock(id int, w Widget) BlockList {
+	for i, it := range l.items {
+		if it.ID() != id {
+			continue
+		}
+		if w.Focusable() && w.ID() < 1 {
+			w = w.SetID(it.ID())
+		}
+		l.items[i] = w
+		if l.follow {
+			l = l.ScrollEnd()
+		}
+		return l
+	}
+	return l
+}
+
 // copyByID copies the block carrying the stable number n — the keyboard
 // fallback of the copy box (FR-5). Reports whether a copy was triggered.
 func (l BlockList) copyByID(n int) (BlockList, tea.Cmd, bool) {
@@ -262,7 +293,7 @@ func (l BlockList) sectionMarkdown(idx int) string {
 	}
 	parts := make([]string, 0, end-idx)
 	for i := idx; i < end; i++ {
-		parts = append(parts, l.items[i].Markdown())
+		parts = append(parts, render.StripANSI(l.items[i].Markdown()))
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -414,44 +445,12 @@ func (l BlockList) all() (lines []string, total int) {
 // Bildbloecke liefern nur ihre sichtbaren Zeilen: Der Transmit-Escape landet
 // auf der ersten sichtbaren Zeile, damit hohe Bilder das Terminal auch dann
 // erreichen, wenn ihr Blockanfang ausserhalb des Fensters liegt (FR-27).
-// stackCardLabel liefert Kopf-/Divider-Label einer stapelbaren Karte
-// (Think-/ToolBlock); false = kein Stack-Mitglied.
-func stackCardLabel(it Widget, w int) (string, bool) {
-	switch c := it.(type) {
-	case ThinkBlock:
-		return c.label(), true
-	case ToolBlock:
-		return c.stateLabel(w), true
-	}
-	return "", false
-}
-
-// joinTopAt meldet, ob Item i OHNE eigene ┌─┐-Zeile rendert: nur wenn es
-// selbst UND sein Vorgänger Stack-Karten sind — der Vorgänger schließt
-// dann mit ├─ <Label von i> ─┤ ab (User-Skizze "thinking | tool stacken").
-// Text zwischen den Karten (Antwort, User) beendet den Stack natürlich.
-func (l BlockList) joinTopAt(i, w int) bool {
-	if i <= 0 || i >= len(l.items) {
-		return false
-	}
-	if _, ok := stackCardLabel(l.items[i], w); !ok {
-		return false
-	}
-	_, prev := stackCardLabel(l.items[i-1], w)
-	return prev
-}
-
-// heightAt ist DIE Höhen-Quelle für Offset/Clip/Fenster: sie kennt das
-// Stack-Joining — ohne horizontale Rahmenzeichen heißt Joining: die
-// Leerzeile VOR einer Folgekarte entfällt (die Kopfzeile der Folgekarte
-// trennt selbst). Jede Height-Stelle in diesem File läuft über diesen
-// Helfer — Höhe und gerenderte Zeilen können nicht driften.
+// heightAt ist DIE Höhen-Quelle für Offset/Clip/Fenster (das ehemalige
+// Think-/Tool-Karten-Stacking ist mit den Karten entfallen — jede Height-
+// Stelle in diesem File läuft über diesen Helfer, Höhe und gerenderte
+// Zeilen können nicht driften).
 func (l BlockList) heightAt(i, w int) int {
-	h := l.items[i].Height(w)
-	if i+1 < len(l.items) && l.joinTopAt(i+1, w) {
-		h--
-	}
-	return h
+	return l.items[i].Height(w)
 }
 
 func (l BlockList) stack(windowed bool) (lines []string, top, total int) {
@@ -519,24 +518,6 @@ func (l BlockList) stack(windowed bool) (lines []string, top, total int) {
 				cursorLine = start + h - 1
 			}
 		}
-	// Stack-Joining (Render-Ebene): nur auf der KOPIE — die Felder
-	// stehen nie in den List-Items, heightAt/joinTopAt leiten die
-	// Regel aus der Nachbarschaft her (Höhe ⇒ Zeilen konsistent).
-	// dividerSel: Die Caption einer Folgekarte lebt in der Trennlinie
-	// des Vorgaengers — ist die Karte ausgewaehlt, leuchtet ihr Label
-	// dort neon (header-only-Auswahl, wie die eigene Kopfzeile).
-	jT := l.joinTopAt(i, w)
-	jB := i+1 < len(l.items) && l.joinTopAt(i+1, w)
-	if jT || jB {
-		switch c := it.(type) {
-		case ThinkBlock:
-			c.joinTop, c.joinAsDivider = jT, jB
-			it = c
-		case ToolBlock:
-			c.joinTop, c.joinAsDivider = jT, jB
-			it = c
-		}
-	}
 		// Nur Bloecke rendern, die das Fenster beruehren. Vorher lief
 		// View() fuer JEDEN Block der Historie und View() schnitt danach
 		// zu — ein langer Chat kostete damit pro Frame O(Historie)
@@ -993,7 +974,7 @@ func (l BlockList) markedMarkdown() string {
 			if headingAt(it) {
 				parts = append(parts, l.sectionMarkdown(i))
 			} else {
-				parts = append(parts, it.Markdown())
+				parts = append(parts, render.StripANSI(it.Markdown()))
 			}
 		}
 	}
@@ -1089,14 +1070,14 @@ func (l BlockList) handleMouse(msg tea.MouseMsg) (BlockList, tea.Cmd, bool) {
 		}
 	case tea.MouseButtonWheelUp:
 		before := l.offset
-		l.offset--
+		l.offset -= wheelStep
 		l.follow = false
 		l = l.clamp()
 		perfScroll("wheel-up", before, l.offset)
 		return l, nil, true
 	case tea.MouseButtonWheelDown:
 		before := l.offset
-		l.offset++
+		l.offset += wheelStep
 		l = l.clamp()
 		if l.height > 0 && l.offset >= l.totalLines()-l.height {
 			l.follow = true
@@ -1455,7 +1436,9 @@ func (l BlockList) selMarkdown() string {
 	lo, hi := l.selBounds()
 	parts := make([]string, 0, hi-lo+1)
 	for i := lo; i <= hi; i++ {
-		parts = append(parts, l.items[i].Markdown())
+		// Auch Karten koennen gestreamten Inline-Stil tragen: der
+		// Yank ist IMMER plain (FR-29), nie \x1b[1m…\x1b[22m.
+		parts = append(parts, render.StripANSI(l.items[i].Markdown()))
 	}
 	return strings.Join(parts, "\n\n")
 }

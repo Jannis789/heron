@@ -4,6 +4,9 @@
   "border": { "color": "#B4BEFE", "bold": true, "italic": false },
   "action": { "color": "#B999FF", "bold": false, "italic": false },
   "focus": { "color": "#BF00FF", "bold": true, "italic": false },
+  "soft": { "color": "#C0C3D4", "bold": false, "italic": false },
   "pan": { "color": "#FFB300", "bold": true, "italic": false },
+  "ok": { "color": "#22C55E", "bold": true, "italic": false },
+  "err": { "color": "#FF5555", "bold": true, "italic": false },
   "background": "#141419"
 }

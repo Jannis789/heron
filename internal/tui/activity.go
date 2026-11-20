@@ -3,6 +3,7 @@ package tui
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -12,27 +13,32 @@ import (
 
 // ActivityTree ist die feste Activity-Struktur des Agent-Prozesses (Activity-
 // Tree-Spec): GENAU drei Hauptknoten — Thinking (N), Tool Calls (N) und
-// Working on — plus eine Trennlinie und die letzten drei Agent-Textzeilen.
-// Sie ersetzt die ehemaligen Think-/Tool-Karten im Chat: Der Chat bleibt
-// waehrend des Turns stabil, der Prozess lebt komplett hier.
+// Working on. Sie ersetzt die ehemaligen Think-/Tool-Karten im Chat: Der
+// Prozess lebt komplett hier — Agent-Text gehoert NICHT dazu, er ist die
+// Antwort und streamt als ein wachsender Block direkt in den Chat.
 //
 // Thinking und Tool Calls sind eingeklappt (▸); der Auswahlmodus (tab)
 // laeuft mit ↑/↓ genau diese beiden Knoten ab, und enter klappt den Knoten
 // unter dem Cursor auf UND wieder zu — auch den aktiven Denkprozess. Kein
 // Modifier, keine zweite Taste; ein Mausklick auf die Kopfzeile tut
-// dasselbe, das Rad scrollt die Tool-Historie. Working on ist immer
-// ausgeklappt (▼) und zeigt den aktuellsten Vorgang: Thinking-Text, Tool-
-// Name und Argument bzw. bash mit gekuerztem Originalbefehl. Ist der Turn
-// abgeschlossen (settled), verschwinden die letzten drei Textzeilen — die
-// Antwort steht dann fertig im Chat.
+// dasselbe, das Rad scrollt die Tool-Historie. Working on ist KEIN
+// Faltknoten: keine ▸/▼-Marke, enter/klick klappen dort nichts. Er zeigt
+// NUR die GERADE LAUFENDEN Vorgaenge — offenes Thinking und/oder laufende
+// Calls, jeweils mit der bisherigen Laufzeit (Zeitangabe: man sieht, wo
+// der Agent am laengsten und am kuerzesten braucht). Ist nichts mehr im
+// Gang oder der Turn abgeschlossen (settled), verschwindet der Knoten
+// samt den letzten drei Textzeilen — die Antwort steht fertig im Chat.
 type ActivityTree struct {
 	th *render.Theme
 
 	// thoughts: geschlossene Denk-Sektionen (ein Tool-Call schliesst die
-	// laufende Sektion; neues Thinking oeffnet eine neue — FR-30-Geist).
-	thoughts []string
+	// laufende Sektion; neues Thinking oeffnet eine neue — FR-30-Geist),
+	// je Sektion mit Start-/Endzeit fuer die Laufzeitangabe.
+	thoughts []thoughtSection
 	// live: die aktuelle, noch offene Denk-Sektion.
 	live string
+	// liveStart: Beginn der offenen Denk-Sektion (Laufzeitangabe).
+	liveStart time.Time
 
 	tools []activityTool
 
@@ -47,15 +53,26 @@ type ActivityTree struct {
 	// dem Cursor auf und wieder zu. Der Cursor haengt an der STRUKTUR, nicht
 	// an Zeilennummern — Aufklappen verschiebt die Zeilen darunter.
 	sel activityNode
-	// settled: der Turn ist abgeschlossen — die letzten drei Textzeilen
-	// samt Trennlinie verschwinden, die Zusammenfassung bleibt.
+	// settled: der Turn ist abgeschlossen — Working on verschwindet,
+	// die Zusammenfassung (Thinking/Tool Calls) bleibt.
 	settled bool
+	// idleSince: Turn-Beginn (startTurn). Solange der laufende Turn kein
+	// Kind hat (offenes Thinking, laufender Call), zeigt Working on eine
+	// Spinner-Zeile mit Turn-Laufzeit — der Agent rechnet sichtbar weiter
+	// (User-Report: "Working on gar nicht angezeigt, obwohl noch nicht
+	// fertig"). Das erste Event ersetzt sie, Settle raeumt auf.
+	idleSince time.Time
+	// idleFrame: Spinner-Frame der Leerlauf-Zeile (folgt m.spinner ueber
+	// IdleFrame, damit Baum und Statuszeile synchron rotieren).
+	idleFrame int
+}
 
-	// textLines/pending: die normalen Agent-Textausgabezeilen (nur
-	// agent_message_chunk — Thinking und Tool-Argumente zaehlen NICHT,
-	// § 8 der Spec). pending ist die noch unvollstaendige letzte Zeile.
-	textLines []string
-	pending   string
+// thoughtSection ist EINE Denk-Sektion samt Start-/Endzeit — die Laufzeit
+// je Sektion zeigt, welche Denkphase wie lange brauchte.
+type thoughtSection struct {
+	text    string
+	started time.Time
+	ended   time.Time
 }
 
 // activityTool ist EIN Tool-Call der Historie (callID identifiziert ihn
@@ -69,6 +86,8 @@ type activityTool struct {
 	command string // rawInput.command (Shell)
 	running bool
 	failed  bool
+	started time.Time // Beginn des Calls (erster Kontakt)
+	ended   time.Time // Ende des Calls (Update mit Done); zero = laeuft
 }
 
 // NewActivityTree baut den leeren Baum; Thinking/Tool Calls starten
@@ -77,18 +96,18 @@ func NewActivityTree(th *render.Theme) ActivityTree {
 	return ActivityTree{th: th}
 }
 
-// maxActivityTextLines begrenzt den Zeilenpuffer: gezeigt werden ohnehin
-// nur die letzten drei (§ 8), mehr als 64 Zeilen braucht niemand.
-const maxActivityTextLines = 64
-
 // activityDetailCap begrenzt die Zeilen des aufgeklappten Laufend-Details:
 // Befehle koennen mehrere tausend Zeichen lang sein — der Bereich scrollt,
 // statt jede Zeile zu layouten.
 const activityDetailCap = 32
 
-// Thought haengt einen Thinking-Chunk an die offene Sektion.
+// Thought haengt einen Thinking-Chunk an die offene Sektion; der erste
+// Chunk startet die Laufzeituhr der Sektion.
 func (a ActivityTree) Thought(text string) ActivityTree {
 	a.live += text
+	if a.liveStart.IsZero() {
+		a.liveStart = time.Now()
+	}
 	return a
 }
 
@@ -96,9 +115,11 @@ func (a ActivityTree) Thought(text string) ActivityTree {
 // entstehen nie).
 func (a ActivityTree) CloseThought() ActivityTree {
 	if strings.TrimSpace(a.live) != "" {
-		a.thoughts = append(a.thoughts, a.live)
+		a.thoughts = append(a.thoughts,
+			thoughtSection{text: a.live, started: a.liveStart, ended: time.Now()})
 	}
 	a.live = ""
+	a.liveStart = time.Time{}
 	return a
 }
 
@@ -119,46 +140,32 @@ func (a ActivityTree) Tool(u ToolUpdate) ActivityTree {
 	if a.live != "" && !a.hasTool(u.CallID) {
 		a = a.CloseThought()
 	}
+	now := time.Now()
 	entry := activityTool{callID: u.CallID, name: u.Label, kind: u.Kind,
-		text: u.Text, command: u.Command, running: !u.Done, failed: u.Failed}
+		text: u.Text, command: u.Command, running: !u.Done, failed: u.Failed,
+		started: now, ended: now}
+	if !u.Done {
+		entry.ended = time.Time{} // laeuft noch — die Uhr tickt weiter
+	}
 	for i := range a.tools {
 		if a.tools[i].callID == u.CallID {
+			// In-place-Update: der Startzeitpunkt bleibt — die Laufzeit
+			// misst den GESAMTEN Call, nicht das letzte Update.
+			entry.started = a.tools[i].started
+			if u.Done {
+				if a.tools[i].ended.IsZero() {
+					entry.ended = now
+				} else {
+					entry.ended = a.tools[i].ended
+				}
+			} else {
+				entry.ended = time.Time{}
+			}
 			a.tools[i] = entry
 			return a
 		}
 	}
 	a.tools = append(a.tools, entry)
-	return a
-}
-
-// Text nimmt einen Agent-Text-Chunk entgegen; vollstaendige Zeilen landen
-// im Puffer (maximal maxActivityTextLines, der Tail zaehlt).
-func (a ActivityTree) Text(s string) ActivityTree {
-	a.pending += s
-	for {
-		i := strings.IndexByte(a.pending, '\n')
-		if i < 0 {
-			break
-		}
-		a.textLines = append(a.textLines, a.pending[:i])
-		a.pending = a.pending[i+1:]
-	}
-	if len(a.textLines) > maxActivityTextLines {
-		a.textLines = a.textLines[len(a.textLines)-maxActivityTextLines:]
-	}
-	return a
-}
-
-// FlushText uebernimmt die noch unvollstaendige letzte Zeile (Turn-Ende:
-// der letzte Chunk kommt oft ohne schliessenden Zeilenumbruch).
-func (a ActivityTree) FlushText() ActivityTree {
-	if strings.TrimSpace(a.pending) != "" {
-		a.textLines = append(a.textLines, a.pending)
-	}
-	a.pending = ""
-	if len(a.textLines) > maxActivityTextLines {
-		a.textLines = a.textLines[len(a.textLines)-maxActivityTextLines:]
-	}
 	return a
 }
 
@@ -210,10 +217,15 @@ func (a ActivityTree) ThinkingCount() int {
 // ToolCount: Zahl der Tool-Calls (distinct callIDs).
 func (a ActivityTree) ToolCount() int { return len(a.tools) }
 
-// Empty: kein Thinking, kein Tool-Call, keine Textzeile — nichts zu zeigen.
+// Empty: kein Thinking, kein Tool-Call — nichts zu zeigen. AUSNAHME: ein
+// laufender Turn mit armierter Leerlauf-Anzeige (Idle) bleibt sichtbar —
+// Working on verschwindet, wenn der Agent fertig ist (settled), nicht
+// wenn er gerade zwischen zwei Events rechnet (User-Report).
 func (a ActivityTree) Empty() bool {
-	return a.ThinkingCount() == 0 && len(a.tools) == 0 &&
-		len(a.visibleTextLines()) == 0
+	if !a.settled && !a.idleSince.IsZero() {
+		return false
+	}
+	return a.ThinkingCount() == 0 && len(a.tools) == 0
 }
 
 // currentTool liefert den zuletzt aktualisierte­n Call (laufend oder fertig).
@@ -224,18 +236,50 @@ func (a ActivityTree) currentTool() (activityTool, bool) {
 	return a.tools[len(a.tools)-1], true
 }
 
-// visibleTextLines: die letzten (höchstens drei) Textausgabezeilen, ohne
-// haengende Leerzeilen (§ 8). Die unvollstaendige letzte Zeile (pending)
-// zaehlt mit — sie IST die aktuelle Ausgabe, waehrend sie streamt.
-func (a ActivityTree) visibleTextLines() []string {
-	lines := a.textLines
-	if strings.TrimSpace(a.pending) != "" {
-		lines = append(lines, a.pending)
+// duration: Laufzeit des Calls — bei laufenden Calls die bisherige Zeit.
+func (t activityTool) duration() time.Duration {
+	switch {
+	case t.started.IsZero():
+		return 0
+	case t.ended.IsZero():
+		return time.Since(t.started)
 	}
-	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
-		lines = lines[:len(lines)-1]
+	return t.ended.Sub(t.started)
+}
+
+// duration: Laufzeit der Denk-Sektion.
+func (s thoughtSection) duration() time.Duration {
+	if s.started.IsZero() {
+		return 0
 	}
-	return lines
+	if s.ended.IsZero() {
+		return time.Since(s.started)
+	}
+	return s.ended.Sub(s.started)
+}
+
+// durTag rendert die Zeitangabe hinter einem Vorgang (muted): "<1s",
+// "12s", "1m03s". Ohne messbare Zeit (nie gestartet bzw. Start = Ende)
+// faellt der Tag weg — dann ist keine Aussage drin.
+func (a ActivityTree) durTag(d time.Duration) (string, int) {
+	if d <= 0 {
+		return "", 0
+	}
+	s := "<1s"
+	if d >= time.Second {
+		sec := int(d.Seconds())
+		if sec < 60 {
+			s = strconv.Itoa(sec) + "s"
+		} else {
+			t := strconv.Itoa(sec/60) + "m"
+			if sec%60 < 10 {
+				t += "0"
+			}
+			s = t + strconv.Itoa(sec%60) + "s"
+		}
+	}
+	tag := " " + s
+	return a.muted().Render(tag), runewidth.StringWidth(tag)
 }
 
 // ---- Prädikate ---------------------------------------------------------------
@@ -265,6 +309,10 @@ func (a ActivityTree) style(color string) lipgloss.Style {
 
 func (a ActivityTree) valida() lipgloss.Style { return a.style(a.th.ValidaColor()) }
 func (a ActivityTree) neon() lipgloss.Style   { return a.style(a.th.NeonPinkColor()) }
+// soft ist die Inhaltsfarbe des Baums (Hellgrau, User-Wunsch): Gelesenes
+// (Denk-Tails, Befehle, fortlaufende Working-on-Zeilen) liest sich still,
+// Labels und Struktur tragen die Akzente.
+func (a ActivityTree) soft() lipgloss.Style   { return a.style(a.th.SoftColor()) }
 func (a ActivityTree) muted() lipgloss.Style  { return a.style(a.th.MutedColor()) }
 func (a ActivityTree) textSt() lipgloss.Style { return a.th.TextStyle() }
 func (a ActivityTree) stateSt(t activityTool) lipgloss.Style {
@@ -342,7 +390,8 @@ const (
 )
 
 // thinkingChildren: eingeklappte Denk-Sektionen als je eine Zeile (Tail,
-// wenn das Budget kneift) — Inhalt in Neon-Pink (Thinking-Inhalte, § 2).
+// wenn das Budget kneift) — Inhalt in Soft-Grau (User-Wunsch: Gelesenes
+// kein Neon), je Zeile mit der Laufzeit der Sektion.
 func (a ActivityTree) thinkingChildren(width int) []string {
 	inner := width - 6
 	if inner < 8 {
@@ -350,11 +399,11 @@ func (a ActivityTree) thinkingChildren(width int) []string {
 	}
 	secs := a.thoughts
 	if strings.TrimSpace(a.live) != "" {
-		secs = append(secs, a.live)
+		secs = append(secs, thoughtSection{text: a.live, started: a.liveStart})
 	}
 	var rows []string
 	for i, sec := range secs {
-		first := strings.TrimSpace(sec)
+		first := strings.TrimSpace(sec.text)
 		if j := strings.IndexByte(first, '\n'); j >= 0 {
 			first = first[:j]
 		}
@@ -362,7 +411,9 @@ func (a ActivityTree) thinkingChildren(width int) []string {
 		if i == len(secs)-1 {
 			branch = actLast
 		}
-		rows = append(rows, a.muted().Render(branch)+a.neon().Render(cutWords(first, inner)))
+		tag, tagW := a.durTag(sec.duration())
+		rows = append(rows, a.muted().Render(branch)+
+			a.soft().Render(cutWords(first, inner-tagW))+tag)
 	}
 	return rows
 }
@@ -384,6 +435,14 @@ func (a ActivityTree) toolRow(t activityTool, last bool, width int) string {
 	if inner < 8 {
 		inner = 8
 	}
+	// Zeitangabe am Zeilenende: laufend die bisherige, fertig die Gesamt-
+	// dauer — so sieht man, wo der Agent am laengsten und am kuerzesten
+	// braucht. Der Tag kriegt seinen Platz VOR der Inhaltsteilung ab.
+	tag, tagW := a.durTag(t.duration())
+	iw := inner - tagW
+	if iw < 8 {
+		iw = 8
+	}
 	if t.isBash() {
 		name := t.name
 		if name == "" {
@@ -393,21 +452,21 @@ func (a ActivityTree) toolRow(t activityTool, last bool, width int) string {
 			// Laufender bash-Call: NUR der Name — der Befehl lebt im
 			// aufklappbaren Detail darunter (§ 5), nicht als Inline-Kopie.
 			return a.muted().Render(branch) + a.stateSt(t).Render(sym) + " " +
-				a.neon().Render(cutCells(name, inner))
+				a.textSt().Render(cutCells(name, iw)) + tag
 		}
 		cmd := t.command
 		if cmd == "" {
 			cmd = t.text
 		}
-		label = a.neon().Render(cutCells(name, inner)) +
-			a.textSt().Render(": "+cutWords(joinCommandLines(cmd), inner-6))
+		label = a.textSt().Render(cutCells(name, iw)) +
+			a.textSt().Render(": "+cutWords(joinCommandLines(cmd), iw-6))
 	} else {
-		label = a.textSt().Render(cutCells(t.name, inner))
+		label = a.textSt().Render(cutCells(t.name, iw))
 		if arg := firstLine(t.text); arg != "" {
-			label += a.textSt().Render("(" + cutWords(arg, inner-runewidth.StringWidth(t.name)-2) + ")")
+			label += a.textSt().Render("(" + cutWords(arg, iw-runewidth.StringWidth(t.name)-2) + ")")
 		}
 	}
-	return a.muted().Render(branch) + a.stateSt(t).Render(sym) + " " + label
+	return a.muted().Render(branch) + a.stateSt(t).Render(sym) + " " + label + tag
 }
 
 // toolDetail baut den Laufend-Block eines bash-Calls: Original-Zeilenum-
@@ -463,16 +522,21 @@ func (a ActivityTree) toolChildren(width int) (rows []string, lastStart int) {
 	return rows, lastStart
 }
 
-// workingChildren: der kompakte Blick auf den AKTUELLSTEN Vorgang (§ 7) —
-// keine zweite Ausfuehrung, nur Vorschau.
+// workingChildren: der kompakte Blick auf die GERADE LAUFENDEN Vorgaenge
+// (§ 7) — offenes Thinking und/oder alle laufenden Calls, jeweils mit der
+// bisherigen Laufzeit. Fertige Vorgaenge gehoeren zu Thinking/Tool Calls;
+// ohne laufenden Vorgang bleibt der Knoten ganz weg (User-Wunsch: Working
+// on zeigt nur, was der Agent gerade in der Hand hat).
 func (a ActivityTree) workingChildren(width int) []string {
 	inner := width - 6
 	if inner < 8 {
 		inner = 8
 	}
-	// Thinking ist aktuell, solange die offene Sektion waechst.
+	var rows []string
+	// Offenes Thinking laeuft noch.
 	if strings.TrimSpace(a.live) != "" {
-		rows := []string{a.muted().Render(actChild) + a.neon().Render("Thinking")}
+		tag, _ := a.durTag(time.Since(a.liveStart))
+		rows = append(rows, a.muted().Render(actChild)+a.textSt().Render("Thinking")+tag)
 		lines := textWrapped(a.live, inner)
 		if len(lines) > 5 {
 			lines = lines[len(lines)-5:] // max. fuenf Inhaltszeilen (§ 7)
@@ -482,31 +546,48 @@ func (a ActivityTree) workingChildren(width int) []string {
 			if i == 0 {
 				prefix = actLast
 			}
-			rows = append(rows, a.muted().Render(prefix)+a.neon().Render(ln))
+			rows = append(rows, a.muted().Render(prefix)+a.soft().Render(ln))
 		}
-		return rows
 	}
-	if t, ok := a.currentTool(); ok {
+	// Laufende Calls — parallel mehrere moeglich.
+	for _, t := range a.tools {
+		if !t.running {
+			continue
+		}
+		tag, tagW := a.durTag(t.duration())
+		iw := inner - tagW
+		if iw < 8 {
+			iw = 8
+		}
 		if t.isBash() {
+			name := t.name
+			if name == "" {
+				name = "bash"
+			}
 			cmd := t.command
 			if cmd == "" {
 				cmd = t.text
 			}
-			return []string{
-				a.muted().Render(actChild) + a.neon().Render("bash"),
-				a.muted().Render(actLast) + a.textSt().Render(cutWords(joinCommandLines(cmd), inner)),
-			}
+			rows = append(rows, a.muted().Render(actChild)+a.textSt().Render(cutCells(name, iw))+tag)
+			rows = append(rows, a.muted().Render(actLast)+a.textSt().Render(cutWords(joinCommandLines(cmd), inner)))
+			continue
 		}
-		first := firstLine(t.text)
-		if first == "" {
-			return []string{a.muted().Render(actLast) + a.textSt().Render(t.name)}
-		}
-		return []string{
-			a.muted().Render(actChild) + a.textSt().Render(t.name),
-			a.muted().Render(actLast) + a.textSt().Render(cutWords(first, inner)),
+		rows = append(rows, a.muted().Render(actChild)+a.textSt().Render(cutCells(t.name, iw))+tag)
+		if first := firstLine(t.text); first != "" {
+			rows = append(rows, a.muted().Render(actLast)+a.textSt().Render(cutWords(first, inner)))
 		}
 	}
-	return nil
+	// Leerlauf (User-Report: "Working on gar nicht angezeigt, obwohl noch
+	// nicht fertig"): Kein offenes Thinking, kein laufender Call — der
+	// Agent rechnet trotzdem (Prompt beim Provider, Modell-Latenz,
+	// Uebergang zwischen zwei Kindern). Statt stiller Leere eine
+	// Spinner-Zeile mit Turn-Laufzeit; das erste Event ersetzt sie.
+	if len(rows) == 0 && !a.idleSince.IsZero() {
+		tag, _ := a.durTag(time.Since(a.idleSince))
+		glyph := spinnerFrames[a.idleFrame%len(spinnerFrames)]
+		rows = append(rows, a.muted().Render(actChild)+a.valida().Render(glyph)+a.muted().Render(" …")+tag)
+	}
+	return rows
 }
 
 // firstLine liefert die erste nichtleere Zeile eines Textes.
@@ -519,8 +600,15 @@ func firstLine(s string) string {
 	return ""
 }
 
+// workHeader: Kopfzeile von Working on — bewusst OHNE Faltmarke (der
+// Knoten klappt nicht; enter auf Working on tut nichts). Das Lauf-Dot in
+// Valida signalisiert: hier ist der Agent gerade dabei.
+func (a ActivityTree) workHeader() string {
+	return a.valida().Render("●") + " " + a.valida().Render("Working on")
+}
+
 // headerRow baut eine Hauptknoten-Zeile: Faltmarke in Valida, Label in der
-// Knotenfarbe (Thinking Neon-Pink, Tool Calls/Working on Valida). Steht der
+// Knotenfarbe (Thinking Neon-Pink, Tool Calls Valida). Steht der
 // Auswahlmodus auf diesem Knoten, traegt seine Kopfzeile den Unterstrich —
 // gesetzt auf Marke UND Label, nie ueber die fertige Zeile: deren innere
 // Resets wuerden den Unterstrich nach dem ersten Segment abreissen und die
@@ -543,8 +631,9 @@ func (a ActivityTree) headerRow(n activityNode, collapsed bool, label string, co
 }
 
 // activityNode benennt die aufklappbaren Hauptknoten des Baums. Der
-// Auswahlmodus laeuft GENAU diese beiden ab: Working on ist immer offen und
-// hat nichts zu klappen — dort gibt es auch keinen Cursor.
+// Auswahlmodus laeuft GENAU diese beiden ab: Working on ist kein
+// Faltknoten und zeigt nur die laufenden Vorgaenge — dort gibt es auch
+// keinen Cursor.
 type activityNode int
 
 const (
@@ -585,79 +674,75 @@ func (l activityLayout) headRow(n activityNode) int {
 const actIndent = " "
 
 // layout rendert den Baum in maximal budget Zeilen (§ 9): Prioritaet —
-// 1. die letzten Textzeilen, 2. Working on, 3. Thinking-/Tool-Kinder
-// werden gekuerzt/gescrollt. Abgeschlossene Turns (settled) zeigen die
-// Textzeilen nicht mehr. Der Auswahlmodus unterstreicht die Kopfzeile des
-// gewaehlten Knotens.
+// 1. Working on, 2. Thinking-/Tool-Kinder werden gekuerzt/gescrollt.
+// Abgeschlossene Turns (settled) zeigen Working on nicht mehr. Der
+// Auswahlmodus unterstreicht die Kopfzeile des gewaehlten Knotens.
 func (a ActivityTree) layout(width, budget int) activityLayout {
 	if budget < 1 || width < 9 {
 		return activityLayout{}
 	}
 	aw := width - 1 // 1 Zelle linker Rand
 
-	thinkHdr := a.headerRow(nodeThinking, !a.expandThinking, "Thinking", a.ThinkingCount(), a.neon())
+	thinkHdr := a.headerRow(nodeThinking, !a.expandThinking, "Thinking", a.ThinkingCount(), a.valida())
 	toolsHdr := a.headerRow(nodeTools, !a.expandTools, "Tool Calls", a.ToolCount(), a.valida())
-	workHdr := a.headerRow(nodeNone, false, "Working on", -1, a.valida())
 
 	work := a.workingChildren(aw)
-	text := a.visibleTextLines()
-	if len(text) > 3 {
-		text = text[len(text)-3:]
+	if a.settled {
+		// Fertiger Turn: Working on verschwindet KOMPLETT — der Agent
+		// arbeitet nicht mehr, die Zusammenfassung (Thinking/Tool Calls)
+		// reicht (User-Wunsch).
+		work = nil
 	}
-	// Settled (§ 8, User-Wunsch): ist ALLES abgeschlossen, verschwinden
-	// die drei Textzeilen mitsamt der Trennlinie — die Zusammenfassung
-	// des Baumes reicht.
-	sep := 0
-	if len(text) > 0 && !a.settled {
-		sep = 1
-	} else if a.settled {
-		text = nil
+	hasWork := len(work) > 0
+	workHdr := ""
+	if hasWork {
+		workHdr = a.workHeader()
 	}
-
-	// Prioritaet 1: Textzeilen + Trennlinie bleiben sichtbar.
-	avail := budget - len(text) - sep
-	if avail < 0 {
-		keep := budget - sep
-		if keep < 1 && budget >= 1 {
-			sep = 0
-			keep = budget
-		}
-		if keep < 1 {
-			return activityLayout{}
-		}
-		if keep < len(text) {
-			text = text[len(text)-keep:]
-		}
-		avail = 0
-	}
-
-	var tail []string
-	if sep > 0 {
-		tail = append(tail, a.muted().Render(strings.Repeat("─", aw)))
-	}
-	for i := range text {
-		tail = append(tail, a.textSt().Render(text[i]))
-	}
+	// Keine Textzeilen mehr (die Antwort streamt im Chat, FR-2): Das
+	// ganze Budget gehoert den drei Knoten.
+	avail := budget
 
 	if avail < 4 {
 		// Kein Platz fuer alle Hauptknoten: Working on hat Vorrang vor
 		// Thinking/Tool Calls (§ 9); die Reihenfolge bleibt immer
 		// Thinking → Tool Calls → Working on. Thinking faellt zuerst weg —
-		// sein Cursor ist dann unsichtbar und wird gesnappt.
-		if avail >= 3 {
-			return a.pack([]string{toolsHdr, workHdr, a.muted().Render(actRail)},
-				[]activityNode{nodeTools, nodeNone, nodeNone}, tail)
+		// sein Cursor ist dann unsichtbar und wird gesnappt. Ohne aktiven
+		// Vorgang rueckt Tool Calls nach (Working on ist dann ganz weg).
+		rail := a.muted().Render(actRail)
+		var head []string
+		var nodes []activityNode
+		if hasWork {
+			switch avail {
+			case 3:
+				head = []string{toolsHdr, workHdr, rail}
+				nodes = []activityNode{nodeTools, nodeNone, nodeNone}
+			case 2:
+				head = []string{workHdr, rail}
+				nodes = []activityNode{nodeNone, nodeNone}
+			case 1:
+				head = []string{workHdr}
+				nodes = []activityNode{nodeNone}
+			}
+		} else {
+			switch avail {
+			case 3:
+				head = []string{thinkHdr, toolsHdr, rail}
+				nodes = []activityNode{nodeThinking, nodeTools, nodeNone}
+			case 2:
+				head = []string{toolsHdr, rail}
+				nodes = []activityNode{nodeTools, nodeNone}
+			case 1:
+				head = []string{toolsHdr}
+				nodes = []activityNode{nodeTools}
+			}
 		}
-		if avail == 2 {
-			return a.pack([]string{workHdr, a.muted().Render(actRail)},
-				[]activityNode{nodeNone, nodeNone}, tail)
-		}
-		if avail == 1 {
-			return a.pack([]string{workHdr}, []activityNode{nodeNone}, tail)
-		}
-		return a.pack(nil, nil, tail)
+		return a.pack(head, nodes, nil)
 	}
-	avail -= 4
+	fixed := 3 // thinkHdr + toolsHdr + Rail
+	if hasWork {
+		fixed = 4
+	}
+	avail -= fixed
 	if len(work) > avail {
 		work = work[:avail]
 	}
@@ -724,13 +809,15 @@ func (a ActivityTree) layout(width, budget int) activityLayout {
 	headNode = append(headNode, nodeTools)
 	head = append(head, toolRows...)
 	headNode = append(headNode, repeatNode(nodeTools, len(toolRows))...)
-	head = append(head, workHdr)
-	headNode = append(headNode, nodeNone)
-	head = append(head, work...)
-	headNode = append(headNode, repeatNode(nodeNone, len(work))...)
+	if hasWork {
+		head = append(head, workHdr)
+		headNode = append(headNode, nodeNone)
+		head = append(head, work...)
+		headNode = append(headNode, repeatNode(nodeNone, len(work))...)
+	}
 	head = append(head, a.muted().Render(actRail))
 	headNode = append(headNode, nodeNone)
-	return a.pack(head, headNode, tail)
+	return a.pack(head, headNode, nil)
 }
 
 // repeatNode: k-mal derselbe Knoten (parallele Zeilen-Zuordnung).
@@ -894,8 +981,24 @@ func (l activityLayout) nodeAbove(row int) activityNode {
 	return found
 }
 
-// Settle markiert den Turn als abgeschlossen (keine drei Textzeilen mehr).
+// Settle markiert den Turn als abgeschlossen (Working on verschwindet,
+// die Zusammenfassung bleibt).
 func (a ActivityTree) Settle() ActivityTree {
 	a.settled = true
+	return a
+}
+
+// Idle armiert die Leerlauf-Anzeige (startTurn, User-Report): Solange der
+// laufende Turn kein Kind meldet, zeigt Working on eine Spinner-Zeile mit
+// Turn-Laufzeit statt zu verschwinden.
+func (a ActivityTree) Idle(since time.Time) ActivityTree {
+	a.idleSince = since
+	return a
+}
+
+// IdleFrame folgt dem Model-Spinner (spinnerTickMsg) — Working on und die
+// Statuszeile rotieren synchron.
+func (a ActivityTree) IdleFrame(frame int) ActivityTree {
+	a.idleFrame = frame
 	return a
 }

@@ -77,10 +77,16 @@ func (m *Model) syncInputSize() {
 // chat takes whatever is left. Using the rendered height — not the configured
 // one — keeps the bottom border of the box from being clipped.
 func (m *Model) relayout() {
+	if m.height <= 0 {
+		// Terminalgroesse noch unbekannt (vor der ersten WindowSizeMsg,
+		// z.B. Nackt-Modelle in Tests): kein Resize auf Rueckstandswerte —
+		// View() rendert in dem Zustand ungekappt, der Chat behaelt Hoehe 0.
+		return
+	}
 	inputRows := len(strings.Split(m.inputView(), "\n"))
 	used := 3 + inputRows // title, box, gap, footer
-	if m.workingLine() != "" {
-		used++ // the "AI is working" row above the box while a turn runs
+	if rows := m.activityRows(); rows > 0 {
+		used += rows // der Activity-Baum ueber der Box, waehrend er Inhalt hat
 	}
 	h := m.height - used
 	if h < 1 {
@@ -434,7 +440,7 @@ func (m Model) copySelection() (Model, tea.Cmd) {
 		if m.copyFn == nil {
 			return m, nil
 		}
-		return m, m.copyFn(it.Markdown())
+		return m, m.copyFn(render.StripANSI(it.Markdown()))
 	}
 	m.copiedFlash = true
 	return m, cmd

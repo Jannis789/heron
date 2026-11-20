@@ -44,6 +44,46 @@ func TestKittyResponseFilterKeepsRealInput(t *testing.T) {
 	}
 }
 
+// Reine Klammer-Laeufe (User-Report: "[[[[[[[[... beim Scrollen"): SGR-
+// Maus-Reports, deren ESC UND Parameter verloren gingen — der Rest ist
+// ein Rune-Stapel aus '['. STATISCH dropt jede Message mit >=3 Klammern
+// (ein Merge-Stapel; echte Eingabe hat zwischen Klammern anderen Text).
+// DYNAMISCH gilt die Schwall-Rate: Die Fragmente kommen 1-2 Runen je
+// Message im 5ms-Takt — ab der 3. reinen Klammer-Message im 600ms-Fenster
+// ist es Maus-Muell, menschliches Tippen erreicht diese Rate nie (zwischen
+// echten Klammern kommt Text, der den Stapel bricht).
+func TestKittyResponseFilterDropsBracketRuns(t *testing.T) {
+	// Statisch: Merge-Stapel in EINER Message.
+	for _, s := range []string{"[[[[[[[[[[", "[[[", "[[[[[[[[[[[[[[[[["} {
+		resetBracketTrap()
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+		if got := kittyResponseFilter(nil, msg); got != nil {
+			t.Errorf("bracket run %q must be dropped, got %+v", s, got)
+		}
+	}
+	// Dynamisch: 1-2er-Fragmente im schnellen Nachlauf (Schwall).
+	resetBracketTrap()
+	one := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("[")}
+	for i := 0; i < 2; i++ {
+		if got := kittyResponseFilter(nil, one); got == nil {
+			t.Errorf("Schwall-Fragment %d darf vor dem Limit NICHT gedroppt werden", i+1)
+		}
+	}
+	if got := kittyResponseFilter(nil, one); got != nil {
+		t.Error("3. reine Klammer-Message im Fenster muss als Schwall gedroppt werden")
+	}
+	// Markdown-Klammern-Tippen bleibt IMMER durch: Einzelne '[' unter der
+	// Rate und Meldungen MIT Text (keine reinen Stapel).
+	resetBracketTrap()
+	keep := []string{"[", "[[", "[so](link)", "hallo[world"}
+	for _, s := range keep {
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+		if got := kittyResponseFilter(nil, msg); got == nil {
+			t.Errorf("input %q must pass through, got dropped", s)
+		}
+	}
+}
+
 // Die Quellen-Reset-Sequenz muss alle ueblichen Maus-Reportings
 // abschalten — sonst bleibt nach einem Crash irgendein Modus an und
 // der naechste Inline-Lauf sammelt weiter Reports ein.

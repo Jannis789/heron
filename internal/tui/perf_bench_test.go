@@ -12,8 +12,7 @@ import (
 // einen grossen Tool-Output am Ende (wie ein langer Chat).
 func benchList(b *testing.B, n int, toolLines int) BlockList {
 	b.Helper()
-	th, err := render.DefaultTheme()
-	if err != nil {
+	if _, err := render.DefaultTheme(); err != nil {
 		b.Fatal(err)
 	}
 	l := NewBlockList().SetSize(120, 40)
@@ -31,7 +30,7 @@ func benchList(b *testing.B, n int, toolLines int) BlockList {
 	}
 	if toolLines > 0 {
 		out := strings.Repeat("ausgabe-zeile mit etwas text\n", toolLines)
-		l = l.Append(NewToolBlock(ToolData{CallID: "c1", Title: "shell", Kind: "execute", Command: "ls", Stdout: out, HasOutput: true}, th, nil))
+		l = l.Append(NewTextBlock(out, ""))
 	}
 	return l.ScrollEnd()
 }
@@ -119,22 +118,14 @@ func BenchmarkClearMarksLongChat(b *testing.B) {
 	}
 }
 
-func BenchmarkBuildStreamWidgets(b *testing.B) {
+func BenchmarkActivityViewHugeCommand(b *testing.B) {
 	th, _ := render.DefaultTheme()
-	txt := strings.Repeat("Ein Absatz mit etwas Text und `code`.\n\n", 200)
+	cmd := strings.Repeat("grep -rn muster ./src && xargs build \\\n  --flag mit wert\n", 400)
+	a := NewActivityTree(th).Tool(ToolUpdate{CallID: "c", Label: "bash", Kind: "execute", Command: cmd})
+	a = a.ToggleTools()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = buildStreamWidgets(txt, "", th, nil)
-	}
-}
-
-func BenchmarkThinkBlockViewLong(b *testing.B) {
-	th, _ := render.DefaultTheme()
-	bk := NewThinkBlock(strings.Repeat("denkzeile mit woertern\n", 2000), th)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = bk.View(120)
+		_ = a.View(100, 15)
 	}
 }

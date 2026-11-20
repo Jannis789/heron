@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mattn/go-runewidth"
 )
@@ -48,27 +49,22 @@ func specTurn() ActivityTree {
 		a = a.Tool(ToolUpdate{CallID: "b" + cmd, Label: "bash", Kind: "execute", Command: cmd, Done: true})
 	}
 	a = a.Tool(ToolUpdate{CallID: "run", Label: "bash", Kind: "execute", Command: "find ./src -type f -name \"*.java\" \\\n  | xargs grep -rn \"authenticate\" \\\n  | awk '{print $1}' \\\n  | sort -u"})
-	a = a.Text("The authentication logic has been updated.\nI am checking the existing test cases.\nAfterwards I will verify the changes.\n")
 	return a
 }
 
 // TestActivityDefaultLayout (§ 4): Standardzustand — Thinking und Tool
 // Calls eingeklappt, Working on zeigt bash + gekuerzten Originalbefehl,
-// Trennlinie, drei Textzeilen. EXAKT die Referenz.
+// der Rail schliesst den Baum ab. EXAKT die Referenz.
 func TestActivityDefaultLayout(t *testing.T) {
 	a := specTurn()
 	rows := plain(a.View(60, 20))
 	eq(t, rows,
 		" ▸ Thinking (4)",
 		" ▸ Tool Calls (18)",
-		" ▼ Working on",
-		" │  ├─ bash",
+		" ● Working on",
+		" │  ├─ bash <1s",
 		" │  └─ find ./src -type f -name \"*.java\" | xargs grep ...",
-		" │",
-		" "+strings.Repeat("─", 59),
-		" The authentication logic has been updated.",
-		" I am checking the existing test cases.",
-		" Afterwards I will verify the changes.")
+		" │")
 }
 
 // TestActivityExpandedTools (§ 5): aufgeklappte Tool Calls — ein mehr-
@@ -96,7 +92,7 @@ func TestActivityExpandedTools(t *testing.T) {
 		" │  ├─ ✓ bash: git status",
 		" │  ├─ ✓ bash: cargo test auth::",
 		" │  ├─ ✓ bash: pwd && ls -la",
-		" │  └─ ● bash",
+		" │  └─ ● bash <1s",
 		" │     │",
 		" │     │  find ./src -type f -name \"*.java\" \\",
 		" │     │    | xargs grep -rn \"authenticate\" \\",
@@ -105,7 +101,7 @@ func TestActivityExpandedTools(t *testing.T) {
 	// Working on bleibt die kompakte Zwei-Zeilen-Vorschau desselben Calls.
 	w := 0
 	for j, r := range rows {
-		if strings.TrimSpace(r) == "▼ Working on" {
+		if strings.TrimSpace(r) == "● Working on" {
 			w = j
 			break
 		}
@@ -113,27 +109,26 @@ func TestActivityExpandedTools(t *testing.T) {
 	if w == 0 {
 		t.Fatalf("Working on nicht gefunden:\n%s", strings.Join(rows, "\n"))
 	}
-	eq(t, rows[w:w+3], " ▼ Working on", " │  ├─ bash",
+	eq(t, rows[w:w+3], " ● Working on", " │  ├─ bash <1s",
 		" │  └─ find ./src -type f -name \"*.java\" | xargs grep -rn ...")
 }
 
 // TestActivityThinkingWorkingOn (§ 7): Thinking als aktueller Vorgang —
-// Label + Text (max. fuenf Zeilen) in Neon.
+// Label in Textfarbe, Inhaltszeilen in Soft-Grau (User-Wunsch: kein Neon
+// im Baum). Agent-Text gibt es im Baum nicht mehr — er streamt im Chat
+// (FR-2).
 func TestActivityThinkingWorkingOn(t *testing.T) {
 	a := NewActivityTree(nil).
-		Thought("I should inspect the existing token validation before\nmodifying the expiration logic.").
-		Text("Erste Zeile\n")
+		Thought("I should inspect the existing token validation before\nmodifying the expiration logic.")
 	rows := plain(a.View(60, 20))
 	eq(t, rows,
 		" ▸ Thinking (1)",
 		" ▸ Tool Calls (0)",
-		" ▼ Working on",
-		" │  ├─ Thinking",
+		" ● Working on",
+		" │  ├─ Thinking <1s",
 		" │  └─ I should inspect the existing token validation before",
 		" │     modifying the expiration logic.",
-		" │",
-		" "+strings.Repeat("─", 59),
-		" Erste Zeile")
+		" │")
 }
 
 // TestActivitySelectionMode (§ 5, User-Wunsch): Der Baum ist Teil der
@@ -320,20 +315,20 @@ func TestActivityLeftMargin(t *testing.T) {
 	}
 }
 
-// TestActivitySettledHidesTextLines (§ 8, User-Wunsch): ist der Turn
-// abgeschlossen, verschwinden die drei Textzeilen (die Antwort steht im
-// Chat) — die Zusammenfassung des Baumes bleibt.
-func TestActivitySettledHidesTextLines(t *testing.T) {
+// TestActivitySettledHidesWorkingOn (§ 4, User-Wunsch): ist der Turn
+// abgeschlossen, verschwindet Working on — die Zusammenfassung des Baumes
+// bleibt. Agent-Text gibt es im Baum nicht mehr: Er streamt im Chat (FR-2).
+func TestActivitySettledHidesWorkingOn(t *testing.T) {
 	a := specTurn()
-	if v := strings.Join(plain(a.View(60, 20)), "\n"); !strings.Contains(v, "Afterwards I will verify") {
-		t.Fatal("laufender Turn zeigt die letzten Textzeilen")
+	if v := strings.Join(plain(a.View(60, 20)), "\n"); !strings.Contains(v, "Working on") {
+		t.Fatal("laufender Turn zeigt Working on")
 	}
-	a = a.FlushText().Settle()
+	a = a.Settle()
 	v := strings.Join(plain(a.View(60, 20)), "\n")
-	if strings.Contains(v, "Afterwards I will verify") || strings.Contains(v, "───") {
-		t.Fatalf("abgeschlossener Turn zeigt noch Text/Trennlinie:\n%s", v)
+	if strings.Contains(v, "Working on") {
+		t.Fatalf("abgeschlossener Turn zeigt noch Working on:\n%s", v)
 	}
-	if !strings.Contains(v, "Working on") || !strings.Contains(v, "Thinking (4)") {
+	if !strings.Contains(v, "Thinking (4)") || !strings.Contains(v, "Tool Calls (18)") {
 		t.Fatalf("Zusammenfassung fehlt:\n%s", v)
 	}
 }
@@ -396,10 +391,47 @@ func runewidth0(s string) int {
 	return runewidth.StringWidth(s)
 }
 
-// TestActivityLastThreeLinesSurvive (§ 8/§ 9): die letzten DREI Text-
-// zeilen bleiben bei jeder Verengung sichtbar — Historie und Working-on
-// weichen zuerst.
-func TestActivityLastThreeLinesSurvive(t *testing.T) {
+// TestActivityWorkingOnSurvivesBudget (§ 9): bei jeder Verengung bleibt
+// Working on sichtbar — aufgeklappte Kinder weichen zuerst, die Kopfzeilen
+// halten, solange drei Zeilen Platz haben. Textzeilen gibt es im Baum
+// nicht mehr: Die Antwort streamt im Chat (FR-2).
+// TestActivityIdleSpinnerLine: Leerlauf-Zeile im Working-on-Knoten —
+// kein offenes Thinking, kein laufender Call, aber der Turn läuft
+// (idleSince armiert): Spinner-Glyph + Turn-Laufzeit statt stiller
+// Leere (User-Report). Das erste echte Kind verdraengt sie, Settle
+// räumt die Anzeige ab.
+func TestActivityIdleSpinnerLine(t *testing.T) {
+	a := NewActivityTree(nil).Idle(time.Now())
+	rows := plain(a.View(60, 20))
+	joined := strings.Join(rows, "\n")
+	if !strings.Contains(joined, "Working on") {
+		t.Fatalf("Leerlauf-Turn muss Working on zeigen:\n%s", joined)
+	}
+	if !strings.Contains(joined, "⠋") {
+		t.Fatalf("Spinner-Glyph fehlt:\n%s", joined)
+	}
+	// Frame folgt dem Model-Spinner:
+	a2 := a.IdleFrame(3)
+	if !strings.Contains(strings.Join(plain(a2.View(60, 20)), "\n"), "⠸") {
+		t.Fatalf("IdleFrame wird nicht angezeigt:\n%s", strings.Join(plain(a2.View(60, 20)), "\n"))
+	}
+	// Erstes echtes Kind verdraengt die Leerlaufzeile:
+	a3 := a.Tool(ToolUpdate{CallID: "c", Label: "bash", Kind: "execute", Command: "ls"})
+	v3 := strings.Join(plain(a3.View(60, 20)), "\n")
+	if strings.Contains(v3, "⠋") {
+		t.Fatalf("Spinner haengt neben laufendem Call:\n%s", v3)
+	}
+	if !strings.Contains(v3, "bash") {
+		t.Fatalf("laufender Call fehlt:\n%s", v3)
+	}
+	// settled ohne Inhalt: komplett weg.
+	a4 := a.Settle()
+	if v := strings.Join(plain(a4.View(60, 20)), "\n"); strings.Contains(v, "Working on") {
+		t.Fatalf("settled Turn zeigt noch Working on:\n%s", v)
+	}
+}
+
+func TestActivityWorkingOnSurvivesBudget(t *testing.T) {
 	a := specTurn().ToggleTools() // maximal ausgeklappt
 	for _, budget := range []int{5, 7, 12} {
 		rows := plain(a.View(60, budget))
@@ -407,22 +439,19 @@ func TestActivityLastThreeLinesSurvive(t *testing.T) {
 			t.Fatalf("budget %d ueberschritten: %d", budget, len(rows))
 		}
 		joined := strings.Join(rows, "\n")
-		if !strings.Contains(joined, "Afterwards I will verify the changes.") {
-			t.Fatalf("budget %d: letzte Textzeile fehlt:\n%s", budget, joined)
+		if !strings.Contains(joined, "Working on") {
+			t.Fatalf("budget %d: Working on fehlt:\n%s", budget, joined)
 		}
-	}
-	// Genau 5 Zeilen: Working on Kopf + Rail + Trennlinie + letzte drei
-	// Zeilen? Nein — Trennlinie + drei Zeilen + Kopf + Rail = 6; bei 5
-	// fehlt der Rail, die drei Zeilen halten.
-	rows := plain(a.View(60, 6))
-	if len(rows) != 6 || !strings.Contains(rows[len(rows)-3], "The authentication") {
-		t.Fatalf("budget 6 falsch verteilt:\n%s", strings.Join(rows, "\n"))
+		if !strings.Contains(joined, "bash <1s") {
+			t.Fatalf("budget %d: laufender Call fehlt:\n%s", budget, joined)
+		}
 	}
 }
 
-// TestActivityColors (§ 2): Valida (Action) fuer Tool Calls/Working on/
-// ▸▼/●, Neon-Pink (Focus) fuer Thinking und bash, Gruen/Rot fuer ✓/✗,
-// Muted (Border) fuer die Tree-Zeichen — alles zentral aus dem Theme.
+// TestActivityColors (§ 2): Valida (Action) fuer Thinking/Tool Calls/
+// Working on/▸▼/●, Soft-Grau fuer die Inhaltszeilen (User-Wunsch: kein
+// Neon im Baum), Text fuer bash, Gruen/Rot fuer ✓/✗, Muted (Border) fuer
+// die Tree-Zeichen — alles zentral aus dem Theme.
 func TestActivityColors(t *testing.T) {
 	withTrueColor(t)
 	th := mustTheme(t)
@@ -430,30 +459,43 @@ func TestActivityColors(t *testing.T) {
 		Thought("denken").
 		Tool(ToolUpdate{CallID: "ok", Label: "read_file", Text: "x", Done: true}).
 		Tool(ToolUpdate{CallID: "bad", Label: "bash", Kind: "execute", Command: "ls", Failed: true, Done: true}).
-		ToggleTools()
+		Tool(ToolUpdate{CallID: "run", Label: "bash", Kind: "execute", Command: "sleep 5"}).
+		ToggleTools().
+		ToggleThinking()
 	rows := a.View(70, 30)
 
-	// Thinking-Label: Neon-Pink #BF00FF.
-	if !strings.Contains(rows[0], "38;2;191;0;255") {
-		t.Fatalf("Thinking-Label nicht Neon-Pink: %q", rows[0])
-	}
-	// Tool Calls / Working on / ▸: Valida #B999FF.
-	if !strings.Contains(rows[1], "38;2;185;153;255") {
-		t.Fatalf("Tool Calls-Label nicht Valida: %q", rows[1])
-	}
-	work := -1
+	// Thinking-/Tool Calls-Header: Valida #B999FF (User-Wunsch: kein Neon
+	// im Kopf). Strukturell suchen, nicht per Zeilenindex.
+	thinking, tools, work := -1, -1, -1
 	for i, r := range rows {
-		if strings.Contains(stripANSI(r), "Working on") {
+		switch {
+		case strings.Contains(stripANSI(r), "Thinking ("):
+			thinking = i
+		case strings.Contains(stripANSI(r), "Tool Calls ("):
+			tools = i
+		case strings.Contains(stripANSI(r), "Working on"):
 			work = i
-			break
 		}
 	}
+	if thinking < 0 || !strings.Contains(rows[thinking], "38;2;185;153;255") {
+		t.Fatalf("Thinking-Label nicht Valida: %q", rows[max(thinking, 0)])
+	}
+	if tools < 0 || !strings.Contains(rows[tools], "38;2;185;153;255") {
+		t.Fatalf("Tool Calls-Label nicht Valida: %q", rows[max(tools, 0)])
+	}
 	if work < 0 || !strings.Contains(rows[work], "38;2;185;153;255") {
-		t.Fatalf("Working on-Label nicht Valida: %q", rows[work])
+		t.Fatalf("Working on-Label nicht Valida: %q", rows[max(work, 0)])
+	}
+	// Kein Neon-Violett mehr im Activity-Baum.
+	for i, r := range rows {
+		if strings.Contains(r, "38;2;191;0;255") {
+			t.Fatalf("Zeile %d traegt noch Neon: %q", i, r)
+		}
 	}
 	// Tree-Zeichen: Muted #B4BEFE (lipgloss quantisiert auf 179;190;254);
-	// ✓ gruen #22C55E; ✗ rot #FF5555; bash-Name Neon-Pink.
-	var sawMuted, sawOk, sawErr bool
+	// ✓ gruen #22C55E; ✗ rot #FF5555; bash-Name in Textfarbe; Denk-Inhalt
+	// in Soft-Grau #C0C3D4.
+	var sawMuted, sawOk, sawErr, sawSoft, sawText bool
 	for _, r := range rows {
 		if strings.Contains(r, "38;2;179;190;254") {
 			sawMuted = true
@@ -464,14 +506,66 @@ func TestActivityColors(t *testing.T) {
 		if strings.Contains(r, "38;2;255;85;85") {
 			sawErr = true
 		}
+		if strings.Contains(r, "38;2;192;195;211") {
+			sawSoft = true
+		}
+		if strings.Contains(r, "38;2;217;211;236") {
+			sawText = true
+		}
 	}
-	if !sawMuted || !sawOk || !sawErr {
-		t.Fatalf("Farben fehlen: muted=%v ok=%v err=%v", sawMuted, sawOk, sawErr)
+	if !sawMuted || !sawOk || !sawErr || !sawText {
+		t.Fatalf("Farben fehlen: muted=%v ok=%v err=%v text=%v", sawMuted, sawOk, sawErr, sawText)
+	}
+	if !sawSoft {
+		for i, r := range rows {
+			t.Logf("Zeile %d: %q", i, r)
+		}
+		t.Fatalf("Soft-Grau fehlt im Baum (Denk-Inhalt/Befehle)")
 	}
 	for _, r := range rows {
-		if strings.Contains(stripANSI(r), "bash") && !strings.Contains(r, "38;2;191;0;255") {
-			t.Fatalf("bash-Name nicht Neon-Pink: %q", r)
+		if strings.Contains(stripANSI(r), "bash") && !strings.Contains(r, "38;2;217;211;236") {
+			t.Fatalf("bash-Name nicht in Textfarbe: %q", r)
 		}
+	}
+}
+
+// TestActivityTimings (User-Wunsch): Zeitangaben — aufgeklappt zeigen
+// Denk-Sektionen ihre Laufzeit und fertige Calls ihre Gesamtdauer, unter
+// einer Sekunde buendelt das zu "<1s". Ohne laufenden Vorgang gibt es
+// KEIN Working on — auch mitten im Turn nicht: fertig ist fertig.
+func TestActivityTimings(t *testing.T) {
+	base := time.Now()
+	a := NewActivityTree(nil).
+		Thought("denke langsam").
+		Tool(ToolUpdate{CallID: "c1", Label: "read_file", Text: "x", Done: true}).
+		ToggleThinking().ToggleTools()
+	// Zeiten injizieren: 12s Denken, 95s Call.
+	a.thoughts[0].started = base
+	a.thoughts[0].ended = base.Add(12 * time.Second)
+	a.tools[0].started = base
+	a.tools[0].ended = base.Add(95 * time.Second)
+	v := strings.Join(plain(a.View(60, 20)), "\n")
+	if !strings.Contains(v, "denke langsam 12s") {
+		t.Fatalf("Denk-Sektion ohne Laufzeit:\n%s", v)
+	}
+	if !strings.Contains(v, "read_file(x) 1m35s") {
+		t.Fatalf("Call ohne Gesamtdauer:\n%s", v)
+	}
+
+	// Kurzlaufzeit: unter einer Sekunde wird zu "<1s" gebuendelt.
+	b := NewActivityTree(nil).Tool(ToolUpdate{CallID: "k", Label: "bash", Kind: "execute", Command: "ls", Done: true}).
+		ToggleTools()
+	b.tools[0].started = base
+	b.tools[0].ended = base.Add(300 * time.Millisecond)
+	if v := strings.Join(plain(b.View(60, 20)), "\n"); !strings.Contains(v, "bash: ls <1s") {
+		t.Fatalf("Kurzlaufzeit fehlt:\n%s", v)
+	}
+
+	// Fertiger Call, kein offenes Thinking: Working on bleibt weg — auch
+	// WAEHREND des Turns (der Agent streamt nur Text, und der lebt im Chat).
+	c := NewActivityTree(nil).Tool(ToolUpdate{CallID: "f", Label: "read_file", Text: "x", Done: true})
+	if v := strings.Join(plain(c.View(60, 20)), "\n"); strings.Contains(v, "Working on") {
+		t.Fatalf("fertiger Call besetzt Working on:\n%s", v)
 	}
 }
 
@@ -503,13 +597,31 @@ func TestActivityCountsAndSections(t *testing.T) {
 // TestActivityEmptyTreeHidden: ohne jedes Event bleibt der Baum weg —
 // keine Null-Zahlen, keine leere Struktur (§ 10).
 func TestActivityEmptyTreeHidden(t *testing.T) {
+	// User-Report: "Working on gar nicht angezeigt, obwohl noch nicht
+	// fertig" — ein laufender Turn ohne jedes Event zeigt jetzt den
+	// Ladeindikator (Spinner + Turn-Laufzeit) statt stiller Leere;
+	// das erste Event ersetzt die Leerlaufzeile.
 	r := newRig(t)
 	r.m.startTurn()
-	if v := r.m.activityView(); v != "" {
-		t.Fatalf("leerer Turn zeigt einen Baum: %q", v)
+	if v := r.m.activityView(); !strings.Contains(v, "Working on") {
+		t.Fatalf("laufender Turn ohne Events muss Working on zeigen: %q", v)
+	}
+	if v := r.m.activityView(); !strings.Contains(v, "⠋") {
+		t.Fatalf("Ladeindikator (Spinner-Frame) fehlt: %q", r.m.activityView())
 	}
 	r.do(thoughtMsg{text: "jetzt"})
-	if v := r.m.activityView(); v == "" {
-		t.Fatal("erster Inhalt muss den Baum zeigen")
+	v := r.m.activityView()
+	if !strings.Contains(v, "Thinking") {
+		t.Fatalf("erster Inhalt muss den Baum fuellen: %q", v)
+	}
+	if strings.Contains(v, "⠋") {
+		t.Fatalf("Leerlauf-Spinner haengt neben echtem Inhalt: %q", v)
+	}
+	// Und nach Settle verschwindet die Leerlauf-Anzeige wieder:
+	r2 := newRig(t)
+	r2.m.startTurn()
+	r2.m.endTurn()
+	if v := r2.m.activityView(); v != "" {
+		t.Fatalf("settled Turn ohne Inhalt zeigt trotzdem einen Baum: %q", v)
 	}
 }

@@ -77,6 +77,9 @@ func perfBytes(n int) {
 func perfScroll(kind string, from, to int) {
 	perf.Lock()
 	dt := time.Since(perf.lastScroll)
+	if perf.lastScroll.IsZero() {
+		dt = 0 // erster Scroll: kein Vorgaenger, kein int64-Overflow-Muell
+	}
 	perf.lastScroll = time.Now()
 	perf.scrolls++
 	perf.Unlock()

@@ -205,12 +205,13 @@ func TestHeadingJoinFocusChain(t *testing.T) {
 	if !l.Focused() || l.focus != 0 {
 		t.Fatalf("up sollte die Ueberschrift fokussieren: focus=%d", l.focus)
 	}
-	if !strings.Contains(l.items[0].View(60), ";4m") {
+	if !strings.Contains(l.items[0].View(60), "\x1b[4m") {
 		t.Fatalf("fokussierte Ueberschrift muss unterstrichen sein: %q", l.items[0].View(60))
 	}
-	// Ohne Fokus kein Unterstrich.
+	// Ohne Fokus kein Unterstrich (level 0 — nur per Markdown geseedete
+	// h1 tragen das Ruhe-Underline, s. BuildWidgets).
 	idle := NewHeadingBlock("Titel").View(60)
-	if strings.Contains(idle, ";4m") {
+	if strings.Contains(idle, "\x1b[4m") {
 		t.Fatalf("Ueberschrift ohne Fokus darf keinen Unterstrich tragen: %q", idle)
 	}
 }

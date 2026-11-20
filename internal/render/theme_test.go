@@ -125,19 +125,18 @@ func TestHeadingScaleSubtle(t *testing.T) {
 	if len(seen) != 6 {
 		t.Fatalf("heading gradient nicht monoton: %d verschiedene Farben", len(seen))
 	}
-	// Alle Stufen fett; Unterstreichung nur bei h1. Robust ueber
-	// UnsetUnderline statt fragiler ANSI-Substrings.
+	// Alle Stufen fett; die h1-Unterstreichung traegt der STIL bewusst
+	// NICHT mehr: lipgloss rendert Underline per Rune und zerschneidet
+	// dabei Inline-SGR-Ketten (**fett** → sichtbares "[1m…[22m"). Die
+	// Unterstreichung malt TextBlock.View ANSI-bewusst (underlineStyled),
+	// getriggert per BuildWidgets (level <= 1) — dort getestet.
 	if !strings.Contains(th.HeadingStyle(1).Render("Titel"), "\x1b[1") {
 		t.Fatal("h1 ist nicht fett")
 	}
-	h1 := th.HeadingStyle(1)
-	if h1.Render("T") == h1.UnsetUnderline().Render("T") {
-		t.Fatal("h1 fehlt die dezente Unterstreichung")
-	}
-	for _, l := range []int{2, 3, 6} {
+	for _, l := range []int{1, 2, 3, 6} {
 		hs := th.HeadingStyle(l)
 		if hs.Render("T") != hs.UnsetUnderline().Render("T") {
-			t.Fatalf("h%d darf nicht unterstrichen sein", l)
+			t.Fatalf("h%d traegt Stil-Underline — das malt jetzt TextBlock.View ANSI-bewusst", l)
 		}
 	}
 }

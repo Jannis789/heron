@@ -56,6 +56,10 @@ func (l BlockList) charView(i, w int) (charSelWidget, []string, bool) {
 	if len(lines) == 0 {
 		return nil, nil, false
 	}
+	// CharLines liefert bei TextBlock das GECACHELTE Slice — nie in-place
+	// aendern, sonst verliert der NAECHSTE View() sein Fett/Kursiv (der
+	// Cursor-Modus wischte den Stil aus der Ansicht, User-Report).
+	lines = append([]string(nil), lines...)
 	// Zellkarte IST sichtbarer Text, nicht Markup: ANSI hier strippen.
 	// Mit Escapes in der Karte driftet rangeHighlight (base zaehlt Runen,
 	// styleRange zaehlt sichtbare Zellen) — Bold-Segmente landen als
@@ -89,8 +93,10 @@ func (l BlockList) nextCharBlock(i, dir int) int {
 }
 
 // enterCursorMode setzt das Caret an die Leseposition. Prioritaet: (1) die
-// laufende Block-Auswahl (deren Cursor-Block, Kante nach Ausloeser-Richtung
-// — der Unterschied sind jetzt BUCHSTABEN, nicht mehr Sektionen), (2) der
+// laufende Flaeche — Block-Auswahl ODER Maus-Markierung: Das Caret spawnt
+// an deren ANFANG (erster zeichenfaehiger Block, Offset 0), der Anker ans
+// gegenueberliegende Ende; die Konvertierung deckt denselben Bereich ab
+// (User-Report: "sollte am anfang der selektierten flaeche sein"), (2) der
 // fokussierte Block, (3) der oberste sichtbare Block (ggf. der naechste
 // Zeichen-faehige darunter). Kollabierte Tool-Karten klappt der Eintritt
 // auf; ein Wiedereintritt nach esc haelt die Caret-Position (FR-43-Geist).
@@ -98,81 +104,88 @@ func (l BlockList) enterCursorMode() BlockList {
 	if l.charActive() || len(l.items) == 0 {
 		return l
 	}
-	// Eine laufende MARKIERUNG weicht dem Caret — zur VERGANGENEN Auswahl
-	// (FR-43), nicht ins Nichts: Ihr Rahmen bleibt in Sekundaer-Farbe
-	// stehen, bis esc alles aufloest. (Eine laufende Block-Auswahl wird
-	// dagegen uebernommen, s.u.)
-	if l.markedCount() > 0 {
-		l = l.demoteMarks()
+	// Laeuft eine Flaeche (Block-Auswahl per shift+up/down ODER Maus-
+	// Markierung), steuert SIE den Spawn (User-Report: "der cursor spawnt
+	// an einer stelle, die ich nicht verstehe, ausserhalb der selektierten
+	// flaeche — er sollte am ANFANG der selektierten flaeche sein"):
+	// Caret-Block = erster zeichenfaehiger Block INNERHALB der Flaeche ab
+	// deren oberster Kante, Anker ans gegenueberliegende Ende. Vorher nahm
+	// der Spawn selCur als Caret-Block und sprang bei einem unfaehigen
+	// Randblock (Tabelle, Bild) VORWAERTS aus der Flaeche heraus; eine
+	// Maus-Markierung wurde nur demotiert und ignoriert.
+	selLo, selHi := -1, -1
+	selBlocks := false // Herkunft Block-Auswahl: esc-Rueckweg (fromSel)
+	if l.selActive() {
+		selLo, selHi = l.selBounds()
+		selBlocks = true
+	} else if l.markedCount() > 0 {
+		// Frische Maus-Markierung schlaegt einen alten Caret-Rest (FR-43-
+		// Muster: eine NEUE Auswahl demotiert die erhaltene ins Sekundaer).
+		l = l.demoteResidualSel()
+		selLo, selHi = l.markedRange()
 	}
 	w := l.Width()
 	blk := -1
-	edge := 0 // Caret-Kante: 0 = Anfang (Leserichtung), -1 = Ende
-	if l.selActive() {
-		blk = l.selCur
-		if l.selDir < 0 {
-			edge = -1
-		}
-	} else if l.Focused() {
-		blk = l.focus
-	} else if i := l.topVisibleIndex(); i >= 0 {
-		blk = i
-	}
-	// Auto-t (Bonus-FR, User-Wunsch): Die Leseposition ist ein Diagramm-
-	// BILD mit Zaun-Quelle — shift+enter schaltet SELBST auf den Quelltext
-	// um und spawnt das Caret DARIN (statt den Block zu ueberspringen und
-	// den Nutzer erst t druecken zu lassen). Das Bild hat keine Zellen,
-	// der Zaun-Quelltext ist buchstaben-faehig (ImageBlock.CharLines).
-	if blk >= 0 && blk < len(l.items) {
-		if img, ok := l.items[blk].(ImageBlock); ok && !img.showSrc && img.src != "" {
-			nb, _ := img.toggleSrc()
-			l.items[blk] = nb
-		}
-	}
-	// LAUSCHER-Prioritaet: Ein LAUFENDER Streaming-Block (aktiver Think
-	// mitten im Turn, feste ID ThinkBlockID) hat Vorrang vor dem Viewport-
-	// Rand — der Cursor soll DA spawnen, wo gerade getippt wird (User-
-	// Report: "bei einem aktiven thinking block in den cursor mode").
-	// Nur wenn kein laufender Block existiert, gilt die Leseposition
-	// (Auswahl/Fokus/Viewport-Rand).
-	for j, it := range l.items {
-		if tb, ok := it.(ThinkBlock); ok && tb.ID() == ThinkBlockID {
-			blk = j
-			break
-		}
-	}
-	if !l.charCapableAt(blk) {
-		// Der Leseposition-Block ist nicht buchstaben-faehig (Tabelle,
-		// User-Schiene, Bild OHNE Quelle — z. B. tab auf einem ImageBlock
-		// aus HERON_IMAGES=force): Der Cursor sucht den naechsten faehigen
-		// Block VORWAERTS, sonst zurueck — er spawnt IMMER, nie stumm
-		// (Hauptfeature).
-		nb := l.nextCharBlock(blk-1, 1)
-		if nb < 0 {
-			nb = l.nextCharBlock(blk+1, -1)
-		}
-		if nb < 0 {
-			return l // der ganze Chat hat keinen Buchstaben-Text
-		}
-		blk = nb
-	}
-	// Kollabierte Karten (Think/Tool) aufklappen: Das Caret adressiert
-	// den VOLLSTAENDIGen Inhalt, nicht den gefalteten Rest. (User-Report:
-	// Spawn "manchmal broken" — im aktiven Streaming-Think ist der Block
-	// zugeklappt, ohne Aufklappen zeigte CharLines nur die letzten 3 Zeilen
-	// und die Offsets des Spawns passten nicht zum Sichtbaren.)
-	if blk >= 0 && blk < len(l.items) {
-		switch c := l.items[blk].(type) {
-		case ToolBlock:
-			if !c.expanded {
-				c.expanded = true
-				l.items[blk] = c
+	if selLo >= 0 {
+		for i := selLo; i <= selHi; i++ {
+			// Auto-t entlang des Scans: Ein Diagramm-BILD mit Zaun-Quelle
+			// wird auf den Quelltext geschaltet und ist DANN faehig —
+			// das Caret spawnt im Zaun statt den Block zu ueberspringen.
+			if img, ok := l.items[i].(ImageBlock); ok && !img.showSrc && img.src != "" {
+				nb, _ := img.toggleSrc()
+				l.items[i] = nb
 			}
-		case ThinkBlock:
-			if !c.expanded && c.hidden(codeInnerWidth(w)) {
-				c.expanded = true
-				l.items[blk] = c
+			if l.charCapableAt(i) {
+				blk = i
+				break
 			}
+		}
+		if blk < 0 {
+			// Die GANZE Flaeche ist unfaehig (Bild ohne Quelle): Der Cursor
+			// spawnt IMMER, nie stumm (FR-42-Hauptfeature) — Fallback
+			// ausserhalb wie an der Leseposition.
+			blk = l.nextCharBlock(selLo-1, 1)
+			if blk < 0 {
+				blk = l.nextCharBlock(selHi+1, -1)
+			}
+			if blk < 0 {
+				return l // der ganze Chat hat keinen Buchstaben-Text
+			}
+		}
+	} else {
+		if l.Focused() {
+			blk = l.focus
+		} else if i := l.topVisibleIndex(); i >= 0 {
+			blk = i
+		}
+		// Auto-t (Bonus-FR, User-Wunsch): Die Leseposition ist ein Diagramm-
+		// BILD mit Zaun-Quelle — shift+enter schaltet SELBST auf den Quelltext
+		// um und spawnt das Caret DARIN (statt den Block zu ueberspringen und
+		// den Nutzer erst t druecken zu lassen). Das Bild hat keine Zellen,
+		// der Zaun-Quelltext ist buchstaben-faehig (ImageBlock.CharLines).
+		if blk >= 0 && blk < len(l.items) {
+			if img, ok := l.items[blk].(ImageBlock); ok && !img.showSrc && img.src != "" {
+				nb, _ := img.toggleSrc()
+				l.items[blk] = nb
+			}
+		}
+		// LAUSCHER-Prioritaet: entfaellt mit den Think-/Tool-Karten — der
+		// Chat traegt keinen Live-Block mehr (der Prozess lebt im
+		// Activity-Baum ueber der Eingabe).
+		if blk >= 0 && !l.charCapableAt(blk) {
+			// Der Leseposition-Block ist nicht buchstaben-faehig (Tabelle,
+			// User-Schiene, Bild OHNE Quelle — z. B. tab auf einem ImageBlock
+			// aus HERON_IMAGES=force): Der Cursor sucht den naechsten faehigen
+			// Block VORWAERTS, sonst zurueck — er spawnt IMMER, nie stumm
+			// (Hauptfeature).
+			nb := l.nextCharBlock(blk-1, 1)
+			if nb < 0 {
+				nb = l.nextCharBlock(blk+1, -1)
+			}
+			if nb < 0 {
+				return l // der ganze Chat hat keinen Buchstaben-Text
+			}
+			blk = nb
 		}
 	}
 	text, _ := l.charTextAt(blk, w)
@@ -208,73 +221,51 @@ func (l BlockList) enterCursorMode() BlockList {
 			return l.scrollCharIntoView()
 		}
 	}
-	if l.selActive() {
-		// Konvertierung MIT VORRANG (User-Report: shift+tab auf einer
-		// Auswahl "killte" sie): Der Wiedereintritts-Merk charBlock ist
-		// ein RESTZUSTAND — stand er zufaellig auf blk (Nullwert 0 oder
-		// Rest einer frueheren Session), lief die "Position halten"-
-		// Verzweigung statt der Konvertierung und leerte die Auswahl.
-		// Die laufende Block-Auswahl wird jetzt ZUVERLAESSIG zur Zeichen-
-		// Auswahl ueber demselben Bereich.
-		// Der ANKER ueberlebt auch die Block-Granularitaet (klassisches
-		// Select — User-Report: "man hat einen Anker, dieser bleibt
-		// aktiv"): Liegt der feine Anker-Rest IM Bereich der Block-
-		// Auswahl, haelt er EXAKT (nur ans Textende geklemmt); neu ge-
-		// baut wird er nur OHNE solchen Rest.
-		keepAnchor := l.char.fromBlock >= 0
-		if keepAnchor {
-			lo, hi := l.selBounds()
-			if l.char.fromBlock < lo || l.char.fromBlock > hi {
-				keepAnchor = false
-			} else if at, ok := l.charTextAt(l.char.fromBlock, w); ok {
-				if n := len([]rune(at)); l.char.from > n {
-					l.char.from = n
-				}
+	if selLo >= 0 {
+		// Konvertierung ueber derselben Flaeche (User-Report: "sollte am
+		// anfang der selektierten flaeche sein"): Das Caret spawnt an
+		// Offset 0 des ersten faehigen Blocks (Flaechen-ANFANG), der
+		// Anker sitzt am ENDE des letzten faehigen Blocks der Flaeche.
+		// Ist die END-Kante unfaehig (Tabelle, User-Schiene), laeuft der
+		// Anker HINTER die Flaeche und klemmt seine Offset-Grenze (0)
+		// ans Flaeche-Ende — der unfaehige Randblock bleibt GANZ Teil
+		// der feinen Auswahl (Mitte-Block, charMarkdown), ohne dass
+		// Text ausserhalb mitkopiert wird.
+		anchor, ao := -1, 0
+		for i := selHi; i < len(l.items); i++ {
+			if !l.charCapableAt(i) {
+				continue
 			}
-		}
-		if !keepAnchor {
-			anchor := l.selFrom
-			ao := 0
-			if at, ok := l.charTextAt(anchor, w); ok {
-				// Adressierbarer Anker: ab seiner Wachstums-Kante (unten =
-				// Ende, oben = Anfang).
-				if l.selDir < 0 {
-					ao = len([]rune(at))
-				}
-			} else if na := l.nextCharBlock(anchor, l.selAnchorDir()); na >= 0 {
-				// NICHT adressierbarer Anker (PlantUML-Bild, User-Schiene,
-				// Tabelle): Der Anker huepft zum naechsten faehigen Block
-				// AUSSERHALB der Auswahl — die unadressierbaren Bloecke bis
-				// dahin bleiben GANZ Teil der Auswahl (als "Mitte"-Bloecke,
-				// s. all()/charMarkdown), statt an der Kante verloren zu
-				// gehen (User-Report: Auswahl "uebersprang" Elemente).
-				anchor = na
-				if l.selDir >= 0 {
-					at, _ := l.charTextAt(anchor, w)
+			anchor = i
+			if i <= selHi {
+				// Faehiger Block IN der Flaeche: Die Auswahl endet an
+				// seinem Textende (bb-Seite, ob=len → GANZ inklusive).
+				if at, ok := l.charTextAt(i, w); ok {
 					ao = len([]rune(at))
 				}
 			}
-			l.char.from, l.char.fromBlock = ao, anchor
+			// i > selHi: HINTER der Flaeche — ao bleibt 0, die Grenze
+			// klemmt ans Flaeche-Ende (nichts Ausserhalb wird kopiert).
+			break
 		}
-		if l.selDir < 0 {
-			l.char.to, l.char.block = 0, blk
-		} else {
-			l.char.to, l.char.block = n, blk
+		if anchor < 0 {
+			anchor, ao = blk, n // ganze Flaeche unfaehig: Fallback-Block ganz
 		}
-		// Einheitlicher Auswahl-Vertrag: Der Eintritt KONSUMIERT die Block-
-		// Auswahl — im Modus existiert genau EINE Auswahl (die feine
-		// Konvertierung). Bereich selFrom/selCur und selDir bleiben fuer
-		// den esc-Rueckweg stehen (charFromSel).
-		l.char.fromSel = true
+		l.char.from, l.char.fromBlock = ao, anchor
+		l.char.to, l.char.block = 0, blk
+		// Einheitlicher Auswahl-Vertrag: Der Eintritt KONSUMIERT die
+		// Auswahl — im Modus existiert genau EINE (die feine Konvertierung).
+		// Bereich selFrom/selCur und selDir bleiben fuer den esc-Rueckweg
+		// stehen (charFromSel); eine Maus-Markierung wird verbraucht
+		// (ihr sel-Zustand waere ungueltig).
+		l.char.fromSel = selBlocks
 		l.sel = false
+		l = l.clearMarks()
 	} else if l.char.block == blk { // Wiedereintritt: Position halten
 		if l.char.to < 0 || l.char.to > n {
 			l.char.from, l.char.to = 0, 0
 		}
 		l.char.fromBlock = l.char.block
-	} else if edge < 0 {
-		l.char.from, l.char.to, l.char.block = n, n, blk
-		l.char.fromBlock = blk
 	} else {
 		l.char.from, l.char.to, l.char.block = 0, 0, blk
 		l.char.fromBlock = blk
@@ -715,7 +706,7 @@ func (l BlockList) charMarkdown() string {
 			// sie nicht betreten, aber die Auswahl uebernimmt sie komplett
 			// (Rahmen leuchtet live, s. all()). Nur im QUELLTEXT-Modus
 			// (t-Switch) waere der Block buchstabenweise adressierbar.
-			parts = append(parts, l.items[i].Markdown())
+			parts = append(parts, render.StripANSI(l.items[i].Markdown()))
 		}
 	}
 	tb, _ := l.charTextAt(bb, w)

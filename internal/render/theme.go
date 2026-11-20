@@ -30,7 +30,10 @@ type Theme struct {
 	Border     Style  `json:"border"`
 	Action     Style  `json:"action"`
 	Focus      Style  `json:"focus"`
+	Soft       Style  `json:"soft"`
 	Pan        Style  `json:"pan"`
+	Ok         Style  `json:"ok"`
+	Err        Style  `json:"err"`
 	Background string `json:"background"`
 }
 
@@ -57,7 +60,10 @@ func (t *Theme) Light() *Theme {
 	c.Border.Color = "#5E81AC"
 	c.Action.Color = "#6C47C8"
 	c.Focus.Color = "#7C3AED" // Neon-Violett abgedunkelt: lesbar auf Weiss
+	c.Soft.Color = "#5B6079"  // Hellgrau abgedunkelt: lesbar auf Weiss
 	c.Pan.Color = "#B45309"   // Amber abgedunkelt: lesbar auf Weiss
+	c.Ok.Color = "#15803D"    // Gruen abgedunkelt: lesbar auf Weiss
+	c.Err.Color = "#B91C1C"   // Rot abgedunkelt: lesbar auf Weiss
 	c.Background = "#FFFFFF"
 	return &c
 }
@@ -123,6 +129,80 @@ func (t *Theme) PanColor() string {
 		return DefaultPanColor
 	}
 	return t.Pan.Color
+}
+
+// ---- Activity-Tree-Farben (Activity-Tree-Spec) ------------------------------
+//
+// Der Activity-Tree (Thinking/Tool Calls/Working on) faerbt ausschliesslich
+// ueber diese zentralen Definitionen — keine verstreuten RGB-Werte in der
+// TUI. "Valida" ist das sanfte Pink-Purple der Action-Farbe, "Neon Pink"
+// das Neon-Violett des Fokus — beide existieren schon im Theme und werden
+// hier nur unter ihrem Spec-Namen erreichbar gemacht.
+
+// ValidaColor ist das sanfte Pink-Purple (Action-Farbe): Tool Calls- und
+// Working-on-Label, ▸/▼-Faltmarken und das laeuft-Symbol ●.
+func (t *Theme) ValidaColor() string {
+	if t == nil || t.Action.Color == "" {
+		return "#B999FF"
+	}
+	return t.Action.Color
+}
+
+// NeonPinkColor ist das Neon-Violett (Focus-Farbe). Im Activity-Tree ist
+// es seit dem User-Wunsch 19.11. abgeloest (Thinking traegt Valida, Inhalte
+// Soft-Grau — "Neon ist fokuswuerdig, Gelesenes liest sich in Grau") und
+// bleibt die Fokus-Akzentfarbe der Chat-Bloecke.
+func (t *Theme) NeonPinkColor() string {
+	return t.FocusColor()
+}
+
+// SoftColor ist das ruhige Hellgrau fuer die INHALTSZEILEN des Activity-
+// Trees (User-Wunsch 19.11.: "statt Neon ein Hellgrau") — Denk-Tails,
+// Bash-Befehle, fortlaufende Working-on-Zeilen. Strukturzeichen bleiben
+// Muted, Labels Valida. Fehlt "soft" im Theme-JSON, greift der Fallback
+// (alte Themes laufen weiter); die Light-Abwandlung dunkelt sie ab.
+const DefaultSoftColor = "#C0C3D4"
+
+// SoftColor liefert die Hellgrau-Farbe mit Fallback — auch fuer nil-Themes
+// und Theme-JSONs ohne "soft"-Feld.
+func (t *Theme) SoftColor() string {
+	if t == nil || t.Soft.Color == "" {
+		return DefaultSoftColor
+	}
+	return t.Soft.Color
+}
+
+// MutedColor ist die stille Strukturfarbe (Border, faint): die Tree-Zeichen
+// │ ├─ └─ und die Trennlinie vor den letzten Textzeilen.
+func (t *Theme) MutedColor() string {
+	if t == nil || t.Border.Color == "" {
+		return "#B4BEFE"
+	}
+	return t.Border.Color
+}
+
+// DefaultOkColor ist Gruen: das ✓ erfolgreich abgeschlossener Tool-Calls.
+const DefaultOkColor = "#22C55E"
+
+// OkColor liefert Gruen mit Fallback — nil-theme und alte Theme-JSONs ohne
+// "ok"-Feld laufen weiter.
+func (t *Theme) OkColor() string {
+	if t == nil || t.Ok.Color == "" {
+		return DefaultOkColor
+	}
+	return t.Ok.Color
+}
+
+// DefaultErrColor ist Rot: das ✗ fehlgeschlagener Tool-Calls.
+const DefaultErrColor = "#FF5555"
+
+// ErrColor liefert Rot mit Fallback — nil-theme und alte Theme-JSONs ohne
+// "err"-Feld laufen weiter.
+func (t *Theme) ErrColor() string {
+	if t == nil || t.Err.Color == "" {
+		return DefaultErrColor
+	}
+	return t.Err.Color
 }
 
 // PanBorderStyle ist der Rahmen-Stil des Pan-&-Zoom-Modus: Amber — die
@@ -213,9 +293,10 @@ func (t *Theme) HeadingStyle(level int) lipgloss.Style {
 		return s
 	}
 	s = s.Foreground(lipgloss.Color(t.HeadingColor(level)))
-	if level <= 1 {
-		s = s.Underline(true) // dezenter Abschnitts-Anker fuer h1
-	}
+	// KEIN Underline mehr hier: lipgloss rendert Unterstreichung PER RUNE
+	// (useSpaceStyler) und zerschneidet dabei Inline-SGR-Ketten — **fett**
+	// in der Ueberschrift erscheint als sichtbares "[1m…[22m". Die h1-
+	// Unterreichung malt TextBlock.View ANSI-bewusst (underlineStyled).
 	return s
 }
 

@@ -72,56 +72,6 @@ func TestFocusSignalsBorderNotLabel(t *testing.T) {
 	}
 }
 
-// TestThinkHoverTargetsSingleCell: Hover trifft GENAU die Kopfzeile — die
-// Falt-Marke (▸/▾) lebt im Kopf, der Footer ist reine Rahmenlinie (kein
-// "+ show more" mehr): Body- und Footer-Hover highlighten nichts.
-func TestThinkHoverTargetsSingleCell(t *testing.T) {
-	withTrueColor(t)
-	th, _ := render.DefaultTheme()
-	b := NewThinkBlock("a\nb\nc\nd\ne", th) // > thinkCollapsed Zeilen → faltbar
-	w := 40
-	if b.Height(w) != 5 { // Kopf + 3 (gekappte) Zeilen + Rahmen-Footer
-		t.Fatalf("unexpected height %d", b.Height(w))
-	}
-	foot := b.SetHoverAt(w, w/2, 4).(ThinkBlock)
-	if foot.hoverHead {
-		t.Fatal("footer hover must highlight nothing (no fold action there)")
-	}
-	head := b.SetHoverAt(w, 5, 0).(ThinkBlock)
-	if !head.hoverHead {
-		t.Fatal("header hover must highlight the header")
-	}
-	none := b.SetHoverAt(w, 5, 1).(ThinkBlock)
-	if none.hoverHead {
-		t.Fatal("body hover must hit nothing")
-	}
-}
-
-// TestThinkHotkeysFold: + klappt auf, - zu — der Neon-Buchstabe im Label
-// ist buchstaeblich die Taste (nur im Fokus).
-func TestThinkHotkeysFold(t *testing.T) {
-	th, _ := render.DefaultTheme()
-	b := NewThinkBlock("a\nb\nc\nd\ne", th)
-	b = b.SetFocused(true).(ThinkBlock) // Hotkeys wirken nur im Fokus
-	if b.expanded {
-		t.Fatal("starts collapsed")
-	}
-	w, _ := b.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
-	if !w.(ThinkBlock).expanded {
-		t.Fatal("+ must expand the focused think block")
-	}
-	w, _ = w.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'-'}})
-	if w.(ThinkBlock).expanded {
-		t.Fatal("- must collapse the focused think block")
-	}
-	// Ohne Fokus passiert nichts.
-	plain := NewThinkBlock("a\nb\nc\nd\ne", th)
-	w2, _ := plain.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+'}})
-	if w2.(ThinkBlock).expanded {
-		t.Fatal("+ without focus must not expand")
-	}
-}
-
 // TestImageFooterHoverSingleBox: Im Image-Footer leuchtet beim Hover GENAU
 // DER getroffene Kasten — [ TEXT ]/Switch oder [ COPY ], nie beide. Und die
 // Hotkey-Buchstaben (T bei TEXT, C bei COPY) sind immer Neon.

@@ -123,24 +123,26 @@ func TestScreenFitsWithPromptBox(t *testing.T) {
 	}
 }
 
-// TestWorkingLineCentered: die "antwort läuft …"-Zeile sitzt MITTIG über
-// der Eingabebox — gleicher Rand links und rechts, nie breiter als das
-// Terminal.
-func TestWorkingLineCentered(t *testing.T) {
+// TestActivityBlockAboveInput: der Activity-Baum sitzt ueber der Eingabe-
+// box, ist linksbuendig und niemals breiter als das Terminal (Nachfolger
+// der zentrierten Working-Line; der Baum ist Struktur, kein Status-Chip).
+func TestActivityBlockAboveInput(t *testing.T) {
 	r := newRig(t)
-	r.m.width = 41
+	r.m.width = 60
 	r.m.startTurn()
-	wl := r.m.workingLine()
-	if wl == "" {
-		t.Fatal("workingLine leer im laufenden Turn")
+	r.do(thoughtMsg{text: "denken"})
+	r.do(toolMsg{callID: "c1", name: "bash", kind: "execute", cmd: "ls -la"})
+	av := r.m.activityView()
+	if av == "" {
+		t.Fatal("activityView leer im laufenden Turn")
 	}
-	inner := strings.TrimSpace(wl)
-	pad := len(wl) - len(strings.TrimLeft(wl, " "))
-	if inner == "" || pad != (41-lipgloss.Width(inner))/2 {
-		t.Fatalf("nicht mittig: pad=%d inner=%q (Zeile %q)", pad, inner, wl)
+	for i, ln := range strings.Split(av, "\n") {
+		if w := lipgloss.Width(ln); w > 60 {
+			t.Fatalf("Zeile %d ist %d Zellen breit (Terminal 60): %q", i, w, ln)
+		}
 	}
-	if strings.Contains(wl, "\n") {
-		t.Fatalf("workingLine muss EINE Zeile sein: %q", wl)
+	if !strings.Contains(stripANSI(av), "Working on") {
+		t.Fatalf("Working on fehlt: %q", stripANSI(av))
 	}
 }
 

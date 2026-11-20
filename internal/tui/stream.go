@@ -5,14 +5,7 @@ import (
 	"sync/atomic"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"heron/internal/render"
 )
-
-// StreamBlockID addresses the transient block that shows an answer while it
-// is still streaming. It lives far above the ordinary block numbers so a turn
-// never burns a user-visible number (and alt+<n> cannot reach it).
-const StreamBlockID = 999999
 
 // Stream is the handle a backend uses to push live turn updates into the UI
 // (FR-2). The tea runtime is attached once the program starts; publishing
@@ -218,82 +211,4 @@ type ToolUpdate struct {
 	HasOutput           bool
 	Live                string
 	Done, Failed        bool
-}
-
-// removeStreamBlocks drops every transient streaming preview block (the
-// final parsed blocks replace them when the reply settles).
-func (l BlockList) removeStreamBlocks() BlockList {
-	for i := len(l.items) - 1; i >= 0; i-- {
-		id := l.items[i].ID()
-		if id <= StreamBlockID && id > StreamBlockID-streamIDRange {
-			l.items = append(l.items[:i], l.items[i+1:]...)
-		}
-	}
-	return l
-}
-
-// upsertStreamWidgets replaces the transient streaming preview blocks with
-// the fresh set and keeps the pager pinned while follow is active (FR-2/FR-8).
-func (l BlockList) upsertStreamWidgets(widgets []Widget) BlockList {
-	l = l.removeStreamBlocks()
-	if len(widgets) > 0 {
-		l = l.Append(widgets...)
-	}
-	if l.follow {
-		l = l.ScrollEnd()
-	}
-	return l
-}
-
-// ThinkBlockID addresses the collapsible thinking block (FR-30). Like the
-// stream preview it lives outside the user-visible numbering — far enough
-// below the streaming range to never collide with it.
-const ThinkBlockID = 999900
-
-// finishThinkBlock closes the live thinking section: the transient block
-// gets a STABLE block number. Thinking that resumes afterwards opens a NEW
-// block at the end of the chain — below the tool card that interrupted it —
-// instead of growing the old block above that card (User-Report: "der Think-
-// Block expandiert, obwohl Tool-Calls den Denkprozess unterbrechen").
-func (l BlockList) finishThinkBlock() BlockList {
-	for i, it := range l.items {
-		if it.ID() != ThinkBlockID {
-			continue
-		}
-		if _, ok := it.(ThinkBlock); !ok {
-			continue
-		}
-		l.nextID++
-		l.items[i] = it.SetID(l.nextID)
-		return l
-	}
-	return l
-}
-
-// upsertThinkBlock creates or refreshes the collapsible thinking block and
-// keeps the pager pinned while follow is active (FR-30). The fold state
-// survives the refresh so streaming does not collapse an unfolded block.
-func (l BlockList) upsertThinkBlock(text string, th *render.Theme) BlockList {
-	expanded := false
-	for _, it := range l.items {
-		if it.ID() == ThinkBlockID {
-			if tb, ok := it.(ThinkBlock); ok {
-				expanded = tb.expanded
-			}
-		}
-	}
-	tb := NewThinkBlock(text, th)
-	tb.expanded = expanded
-	nb := tb.SetID(ThinkBlockID)
-	if _, ok := l.UpdateBlock(ThinkBlockID, nb); ok {
-		if l.follow {
-			l = l.ScrollEnd()
-		}
-		return l
-	}
-	l = l.Append(nb)
-	if l.follow {
-		l = l.ScrollEnd()
-	}
-	return l
 }

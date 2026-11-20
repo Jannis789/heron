@@ -146,35 +146,6 @@ func borderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
 	return th.BorderStyle()
 }
 
-// cardBorderStyleFor ist der Rahmen der Think-/Tool-Karten: faint-grau wie
-// der Text IN den Karten (LabelStyle) — der Rahmen tritt zurueck, die
-// Karte gehoert zur Konversation (User-Feedback: Border grau wie der
-// Text). Fokus-/Markierungs- und Stale-Rahmen bleiben unangetastet, damit
-// die Auswahl weiterhin herausliest.
-func cardBorderStyleFor(th *render.Theme, sel, stale bool) lipgloss.Style {
-	if sel {
-		return th.FocusBorderStyle()
-	}
-	if stale {
-		return th.StaleBorderStyle()
-	}
-	return th.LabelStyle()
-}
-
-// stackDivider rendert die Trennlinie zwischen zwei gestapelten Karten:
-// ├─ <Label der nächsten Karte> ──┤ (User-Skizze "thinking | tool"). Das
-// Label traegt denselben Stil wie die Rahmenzeichen — die Zeile ist EINE
-// durchgehende Flaeche (bg-Fuellung auch unter dem Label, sonst laeuft
-// die Horizontale auf Nicht-Default-Terminals unschoen ueber).
-func stackDivider(bs, dls lipgloss.Style, label string, width int) string {
-	lw := runewidth.StringWidth(label)
-	dashes := width - 5 - lw
-	if dashes < 0 {
-		dashes = 0
-	}
-	return bs.Render("├─ ") + dls.Render(label) + bs.Render(" "+strings.Repeat("─", dashes)+"┤")
-}
-
 func actionStyle(th *render.Theme, hover bool) lipgloss.Style {
 	st := lipgloss.NewStyle()
 	if th != nil {
@@ -236,6 +207,13 @@ type TextBlock struct {
 	// Prosa traegt keinen Rahmen — die vergangene Auswahl unterstreicht
 	// den Text (ohne Reverse, das ist der AKTUELLEN Markierung vorbehalten).
 	stale bool
+	// underline malt die Unterstreichung ANSI-bewusst (underlineStyled, s.
+	// View) statt via lipgloss: dessen Underline rendert PER RUNE (useSpace-
+	// Styler) und zerschneidet dabei Inline-SGR-Ketten — **fett** im Text
+	// erscheint als sichtbares "[1msonstiges:[22m" (User-Report). Trifft
+	// den Fokus-Anker, die vergangene Auswahl (FR-43) und das h1-Ruhe-
+	// Underline der HeadingStyle-Hierarchie.
+	underline bool
 	// focusable markiert Ueberschriften: Sie sind Teil der Fokus-Kette
 	// (up/down), der Fokus zeigt sich als Unterstrich (s. View).
 	focusable bool
@@ -258,6 +236,15 @@ type TextBlock struct {
 	// bleiben; Markdown()/Copy() lassen sie weg (sauberes Yank).
 	beforeGap int
 	afterGap  int
+}
+
+// underlineStyled malt \x1b[4m ANSI-bewusst ueber ALLE sichtbaren Zellen
+// der Zeile: Escapes sind keine Zellen, eingebettete SGRs rear-men den
+// Unterstrich vor der naechsten Zelle. Ersetzt lipgloss' Underline — dessen
+// Per-Rune-Styler zerschneidet Inline-SGR-Ketten ([1m als sichtbares
+// Literal, User-Report "im Auswahlmodus fetten Text auswaehlen").
+func underlineStyled(ln string) string {
+	return styleRange(ln, 0, 1<<30, "\x1b[4m")
 }
 
 func NewTextBlock(text, color string) TextBlock {
@@ -351,27 +338,40 @@ func (b TextBlock) View(width int) string {
 	}
 	lines := b.wrapped(wrapW)
 	st := b.style
+	// Unterstreichung (Fokus-Anker FR-29, vergangene Auswahl FR-43) NICHT
+	// ueber lipgloss setzen: dessen Underline rendert PER RUNE (useSpace-
+	// Styler, style.go) und zerschneidet dabei Inline-SGR-Ketten — **fett**
+	// im Text wuerde als sichtbares "[1msonstiges:[22m" erscheinen (User-
+	// Report "im Auswahlmodus fetten Text auswaehlen"). Stattdessen malt
+	// underlineStyled die Unterstreichung ANSI-bewusst ueber die FERTIG
+	// gestylte Zeile (Escapes sind keine Zellen, eingebettete SGRs rear-men).
+	ul := b.underline
 	if b.focused {
 		// Fokussierte Ueberschrift: Unterstrich — das Anker-Signal der
 		// Fokus-Kette, ohne Rahmen (Prosa waechst keinen Kasten, FR-29).
-		st = st.Underline(true)
+		ul = true
 	}
 	if b.marked {
 		// Marked prose inverts instead of growing a frame, so the wrap
-		// width stays untouched (FR-29).
+		// width stays untouched (FR-29). Reverse ist KEIN Space-Styler:
+		// lipgloss wrappt die ganze Zeile — ANSI-sicher.
 		st = st.Reverse(true)
 	}
 	if b.stale && !b.marked {
 		// Vergangene Auswahl (FR-43): unterstrichen statt invertiert —
 		// deutlich schwächer als die aktuelle Markierung.
-		st = st.Underline(true)
+		ul = true
 	}
 	all := make([]string, 0, b.beforeGap+len(lines)+b.afterGap)
 	for i := 0; i < b.beforeGap; i++ {
 		all = append(all, "")
 	}
 	for _, l := range lines {
-		all = append(all, pad+st.Render(l))
+		rendered := st.Render(l)
+		if ul {
+			rendered = underlineStyled(rendered)
+		}
+		all = append(all, pad+rendered)
 	}
 	for i := 0; i < b.afterGap; i++ {
 		all = append(all, "")
@@ -457,14 +457,19 @@ func (b TextBlock) CharLeft(width int) int {
 }
 
 func (b TextBlock) Markdown() string {
+	// Der gespeicherte Text traegt dieInline-SGRs des Markdown-Parsers
+	// (\x1b[1m … \x1b[22m fuer **fett**). Der Copy-Payload ist dagegen
+	// reines Markdown (FR-29): ohne das Strippen landen die Escapes als
+	// sichtbares "[1m…[22m" in der Zwischenablage (User-Report).
+	text := render.StripANSI(b.text)
 	if b.heading {
 		lvl := b.level
 		if lvl < 1 {
 			lvl = 1
 		}
-		return strings.Repeat("#", lvl) + " " + b.text
+		return strings.Repeat("#", lvl) + " " + text
 	}
-	return b.text
+	return text
 }
 func (b TextBlock) Update(msg tea.Msg) (Widget, tea.Cmd) { return b, nil }
 func (b TextBlock) Focused() bool                        { return b.focused }
@@ -832,355 +837,6 @@ func (b TableBlock) SetID(i int) Widget {
 	return nb
 }
 
-// ---- Body-Wrapping (gemeinsam fuer die Rahmen-Karten) ----------------------
-
-// wrapSourceLines bricht rohe Quellzeilen an Wortgrenzen um (leere Zeilen
-// bleiben leer) — der gemeinsame Body-Formatierer von Think-/Tool-Karten.
-func wrapSourceLines(src []string, inner int) []string {
-	if inner <= 0 {
-		return src
-	}
-	var out []string
-	for _, ln := range src {
-		if ln == "" {
-			out = append(out, "")
-			continue
-		}
-		out = append(out, render.WrapWords(ln, inner)...)
-	}
-	return out
-}
-
-// wrapSourceTail bricht nur so viele Quellzeilen vom ENDE um, wie fuer n
-// Zeilen gebraucht werden. Zugeklappte Karten zeigen ohnehin nur den
-// Schluss (FR-30) — ein 20k-Zeilen-Tool-Output darf dafuer nicht in jedem
-// Frame komplett neu gewrappt werden.
-func wrapSourceTail(src []string, inner, n int) []string {
-	if n <= 0 || len(src) == 0 {
-		return nil
-	}
-	if inner <= 0 {
-		if len(src) <= n {
-			return src
-		}
-		return src[len(src)-n:]
-	}
-	var rows []string
-	for i := len(src) - 1; i >= 0 && len(rows) < n; i-- {
-		ln := src[i]
-		var w []string
-		if ln == "" {
-			w = []string{""}
-		} else {
-			w = render.WrapWords(ln, inner)
-		}
-		rows = append(w, rows...)
-	}
-	if len(rows) > n {
-		rows = rows[len(rows)-n:]
-	}
-	return rows
-}
-
-// sourceExceeds meldet, ob src mehr als n Zeilen belegt — OHNE den ganzen
-// Text zu wrappen: jede Quellzeile ist mindestens eine Zeile, also beweist
-// schon die Zeilenzahl alles ueber n. Damit bleibt Height() einer grossen,
-// zugeklappten Karte O(1) statt O(Text).
-func sourceExceeds(src []string, inner, n int) bool {
-	if len(src) > n {
-		return true
-	}
-	return len(wrapSourceLines(src, inner)) > n
-}
-
-// ---- ThinkBlock ------------------------------------------------------------
-
-// thinkCollapsed caps the visible body lines of a collapsed ThinkBlock (FR-30).
-const thinkCollapsed = 3
-
-// ThinkBlock shows the model's thinking as a collapsible chat block: long
-// thinking is truncated to a few lines until unfolded (FR-30).
-type ThinkBlock struct {
-	id   int
-	text string
-	// body caches the split source lines: Height()/View() fragen die Zeilen
-	// mehrfach pro Frame ab — ein 2000-Zeilen-Denktext wurde sonst pro
-	// Aufruf neu gesplittet.
-	body     []string
-	expanded bool
-	focused  bool
-	marked   bool
-	// stale: Block ist Teil der VERGANGENEN Auswahl (FR-43) — Rahmen in
-	// der verblichenen Sekundaer-Farbe, ohne das "✓" der Markierung.
-	stale bool
-	// Stack-Joining (nur auf RENDER-KOPIEN in BlockList.stack gesetzt):
-	// aufeinanderfolgende Think-/Tool-Karten teilen EINEN Rail-Lauf —
-	// joinTop laesst die eigene Kopfzeile weg, die Karte endet mit leerer
-	// Rail-Zeile und die Folgekarte setzt die Rails direkt fort.
-	joinTop       bool
-	joinAsDivider bool
-	dividerLabel  string
-	th         *render.Theme
-	// Hover ist ZIELGENAU, nicht blockweit: nur die Kopfzeile highlightet
-	// — die Falt-Marke (▸/▾) lebt im Kopf, der Footer ist eine reine
-	// Rahmenlinie (kein "+ show more" mehr).
-	hoverHead bool
-}
-
-func NewThinkBlock(text string, th *render.Theme) ThinkBlock {
-	return ThinkBlock{id: -1, text: text, th: th, body: splitBody(text)}
-}
-
-// splitBody teilt einen Roh-Text in Zeilen (einmal je Widget-Aufbau).
-func splitBody(s string) []string {
-	return strings.Split(strings.TrimRight(s, "\n"), "\n")
-}
-
-func (b ThinkBlock) bodyLines() []string {
-	if b.body != nil {
-		return b.body
-	}
-	return splitBody(b.text)
-}
-
-// wrappedBody wraps the thinking to the inner width. The model streams
-// thoughts as one long line — truncating per row would hide everything but
-// the start, so lines break at word boundaries instead (FR-30).
-func (b ThinkBlock) wrappedBody(inner int) []string {
-	return wrapSourceLines(b.bodyLines(), inner)
-}
-
-// hidden reports whether the fold hides anything — the same predicate the
-// rendered rows use, so the "+ show more" action never promises content
-// that is already visible.
-func (b ThinkBlock) hidden(inner int) bool {
-	return sourceExceeds(b.bodyLines(), inner, thinkCollapsed)
-}
-
-// visibleRows are the rows this fold state actually shows: everything when
-// expanded, otherwise the LAST thinkCollapsed rows. While collapsed only the
-// tail is wrapped — a long thinking stream stays cheap to lay out.
-func (b ThinkBlock) visibleRows(inner int) []string {
-	if b.expanded || !b.hidden(inner) {
-		return b.wrappedBody(inner)
-	}
-	return wrapSourceTail(b.bodyLines(), inner, thinkCollapsed)
-}
-
-// bodyRows is the rendered body row count for the current fold state: all
-// wrapped rows when expanded, otherwise thinkCollapsed.
-func (b ThinkBlock) bodyRows(width int) int {
-	inner := codeInnerWidth(width)
-	if b.expanded || !b.hidden(inner) {
-		return len(b.wrappedBody(inner))
-	}
-	return thinkCollapsed
-}
-
-func (b ThinkBlock) Height(width int) int { return 1 + b.bodyRows(width) + 1 }
-
-// label is the header caption: fold state, line count, selection mark.
-func (b ThinkBlock) label() string {
-	state := "▸"
-	if b.expanded {
-		state = "▾"
-	}
-	l := fmt.Sprintf("thinking %s %d lines", state, len(b.bodyLines()))
-	if b.marked {
-		l += " ✓"
-	}
-	return l
-}
-
-// truncateCells cuts a line to w display cells, marking the cut with an
-// ellipsis.
-func truncateCells(s string, w int) string {
-	if runewidth.StringWidth(s) <= w {
-		return s
-	}
-	return runewidth.Truncate(s, w, "…")
-}
-
-func (b ThinkBlock) View(width int) string {
-	if width < 16 {
-		width = 16
-	}
-	inner := codeInnerWidth(width)
-	// Karten sind jetzt SCHIENEN (User-Feedback): Eine linke Border-Spalte
-	// "│", rechts freie Zelle — KEINE horizontalen Rahmenzeichen mehr
-	// (┌─┐/├─┤/└─┘ sind weg). Die Horizontale schnitt dem Cursor-Modus
-	// die Markierung ab und frass Auswahl-Zellen (User-Report: "es sollte
-	// keine Zeile visuell markiert sein, die horizontale Rahmenzeichen
-	// entfernt"). Ruhe: Rails grau wie der Text; Auswahl: Neon-Rails.
-	sel := b.focused || b.marked
-	bs := cardBorderStyleFor(b.th, false, b.stale)
-	ls := b.th.LabelStyle()
-	rail := "│"
-
-	label := b.label()
-	labelW := runewidth.StringWidth(label)
-	dashes := width - 5 - labelW
-	if dashes < 0 {
-		dashes = 0
-	}
-	lines := make([]string, 0, b.Height(width))
-	// JEDE Karte traegt ihre Kopfzeile (Schienen-Design: die Kopfzeile ist
-	// der Karten-Trenner — joinTop unterdrueckt nichts mehr, sonst waere
-	// Fold-Marke/Zustand/neon-Auswahl der Folgekarte unsichtbar).
-	{
-		// The caption is a fold hit target (HitAction y==0) — die gleiche
-		// Hover-Behandlung wie die Footer-Aktion, aber nur wenn SIE getroffen
-		// ist (hoverHead), nie gleichzeitig mit dem Footer.
-		headSt := actionStyle(b.th, b.hoverHead)
-		if sel {
-			// Auswahl: Neon im Kopf (wie der Hotkey-Buchstabe) — hover
-			// unterstreicht weiter, auch im ausgewaehlten Zustand.
-			headSt = hotkeyStyle(b.th, b.hoverHead)
-		}
-		lines = append(lines, bs.Render(rail+" ")+headSt.Render(label)+
-			bs.Render(strings.Repeat(" ", max(dashes, 1))))
-	}
-
-	// Collapsed shows the END of the thinking — the conclusion lives there
-	// (visibleRows wraps only that tail, so streaming stays cheap). Der
-	// Innenraum wird als EINE Zelle durch den Zeilenstil gerendert — die
-	// Rails laufen lueckenlos von Zeile zu Zeile.
-	rows := b.visibleRows(inner)
-	for _, ln := range rows {
-		gap := inner - runewidth.StringWidth(ln)
-		if gap < 0 {
-			gap = 0
-		}
-		lines = append(lines, bs.Render(rail)+ls.Render(" "+ln+strings.Repeat(" ", gap+1)))
-	}
-
-	// Kein Boden-Rahmen: im Stack folgt die Kopfzeile der naechsten Karte
-	// (die ist der Trenner — heightAt spart VOR ihr die Leerzeile), sonst
-	// eine reine Leerzeile in der Rail-Farbe (unsichtbarer Abschluss).
-	if !b.joinAsDivider {
-		lines = append(lines, bs.Render(rail))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (b ThinkBlock) Update(msg tea.Msg) (Widget, tea.Cmd) {
-	if km, ok := msg.(tea.KeyMsg); ok {
-		key := km.String()
-		if !b.focused {
-			return b, nil
-		}
-		nb := b
-		switch key {
-		case "enter", "c": // Toggle wie bisher
-			nb.expanded = !b.expanded
-		case "+", "=": // Der Neon-Buchstabe im Label: + klappt AUF
-			if !b.expanded {
-				nb.expanded = true
-			}
-		case "-", "_": // und - zu (der Label-Buchstabe ist das Minus)
-			if b.expanded {
-				nb.expanded = false
-			}
-		default:
-			return b, nil
-		}
-		return nb, nil
-	}
-	return b, nil
-}
-func (b ThinkBlock) Focused() bool   { return b.focused }
-func (b ThinkBlock) Focusable() bool { return true }
-func (b ThinkBlock) SetFocused(f bool) Widget {
-	nb := b
-	nb.focused = f
-	return nb
-}
-func (b ThinkBlock) SetHover(h bool) Widget {
-	nb := b
-	nb.hoverHead = h
-	return nb
-}
-
-// SetHoverAt setzt den Hover zielgenau auf die Kopfzeile — sie ist das
-// einzige Falt-Ziel geblieben (▸/▾ im Kopf; die "+ show more"-Zeile ist
-// weg, User-Wunsch). Body-Hover highlightet nichts.
-func (b ThinkBlock) SetHoverAt(width, x, y int) Widget {
-	nb := b
-	nb.hoverHead = y == 0 && b.HitAction(width, x, y)
-	return nb
-}
-func (b ThinkBlock) SetMarked(m bool) Widget {
-	nb := b
-	nb.marked = m
-	return nb
-}
-func (b ThinkBlock) SetStale(s bool) Widget {
-	nb := b
-	nb.stale = s
-	return nb
-}
-func (b ThinkBlock) Marked() bool { return b.marked }
-
-// Markdown returns the raw thinking text — plain, without ANSI (FR-29).
-func (b ThinkBlock) Markdown() string { return b.text }
-func (b ThinkBlock) Resize(width int) Widget {
-	return b
-}
-func (b ThinkBlock) HitAction(width, x, y int) bool {
-	if !b.hidden(codeInnerWidth(width)) {
-		// Nothing hidden — no fold affordance anywhere, not even the header.
-		return false
-	}
-	// The header caption ("denken ▸ n Zeilen") is the fold affordance —
-	// clicking the section title is the natural unfold, and it must NOT
-	// toggle the selection mark (FR-30). Der Footer ist reine Rahmenlinie
-	// (kein "+ show more" mehr) — kein Klickziel.
-	if y != 0 {
-		return false
-	}
-	return x >= 3 && x < 3+runewidth.StringWidth(b.label())
-}
-func (b ThinkBlock) Copy() (Widget, tea.Cmd) { return b, nil }
-
-// Action: clicking the fold action toggles the block (FR-30) — no focus
-// needed, same semantics as pressing enter on the focused block.
-func (b ThinkBlock) Action() (Widget, tea.Cmd) {
-	nb := b
-	nb.expanded = !b.expanded
-	return nb, nil
-}
-func (b ThinkBlock) ID() int { return b.id }
-func (b ThinkBlock) SetID(i int) Widget {
-	nb := b
-	nb.id = i
-	return nb
-}
-
-// ---- Zeichen-Modus (FR-42): Buchstaben-Cursor im Thinking-Text -------------
-
-// CharLines liefert die SICHTBAREN Thinking-Zeilen (aufgeklappt alles, zu-
-// geklappt die letzten thinkCollapsed Zeilen) — exakt wie der Block sie
-// rendert. Damit ist der Denktext buchstabenweise adressierbar (User-
-// Report: "du kannst nicht bei einem aktiven thinking block in den cursor
-// mode wechseln" — ohne CharLines galt die Karte als unfaehig, der Cursor
-// spawnte woanders oder gar nicht).
-func (b ThinkBlock) CharLines(width int) []string {
-	return b.visibleRows(codeInnerWidth(width))
-}
-
-func (b ThinkBlock) CharPad(width int) int  { return 1 }
-func (b ThinkBlock) CharLeft(width int) int { return 2 }
-
-// ensureExpanded klappt eine zugeklappte Karte auf (Cursor adressiert den
-// VOLLSTAENDIGen Inhalt) — unverändert sonst.
-func (b ThinkBlock) ensureExpanded() ThinkBlock {
-	inner := codeInnerWidth(100)
-	if !b.expanded && b.hidden(inner) {
-		b.expanded = true
-	}
-	return b
-}
-
 // ---- build -----------------------------------------------------------------
 
 // BuildWidgets turns a structured block tree into interactive widgets.
@@ -1204,9 +860,15 @@ func BuildWidgets(nodes []render.Node, th *render.Theme, copyFn CopyFunc) []Widg
 			hb.level = n.Level
 			if th != nil {
 				// Subtile Groessen-Hierarchie h1..h6 (Farbe wird sanft von
-				// Action zu Text interpoliert, h1 mit dezenter Unterstreichung)
-				// — keine Terminal-Fontgroessen, keine grossen Spaenge.
+				// Action zu Text interpoliert) — keine Terminal-Fontgroessen,
+				// keine grossen Spaenge. Das h1-Ruhe-Underline malt View
+				// ANSI-bewusst (hb.underline → underlineStyled): lipgloss'
+				// Per-Rune-Underline zerschnitte Inline-SGR-Ketten im
+				// Ueberschriften-Text (**fett** → "[1m…[22m" als Literal).
 				hb.style = th.HeadingStyle(n.Level)
+			}
+			if n.Level <= 1 {
+				hb.underline = true
 			}
 			out = append(out, hb)
 		case render.NodeCode:
