@@ -28,8 +28,8 @@ heron -demo      # ohne goose (TUI-Test)
 ```
 Im Prompt: `/model` · `/provider` (Provider-Wechsel inkl. erfrischter Modellliste,
 FR-45) · `/effort` · `/resume` (frühere Sessions laden, FR-44) · `/new` ·
-`/quit`. Prompts während eines laufenden Turns wandern in eine Queue (2× ctrl+c
-verwirft sie, FR-46); API-Fehler erscheinen als ⚠-Karte mit `r retry` (FR-33). `acp-probe -list`/`-load <id>` proben das Protokoll gegen
+`/quit`. Prompts während eines laufenden Turns wandern in eine Queue (ctrl+c bricht den Turn ab und schickt die Queue sofort
+raus; 2× ctrl+c beendet heron, FR-46); API-Fehler erscheinen als ⚠-Karte mit `r retry` (FR-33). `acp-probe -list`/`-load <id>` proben das Protokoll gegen
 echtes goose.
 
 ## Struktur

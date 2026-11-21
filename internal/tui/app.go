@@ -124,10 +124,13 @@ type Model struct {
 	providerFavorites []string
 
 	// queued: Prompts, die waehrend eines laufenden Turns getippt wurden —
-	// sie gehen automatisch raus, sobald der Turn endet (FR-46); doppeltes
-	// ctrl+c verwirft die Warteschlange. lastCtrlC erkennt den Doppeldruck.
-	queued    []string
-	lastCtrlC time.Time
+	// sie gehen automatisch raus, sobald der Turn endet (FR-46); ctrl+c
+	// drengt den ersten wartenden Prompt sofort nach (Abbruch + Versand),
+	// der Doppeldruck beendet heron. lastCtrlC erkennt den Doppeldruck,
+	// flushQueued armt den Sofort-Versand fuer den Abbruch-Reply.
+	queued      []string
+	lastCtrlC   time.Time
+	flushQueued bool
 
 	// Token usage (FR-23): goose reports per-turn usage in the prompt
 	// response. Totals accumulate the session; lastIn/lastOut feed the
@@ -720,7 +723,7 @@ func (m Model) footerView() string {
 	if m.running {
 		hints = "ctrl+c abort"
 		if len(m.queued) > 0 {
-			hints = "ctrl+c abort · 2× verwirft warteschlange"
+			hints = "ctrl+c abort · warteschlange geht sofort raus · 2× quit"
 		}
 	}
 	// Zentrale Aktions-/Hint-Leiste (ganz unten): shift+enter SPAWNT den
@@ -890,6 +893,24 @@ func (m *Model) endTurn() {
 	// Settle schrumpft den Baum (Working-on faellt weg): Der Chat bekommt
 	// die Zeilen zurueck — ohne relayout bliebe er zu klein.
 	m.relayout()
+}
+
+// dispatchNextQueued (FR-46): nimmt den ERSTEN wartenden Prompt und startet
+// ihn als naechsten Turn — User-Block, Versand parallel, Spinner bis zur
+// Antwort (gleiche Kette wie der Enter-Versand). Nur im Ruhestand rufen
+// (replyMsg-Drainage bzw. ctrl+c im Leerlauf), nie neben einem laufenden
+// Turn.
+func (m *Model) dispatchNextQueued() tea.Cmd {
+	next := m.queued[0]
+	m.queued = m.queued[1:]
+	m.chat = m.chat.Append(NewUserBlock(next))
+	m.startTurn()
+	send := m.send
+	sendCmd := func() tea.Msg {
+		text, err := send(next)
+		return replyMsg{text: text, err: err, prompt: next}
+	}
+	return tea.Batch(sendCmd, m.flushPrinted(), nextSpinner())
 }
 
 // chatTop is the screen row where the chat area starts (title only — the
@@ -1102,26 +1123,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "ctrl+c":
 			// FR-7: during a turn Ctrl+C aborts the turn (session/cancel)
-			// instead of killing the app; a second Ctrl+C force-quits.
-			// FR-46: existiert eine Warteschlange, QUITTIERT der Doppel-
-			// druck sie (verwirft alles Wartende) — Quit greift erst, wenn
-			// nichts mehr wartet.
+			// instead of killing the app. FR-46 (neu): die Warteschlange
+			// wird NICHT mehr verworfen — der erste wartende Prompt geht
+			// sofort raus (flushQueued armt den Versand fuer den Abbruch-
+			// Reply, im Ruhestand direkt). Ein Doppel-Druck (< 0,75 s)
+			// beendet heron — erst DANACH gilt "alles".
 			now := time.Now()
 			double := now.Sub(m.lastCtrlC) < 750*time.Millisecond
 			m.lastCtrlC = now
-			if double && len(m.queued) > 0 {
-				n := len(m.queued)
-				m.queued = nil
-				m.chat = m.chat.Append(NewTextBlock(
-					fmt.Sprintf("Warteschlange verworfen (%d).", n), "1"))
-				if !m.running || m.cancel == nil || m.cancelling {
-					return m, m.flushPrinted()
-				}
+			if double {
+				return m, tea.Quit
 			}
-			if m.running && m.cancel != nil && !m.cancelling {
-				m.cancelling = true
-				cancel := m.cancel
-				return m, func() tea.Msg { cancel(); return nil }
+			if m.running {
+				if m.cancel != nil && !m.cancelling {
+					m.cancelling = true
+					if len(m.queued) > 0 {
+						m.flushQueued = true
+					}
+					cancel := m.cancel
+					return m, func() tea.Msg { cancel(); return nil }
+				}
+				// Cancel haengt (oder fehlt): erneutes ctrl+c beendet hart.
+				return m, tea.Quit
+			}
+			// Ruhestand mit wartender Queue (z.B. nach Fehler): erster
+			// Prompt geht sofort raus statt zu quitten.
+			if len(m.queued) > 0 && m.send != nil {
+				return m, m.dispatchNextQueued()
 			}
 			return m, tea.Quit
 		case "enter":
@@ -1171,7 +1199,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Queue (FR-46): Laeuft der Turn noch, wartet der Prompt in der
 			// Warteschlange und geht automatisch raus, sobald er endet —
-			// doppeltes ctrl+c verwirft alles.
+			// ctrl+c drengt ihn sofort nach (Abbruch + Versand), der
+			// Doppel-Druck beendet heron.
 			if m.running {
 				m.queued = append(m.queued, prompt)
 				m.input.SetValue("")
@@ -1525,20 +1554,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chat = m.chat.Append(BuildWidgets(nodes, m.theme, m.copyFn)...)
 			}
 		}
-		// Queue-Drainage (FR-46): Nur nach einem sauberen Turn-Ende geht der
+		// Queue-Drainage (FR-46): Nach einem sauberen Turn-Ende geht der
 		// naechste wartende Prompt raus — nach einem Fehler bleibt die
-		// Warteschlange stehen (Retry entscheidet, 2x ctrl+c verwirft).
-		if msg.err == nil && len(m.queued) > 0 && m.send != nil {
-			next := m.queued[0]
-			m.queued = m.queued[1:]
-			m.chat = m.chat.Append(NewUserBlock(next))
-			m.startTurn()
-			send := m.send
-			sendCmd := func() tea.Msg {
-				text, err := send(next)
-				return replyMsg{text: text, err: err, prompt: next}
-			}
-			return m, tea.Batch(sendCmd, m.flushPrinted(), nextSpinner())
+		// Warteschlange stehen (Retry entscheidet). AUSNAHME flushQueued
+		// (ctrl+c hat den Turn abgebrochen): der erste wartende Prompt
+		// geht sofort raus, nicht erst nach Retry (FR-46 neu).
+		flush := m.flushQueued
+		m.flushQueued = false
+		if (msg.err == nil || flush) && len(m.queued) > 0 && m.send != nil {
+			return m, m.dispatchNextQueued()
 		}
 		// PlantUML blocks in the fresh reply convert in the background
 		// (FR-6); die finalen Bloecke druckt der Flush append-only.

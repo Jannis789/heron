@@ -149,18 +149,20 @@ func TestProviderQuietListFallback(t *testing.T) {
 	}
 }
 
-// ---- Queue + doppeltes ctrl+c (FR-46) --------------------------------------
+// ---- Queue + ctrl+c (FR-46) ------------------------------------------------
 
-// TestQueueWhileRunningAndDoubleCtrlC: Prompts waehrend eines laufenden
-// Turns landen in der Warteschlange (OHNE User-Block) und gehen nach dem
-// Turn-Ende automatisch raus; doppeltes ctrl+c verwirft sie.
-func TestQueueWhileRunningAndDoubleCtrlC(t *testing.T) {
+// TestQueueCtrlCAbortsThenFlushes: Ctrl+C bricht den laufenden Turn ab und
+// schickt den ERSTEN wartenden Prompt sofort raus (nicht mehr: verworfen) —
+// der Rest der Queue drainiert nach Turn-Ende weiter.
+func TestQueueCtrlCAbortsThenFlushes(t *testing.T) {
 	var sent []string
+	var cancels int
 	r := newRig(t)
 	r = r.withSender(func(p string) (string, error) {
 		sent = append(sent, p)
 		return "ok: " + p, nil
 	})
+	r.m = r.m.WithCancel(func() { cancels++ })
 
 	// Turn "laeuft": Erste Frage absetzen und running simulieren.
 	typeRunes(r, "erste frage")
@@ -181,14 +183,86 @@ func TestQueueWhileRunningAndDoubleCtrlC(t *testing.T) {
 		t.Fatalf("queued prompts must NOT send yet, sent=%v", sent)
 	}
 
-	// Doppelt ctrl+c quittiert: Warteschlange weg, sichtbares Feedback.
+	// Ein ctrl+c: Abbruch angefordert, Queue bleibt stehen — der Versand
+	// wartet auf den Abbruch-Reply.
 	r.do(tea.KeyMsg{Type: tea.KeyCtrlC})
-	r.do(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if len(r.m.queued) != 0 {
-		t.Fatalf("double ctrl+c must discard the queue, got %d", len(r.m.queued))
+	if cancels != 1 || !r.m.cancelling || !r.m.flushQueued {
+		t.Fatalf("ctrl+c must arm cancel + flush, cancels=%d cancelling=%v flushQueued=%v",
+			cancels, r.m.cancelling, r.m.flushQueued)
 	}
-	if view := stripANSI(r.m.chat.View()); !strings.Contains(view, "Warteschlange verworfen (2)") {
-		t.Fatalf("queue discard must be visible, chat=%q", view)
+	if len(r.m.queued) != 2 {
+		t.Fatalf("queue must survive until the abort settles, got %d", len(r.m.queued))
+	}
+
+	// Der abgebrochene Turn meldet sich (Abbruch kann als Fehler kommen):
+	// der erste wartende Prompt geht SOFORT raus, der Rest drainiert normal.
+	r.do(replyMsg{text: "", prompt: "erste frage", err: errors.New("canceled")})
+	if len(r.m.queued) != 0 {
+		t.Fatalf("queue must drain after the abort, got %d", len(r.m.queued))
+	}
+	want := []string{"erste frage", "zweite frage", "dritte frage"}
+	if len(sent) != len(want) {
+		t.Fatalf("sent=%v want %v", sent, want)
+	}
+	for i := range want {
+		if sent[i] != want[i] {
+			t.Fatalf("sent[%d]=%q want %q (order matters)", i, sent[i], want[i])
+		}
+	}
+	if r.m.running {
+		t.Fatal("drained turns must have settled (synchronous rig)")
+	}
+}
+
+// TestIdleQueueCtrlCDispatches: Steht die Queue im Ruhestand (z.B. nach
+// einem Fehler), schickt ein einfaches ctrl+c den ersten Prompt sofort
+// raus statt zu quitten; der Doppel-Druck (< 0,75 s) beendet weiterhin.
+func TestIdleQueueCtrlCDispatches(t *testing.T) {
+	var sent []string
+	r := newRig(t)
+	r = r.withSender(func(p string) (string, error) {
+		sent = append(sent, p)
+		return "ok: " + p, nil
+	})
+	r.m.queued = []string{"stehengeblieben"}
+
+	// Einfaches ctrl+c im Leerlauf: Queue geht raus, quit bleibt aus.
+	r.do(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if r.quit {
+		t.Fatal("ctrl+c with a queued prompt must dispatch, not quit")
+	}
+	if len(sent) != 1 || sent[0] != "stehengeblieben" {
+		t.Fatalf("queued prompt must send immediately, sent=%v", sent)
+	}
+
+	// Doppel-Druck: alles beenden (rig spult den Versand synchron durch —
+	// der Turn ist hier bereits settled, der zweite Druck gilt als Doppeltakt).
+	r.do(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !r.quit {
+		t.Fatal("second ctrl+c must quit")
+	}
+}
+
+// TestDoubleCtrlCQuitsEvenWithQueue: Der Doppel-Druck beendet heron —
+// auch mit Warteschlange und laufendem Turn (FR-46 neu: nichts mehr
+// verworfen, quit hat Vorrang).
+func TestDoubleCtrlCQuitsEvenWithQueue(t *testing.T) {
+	var canceled int
+	r := newRig(t)
+	r.m = r.m.WithCancel(func() { canceled++ })
+	r.m.running = true
+	r.m.queued = []string{"wartend"}
+
+	r.do(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if canceled != 1 || !r.m.cancelling {
+		t.Fatalf("first ctrl+c must request the cancel, canceled=%d", canceled)
+	}
+	if r.quit {
+		t.Fatal("first ctrl+c must not quit")
+	}
+	r.do(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !r.quit {
+		t.Fatal("double ctrl+c must quit")
 	}
 }
 
