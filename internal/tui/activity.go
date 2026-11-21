@@ -309,6 +309,7 @@ func (a ActivityTree) style(color string) lipgloss.Style {
 
 func (a ActivityTree) valida() lipgloss.Style { return a.style(a.th.ValidaColor()) }
 func (a ActivityTree) neon() lipgloss.Style   { return a.style(a.th.NeonPinkColor()) }
+
 // soft ist die Inhaltsfarbe des Baums (Hellgrau, User-Wunsch): Gelesenes
 // (Denk-Tails, Befehle, fortlaufende Working-on-Zeilen) liest sich still,
 // Labels und Struktur tragen die Akzente.
@@ -378,8 +379,26 @@ const (
 	actChild = "│  ├─ "
 	actLast  = "│  └─ "
 	actCont  = "│     "
-	actRail  = "│"
 )
+
+// Nerd-Font-Icons für die Konzept-Knoten (aus der installierten FiraCode
+// Nerd Font via cmap verifiziert):  light_bulb (oct) für Thinking,
+//
+//	terminal (oct) für Tool Calls. Beide BMP (F400-F532, Octicons-Range —
+//
+// identisch in NF v2 UND v3), nicht die Plane-15-Material-Icons
+// (U+F0000+, dort scheitert der Terminal-Fallback). Breite 1 (East-Asian-
+// Ambiguous); Terminals OHNE Nerd Font zeigen Ersatzzeichen, die Labels
+// tragen die Bedeutung weiter.
+const (
+	iconThinking = "\uF400" //  oct-light_bulb
+	iconTool     = "\uF489" //  oct-terminal
+)
+
+// Pods des Working-on-Knotens (User-Prototyp, 21.11.): Jede Kapsel
+// schliesst sich SELBST — kein Zweig-Zeichen, das zeitversetzt ins Leere
+// zeigen kann. Kopf `╰─┬──── <icon> Label · tag`, Inhalt `   ┆ …`,
+// Abschluss `   ╰────`.
 
 // detailPrefix praefigiert den Laufend-Block: `│     │` + 2 Zellen Abstand;
 // visuelle Umbruch-Fortsetzungen ruecken 2 Zellen tiefer als echte Zeilen
@@ -522,32 +541,15 @@ func (a ActivityTree) toolChildren(width int) (rows []string, lastStart int) {
 	return rows, lastStart
 }
 
-// workingChildren: der kompakte Blick auf die GERADE LAUFENDEN Vorgaenge
-// (§ 7) — offenes Thinking und/oder alle laufenden Calls, jeweils mit der
-// bisherigen Laufzeit. Fertige Vorgaenge gehoeren zu Thinking/Tool Calls;
-// ohne laufenden Vorgang bleibt der Knoten ganz weg (User-Wunsch: Working
-// on zeigt nur, was der Agent gerade in der Hand hat).
-func (a ActivityTree) workingChildren(width int) []string {
-	inner := width - 6
-	if inner < 8 {
-		inner = 8
-	}
-	var rows []string
+// workingChildren baut die Pods des Working-on-Knotens: Thinking-Pod
+// (, Denk-Tail), je ein -Pod pro laufendem Call, Leerlauf als
+// stammbloser Kopf mit Spinner. Jede Kapsel ist in sich geschlossen.
+func (a ActivityTree) workingChildren(width int) [][]string {
+	var pods [][]string
 	// Offenes Thinking laeuft noch.
 	if strings.TrimSpace(a.live) != "" {
-		tag, _ := a.durTag(time.Since(a.liveStart))
-		rows = append(rows, a.muted().Render(actChild)+a.textSt().Render("Thinking")+tag)
-		lines := textWrapped(a.live, inner)
-		if len(lines) > 5 {
-			lines = lines[len(lines)-5:] // max. fuenf Inhaltszeilen (§ 7)
-		}
-		for i, ln := range lines {
-			prefix := actCont
-			if i == 0 {
-				prefix = actLast
-			}
-			rows = append(rows, a.muted().Render(prefix)+a.soft().Render(ln))
-		}
+		tag, tagW := a.durTag(time.Since(a.liveStart))
+		pods = append(pods, a.workPod(iconThinking, "Thinking", a.live, tag, tagW, width))
 	}
 	// Laufende Calls — parallel mehrere moeglich.
 	for _, t := range a.tools {
@@ -555,39 +557,99 @@ func (a ActivityTree) workingChildren(width int) []string {
 			continue
 		}
 		tag, tagW := a.durTag(t.duration())
-		iw := inner - tagW
-		if iw < 8 {
-			iw = 8
+		label := t.name
+		if label == "" {
+			label = "tool"
 		}
+		body := firstLine(t.text)
 		if t.isBash() {
-			name := t.name
-			if name == "" {
-				name = "bash"
-			}
 			cmd := t.command
 			if cmd == "" {
 				cmd = t.text
 			}
-			rows = append(rows, a.muted().Render(actChild)+a.textSt().Render(cutCells(name, iw))+tag)
-			rows = append(rows, a.muted().Render(actLast)+a.textSt().Render(cutWords(joinCommandLines(cmd), inner)))
-			continue
+			// bash: einzeilige Vorschau des zusammengeführten Befehls,
+			// am Wortuebergang gekappt (§ 6) — der Volltext lebt im
+			// Tool-Calls-Knoten.
+			body = cutWords(joinCommandLines(cmd), width-6)
 		}
-		rows = append(rows, a.muted().Render(actChild)+a.textSt().Render(cutCells(t.name, iw))+tag)
-		if first := firstLine(t.text); first != "" {
-			rows = append(rows, a.muted().Render(actLast)+a.textSt().Render(cutWords(first, inner)))
-		}
+		pods = append(pods, a.workPod(iconTool, label, body, tag, tagW, width))
 	}
 	// Leerlauf (User-Report: "Working on gar nicht angezeigt, obwohl noch
-	// nicht fertig"): Kein offenes Thinking, kein laufender Call — der
-	// Agent rechnet trotzdem (Prompt beim Provider, Modell-Latenz,
-	// Uebergang zwischen zwei Kindern). Statt stiller Leere eine
-	// Spinner-Zeile mit Turn-Laufzeit; das erste Event ersetzt sie.
-	if len(rows) == 0 && !a.idleSince.IsZero() {
+	// nicht fertig"): Spinner-Zeile mit Turn-Laufzeit; das erste Event
+	// ersetzt sie. Stammblos — nichts folgt, nichts wird versprochen.
+	if len(pods) == 0 && !a.idleSince.IsZero() {
 		tag, _ := a.durTag(time.Since(a.idleSince))
 		glyph := spinnerFrames[a.idleFrame%len(spinnerFrames)]
-		rows = append(rows, a.muted().Render(actChild)+a.valida().Render(glyph)+a.muted().Render(" …")+tag)
+		pods = append(pods, []string{a.muted().Render("╰────── ") +
+			a.valida().Render(glyph) + a.muted().Render(" …") + tag})
 	}
-	return rows
+	return pods
+}
+
+// workPod rendert EINE Kapsel: Kopf `╰─┬──── <icon> <label> · <tag>`,
+// gewrappte Inhaltszeilen `   ┆ …`, Abschluss `   ╰────`. Ohne Inhalt
+// entfaellt der Stamm (┬→─) und die Abschlusszeile — der Kopf ist dann
+// die ganze Kapsel, nichts verspricht Folgetext (User-Report: das
+// Rahmenzeichen darf nie ins Leere zeigen).
+func (a ActivityTree) workPod(icon, label, body, tag string, tagW, width int) []string {
+	c := width - 6 // Inhaltszeilen: 3 Einzug + ┆ + Leerzeichen (+Puffer)
+	if c < 8 {
+		c = 8
+	}
+	// Label kuerzen, damit der KOPF nie ueber die Breite laeuft:
+	// 1 Einzug + 8 Kopf-Chrome + 2 (Icon+Leerzeichen) + 1 (·) + tag.
+	lw := width - 12 - tagW
+	if lw < 4 {
+		lw = 4
+	}
+	label = cutCells(label, lw)
+	head := a.muted().Render("╰─┬──── ") + a.textSt().Render(icon+" "+label)
+	if tagW > 0 {
+		head += a.muted().Render(" ·") + tag
+	}
+	rows := render.WrapWords(body, c)
+	if len(rows) == 0 || strings.TrimSpace(body) == "" {
+		return []string{strings.Replace(head, "┬", "─", 1)}
+	}
+	// Tail-Prinzip wie der alte Working-on-Blick (§ 7): ohne Platz zeigt
+	// der Pod nur die LETZEN fuenf Inhaltszeilen (das Ende der Aktion).
+	if len(rows) > 5 {
+		rows = rows[len(rows)-5:]
+	}
+	out := make([]string, 0, len(rows)+2)
+	out = append(out, head)
+	for _, ln := range rows {
+		out = append(out, a.muted().Render("  ┆ ")+a.soft().Render(ln))
+	}
+	out = append(out, a.muted().Render("  ╰────"))
+	return out
+}
+
+// fitWork schneidet die Pods aufs Budget: ganze Pods zuerst; der letzte
+// sichtbare wird GESCHLOSSEN gekappt (Kopf + Restinhalt + ╰────). Bleibt
+// nur eine Zeile, ueberlebt der Kopf ohne Stamm — die Kapsel zeigt nie
+// offen ins Leere.
+func fitWork(pods [][]string, avail int) []string {
+	out := make([]string, 0, avail)
+	for _, pod := range pods {
+		if avail <= 0 {
+			break
+		}
+		if len(pod) <= avail {
+			out = append(out, pod...)
+			avail -= len(pod)
+			continue
+		}
+		if avail == 1 {
+			out = append(out, strings.Replace(pod[0], "┬", "─", 1))
+			break
+		}
+		out = append(out, pod[0])
+		out = append(out, pod[1:avail-1]...)
+		out = append(out, pod[len(pod)-1])
+		break
+	}
+	return out
 }
 
 // firstLine liefert die erste nichtleere Zeile eines Textes.
@@ -683,17 +745,17 @@ func (a ActivityTree) layout(width, budget int) activityLayout {
 	}
 	aw := width - 1 // 1 Zelle linker Rand
 
-	thinkHdr := a.headerRow(nodeThinking, !a.expandThinking, "Thinking", a.ThinkingCount(), a.valida())
-	toolsHdr := a.headerRow(nodeTools, !a.expandTools, "Tool Calls", a.ToolCount(), a.valida())
+	thinkHdr := a.headerRow(nodeThinking, !a.expandThinking, iconThinking+" Thinking", a.ThinkingCount(), a.valida())
+	toolsHdr := a.headerRow(nodeTools, !a.expandTools, iconTool+" Tool Calls", a.ToolCount(), a.valida())
 
-	work := a.workingChildren(aw)
+	workPods := a.workingChildren(aw)
 	if a.settled {
 		// Fertiger Turn: Working on verschwindet KOMPLETT — der Agent
 		// arbeitet nicht mehr, die Zusammenfassung (Thinking/Tool Calls)
 		// reicht (User-Wunsch).
-		work = nil
+		workPods = nil
 	}
-	hasWork := len(work) > 0
+	hasWork := len(workPods) > 0
 	workHdr := ""
 	if hasWork {
 		workHdr = a.workHeader()
@@ -708,44 +770,35 @@ func (a ActivityTree) layout(width, budget int) activityLayout {
 		// Thinking → Tool Calls → Working on. Thinking faellt zuerst weg —
 		// sein Cursor ist dann unsichtbar und wird gesnappt. Ohne aktiven
 		// Vorgang rueckt Tool Calls nach (Working on ist dann ganz weg).
-		rail := a.muted().Render(actRail)
 		var head []string
 		var nodes []activityNode
 		if hasWork {
 			switch avail {
 			case 3:
-				head = []string{toolsHdr, workHdr, rail}
-				nodes = []activityNode{nodeTools, nodeNone, nodeNone}
-			case 2:
-				head = []string{workHdr, rail}
-				nodes = []activityNode{nodeNone, nodeNone}
-			case 1:
+				head = []string{toolsHdr, workHdr}
+				nodes = []activityNode{nodeTools, nodeNone}
+			case 1, 2:
 				head = []string{workHdr}
 				nodes = []activityNode{nodeNone}
 			}
 		} else {
 			switch avail {
 			case 3:
-				head = []string{thinkHdr, toolsHdr, rail}
-				nodes = []activityNode{nodeThinking, nodeTools, nodeNone}
-			case 2:
-				head = []string{toolsHdr, rail}
-				nodes = []activityNode{nodeTools, nodeNone}
-			case 1:
+				head = []string{thinkHdr, toolsHdr}
+				nodes = []activityNode{nodeThinking, nodeTools}
+			case 1, 2:
 				head = []string{toolsHdr}
 				nodes = []activityNode{nodeTools}
 			}
 		}
 		return a.pack(head, nodes, nil)
 	}
-	fixed := 3 // thinkHdr + toolsHdr + Rail
+	fixed := 2 // thinkHdr + toolsHdr
 	if hasWork {
-		fixed = 4
+		fixed = 3
 	}
 	avail -= fixed
-	if len(work) > avail {
-		work = work[:avail]
-	}
+	work := fitWork(workPods, avail) // Pods geschlossen kappen — nie offen
 	avail -= len(work)
 
 	var thinkRows, toolRows []string
@@ -757,13 +810,9 @@ func (a ActivityTree) layout(width, budget int) activityLayout {
 		toolRows, lastStart = a.toolChildren(aw)
 	}
 	kids := avail
-	reserve := 0
-	if a.expandTools && len(toolRows) > 0 {
-		reserve = 1
-	}
 	nTool := len(toolRows)
-	if nTool > kids-reserve {
-		nTool = kids - reserve
+	if nTool > kids {
+		nTool = kids
 	}
 	if nTool < 0 {
 		nTool = 0
@@ -787,11 +836,8 @@ func (a ActivityTree) layout(width, budget int) activityLayout {
 		}
 	}
 	toolRows = toolRows[top:bottom]
-	if nTool > 0 {
-		toolRows = append(toolRows, a.muted().Render(actRail))
-	}
 	nThink := len(thinkRows)
-	if r := kids - nTool - reserve; nThink > r {
+	if r := kids - nTool; nThink > r {
 		nThink = r
 	}
 	if nThink < 0 {
@@ -815,8 +861,6 @@ func (a ActivityTree) layout(width, budget int) activityLayout {
 		head = append(head, work...)
 		headNode = append(headNode, repeatNode(nodeNone, len(work))...)
 	}
-	head = append(head, a.muted().Render(actRail))
-	headNode = append(headNode, nodeNone)
 	return a.pack(head, headNode, nil)
 }
 

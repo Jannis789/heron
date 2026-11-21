@@ -53,18 +53,19 @@ func specTurn() ActivityTree {
 }
 
 // TestActivityDefaultLayout (§ 4): Standardzustand — Thinking und Tool
-// Calls eingeklappt, Working on zeigt bash + gekuerzten Originalbefehl,
-// der Rail schliesst den Baum ab. EXAKT die Referenz.
+// Calls eingeklappt, Working on als Pod-Kapseln (User-Prototyp 21.11.):
+// `╰─┬────  Thinking · <1s`, Inhalt `   ┆ …`, Abschluss `   ╰────`.
+// Kein Stamm, kein Zeichen zeigt ins Leere. EXAKT die Referenz.
 func TestActivityDefaultLayout(t *testing.T) {
 	a := specTurn()
 	rows := plain(a.View(60, 20))
 	eq(t, rows,
-		" ▸ Thinking (4)",
-		" ▸ Tool Calls (18)",
+		" ▸  Thinking (4)",
+		" ▸  Tool Calls (18)",
 		" ● Working on",
-		" │  ├─ bash <1s",
-		" │  └─ find ./src -type f -name \"*.java\" | xargs grep ...",
-		" │")
+		" ╰─┬────  bash · <1s",
+		"   ┆ find ./src -type f -name \"*.java\" | xargs grep ...",
+		"   ╰────")
 }
 
 // TestActivityExpandedTools (§ 5): aufgeklappte Tool Calls — ein mehr-
@@ -74,7 +75,7 @@ func TestActivityExpandedTools(t *testing.T) {
 	a := specTurn().ToggleTools()
 	rows := plain(a.View(74, 40))
 	// Kopf + eingeklapptes Thinking
-	eq(t, rows[0:2], " ▸ Thinking (4)", " ▼ Tool Calls (18)")
+	eq(t, rows[0:2], " ▸  Thinking (4)", " ▼  Tool Calls (18)")
 	// Die letzten Calls (18 gesamt): edit_file, drei fertige bash, dann
 	// der laufende mit Original-Zeilen — dynamisch lokalisiert.
 	i := 0
@@ -109,8 +110,8 @@ func TestActivityExpandedTools(t *testing.T) {
 	if w == 0 {
 		t.Fatalf("Working on nicht gefunden:\n%s", strings.Join(rows, "\n"))
 	}
-	eq(t, rows[w:w+3], " ● Working on", " │  ├─ bash <1s",
-		" │  └─ find ./src -type f -name \"*.java\" | xargs grep -rn ...")
+	eq(t, rows[w:w+3], " ● Working on", " ╰─┬────  bash · <1s",
+		"   ┆ find ./src -type f -name \"*.java\" | xargs grep -rn ...")
 }
 
 // TestActivityThinkingWorkingOn (§ 7): Thinking als aktueller Vorgang —
@@ -122,13 +123,13 @@ func TestActivityThinkingWorkingOn(t *testing.T) {
 		Thought("I should inspect the existing token validation before\nmodifying the expiration logic.")
 	rows := plain(a.View(60, 20))
 	eq(t, rows,
-		" ▸ Thinking (1)",
-		" ▸ Tool Calls (0)",
+		" ▸  Thinking (1)",
+		" ▸  Tool Calls (0)",
 		" ● Working on",
-		" │  ├─ Thinking <1s",
-		" │  └─ I should inspect the existing token validation before",
-		" │     modifying the expiration logic.",
-		" │")
+		" ╰─┬────  Thinking · <1s",
+		"   ┆ I should inspect the existing token validation before",
+		"   ┆ modifying the expiration logic.",
+		"   ╰────")
 }
 
 // TestActivitySelectionMode (§ 5, User-Wunsch): Der Baum ist Teil der
@@ -140,7 +141,7 @@ func TestActivitySelectionMode(t *testing.T) {
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "denk"})
 	r.do(toolMsg{callID: "c1", name: "bash", kind: "execute", cmd: "ls"})
-	if v := r.m.activityView(); !strings.Contains(stripANSI(v), "▸ Thinking (1)") {
+	if v := r.m.activityView(); !strings.Contains(stripANSI(v), "▸  Thinking (1)") {
 		t.Fatalf("Thinking startet eingeklappt: %q", stripANSI(v))
 	}
 
@@ -150,18 +151,18 @@ func TestActivitySelectionMode(t *testing.T) {
 		t.Fatal("tab muss den Baum selektieren")
 	}
 	r.key("enter") // Cursor auf Thinking
-	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▼ Thinking (1)") || !strings.Contains(v, "▸ Tool Calls (1)") {
+	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▼  Thinking (1)") || !strings.Contains(v, "▸  Tool Calls (1)") {
 		t.Fatalf("enter klappt nur den Knoten unter dem Cursor: %q", v)
 	}
 	r.key("enter") // und wieder zu
-	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▸ Thinking (1)") {
+	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▸  Thinking (1)") {
 		t.Fatalf("enter muss auch zuklappen: %q", v)
 	}
 
 	// ↓ auf Tool Calls, enter klappt die Historie auf.
 	r.key("down")
 	r.key("enter")
-	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▼ Tool Calls (1)") || !strings.Contains(v, "└─ ● bash") {
+	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▼  Tool Calls (1)") || !strings.Contains(v, "└─ ● bash") {
 		t.Fatalf("Tool Calls aufgeklappt fehlt: %q", v)
 	}
 
@@ -193,19 +194,19 @@ func TestActivitySelectionMode(t *testing.T) {
 func TestActivityCursorFollowsStructure(t *testing.T) {
 	a := specTurn().Focus(60, 40)
 	a = a.Enter() // Thinking auf
-	if v := strings.Join(plain(a.View(60, 40)), "\n"); !strings.Contains(v, "▼ Thinking (4)") {
+	if v := strings.Join(plain(a.View(60, 40)), "\n"); !strings.Contains(v, "▼  Thinking (4)") {
 		t.Fatalf("Thinking nicht aufgeklappt:\n%s", v)
 	}
 	a = a.Move(1, 60, 40) // ↓: Tool Calls steht jetzt NICHT mehr in Zeile 1
 	a = a.Enter()
 	v := strings.Join(plain(a.View(60, 40)), "\n")
-	if !strings.Contains(v, "▼ Tool Calls (18)") {
+	if !strings.Contains(v, "▼  Tool Calls (18)") {
 		t.Fatalf("enter muss den Knoten unter dem Cursor treffen:\n%s", v)
 	}
 	// Und wieder zu — derselbe Druck, kein zweiter Modus.
 	a = a.Enter()
 	v = strings.Join(plain(a.View(60, 40)), "\n")
-	if !strings.Contains(v, "▸ Tool Calls (18)") {
+	if !strings.Contains(v, "▸  Tool Calls (18)") {
 		t.Fatalf("enter muss auch zuklappen:\n%s", v)
 	}
 }
@@ -442,7 +443,7 @@ func TestActivityWorkingOnSurvivesBudget(t *testing.T) {
 		if !strings.Contains(joined, "Working on") {
 			t.Fatalf("budget %d: Working on fehlt:\n%s", budget, joined)
 		}
-		if !strings.Contains(joined, "bash <1s") {
+		if !strings.Contains(joined, "bash · <1s") {
 			t.Fatalf("budget %d: laufender Call fehlt:\n%s", budget, joined)
 		}
 	}
