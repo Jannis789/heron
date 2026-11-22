@@ -816,17 +816,22 @@ const (
 	iconThinking = "\uF400" //  oct-light_bulb
 	iconTool     = "\uF489" //  oct-terminal
 
-	// Kind-Icons: read/edit/execute/thinking sind User-Vorgabe (Font
-	// Awesome), die uebrigen sinnvoll ergaenzt. Das Label traegt die
-	// Bedeutung auch ohne Nerd Font.
-	iconRead   = "\uF02D" //  fa-book
-	iconEdit   = "\uF044" //  fa-pencil
-	iconDelete = "\uF1F8" //  fa-trash
-	iconMove   = "\uF047" //  fa-arrows
-	iconSearch = "\uF002" //  fa-search
-	iconFetch  = "\uF019" //  fa-download
-	iconSwitch = "\uF021" //  fa-refresh
-	iconOther  = "\uF013" //  fa-cog
+	// Kind-Icons: durchgaengig Octicons — EINE visuelle Familie im Umriss-
+	// Stil, passend zu Thinking/Tool Calls, statt eines Mix aus gefuellten
+	// FontAwesome-Glyphen: Buch/Lupe/Zahnrad sind in Zellgroesse nahezu
+	// gleiche Blobs (User-Report: Search und Other "sehen wie Read aus";
+	// Pixel-Overlap IoU 0.55-0.57, die Octicons darunter bei 0.26-0.37 —
+	// gegen die installierte FiraCode NF Regular UND Mono gemessen). Alle
+	// Codepoints in der F400+-Range, die ueber alle Nerd-Font-Versionen
+	// stabil ist, via cmap gegen beide Font-Varianten verifiziert.
+	iconRead   = "\uF405" //  oct-book
+	iconEdit   = "\uF448" //  oct-pencil
+	iconDelete = "\uF48E" //  oct-trash
+	iconMove   = "\uF4D5" //  oct-file_moved
+	iconSearch = "\uF422" //  oct-search
+	iconFetch  = "\uF409" //  oct-download
+	iconSwitch = "\uF46A" //  oct-sync
+	iconOther  = "\uF425" //  oct-tools
 )
 
 // Pods des Working-on-Knotens (User-Prototyp, 21.11.): Jede Kapsel
