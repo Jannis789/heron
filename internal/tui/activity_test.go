@@ -732,6 +732,34 @@ func TestToolDetailAlertOpens(t *testing.T) {
 	}
 }
 
+// TestDetailBoxFrameBackground: NUR die Rahmenzeichen der Alertbox tragen
+// einen Hintergrund (dunkler Violett-Ton), der Inhalt behaelt den
+// Terminal-Grund (User-Wunsch 22.11.) — und das gilt nur fuer die Box,
+// nicht fuer den Activity-Baum.
+func TestDetailBoxFrameBackground(t *testing.T) {
+	withTrueColor(t)
+	m := newRig(t).m
+	m.width, m.height = 90, 24
+	box := m.detailBox(Detail{Title: "shell", Kind: "Execute", Status: "✓ fertig", Body: "$ ls\nfoo"})
+	if len(box) < 4 {
+		t.Fatalf("Box zu klein: %d Zeilen", len(box))
+	}
+	for i, ln := range box {
+		isFrameRow := i == 0 || i == len(box)-1
+		if isFrameRow {
+			if strings.Count(ln, "48;2;") != 1 {
+				t.Fatalf("Rahmenzeile ohne/mit zu viel Hintergrund: %q", ln)
+			}
+			continue
+		}
+		// GENAU zwei eingefärbte Zellen: das linke und das rechte
+		// Rahmenzeichen. Padding und Inhalt bleiben Terminal-Grund.
+		if n := strings.Count(ln, "48;2;"); n != 2 {
+			t.Fatalf("Innenzeile hat %d eingefärbte Zellen, want 2: %q", n, ln)
+		}
+	}
+}
+
 // TestActivityThinkingDetailOverlay: der Thinking-Knoten ist genauso
 // selektierbar wie ein Tool-Call — aufgeklappt laufen ↑/↓ in die einzelnen
 // Denk-Sektionen, enter oeffnet deren Volltext als Overlay, esc kehrt

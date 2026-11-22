@@ -1940,8 +1940,16 @@ func (m Model) detailBox(d Detail) []string {
 			content[i] = ln + strings.Repeat(" ", innerW-w)
 		}
 	}
+	// Rahmen: Vordergrund Valida (Theme-Action), HINTERGRUND ein dunkler
+	// Violett-Ton aus derselben Farbe — nur die Rahmenzeichen (User-Wunsch
+	// 22.11.: "nur für den Alert die Rahmenzeichen bg einfärben"), der
+	// Inhalt behaelt den Terminal-Grund. lipgloss faerbt BorderBackground
+	// ausschliesslich auf die Rahmenzellen, nicht auf Padding/Inhalt.
+	valida := m.theme.ValidaColor()
+	frameBG := render.LerpHex("#000000", valida, 0.35)
 	st := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#B999FF")).Padding(0, 1)
+		BorderForeground(lipgloss.Color(valida)).
+		BorderBackground(lipgloss.Color(frameBG)).Padding(0, 1)
 	return strings.Split(st.Render(strings.Join(content, "\n")), "\n")
 }
 
