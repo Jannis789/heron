@@ -41,7 +41,7 @@ func TestActivityLayoutTracksTreeRows(t *testing.T) {
 	// klappt auf — der Header bleibt STETS oben, die Hoehe folgt dem Baum.
 	r.key("tab")
 	r.key("down") // Cursor auf Tool Calls
-	r.do(toolMsg{callID: "c1", name: "bash", kind: "execute", cmd: "ls"})
+	r.do(toolMsg{callID: "c1", name: "bash", kind: "execute", cmd: "make"})
 	hAfterTool := r.m.chat.height
 	r.key("enter") // Tool Calls aufklappen
 	if h2 := r.m.chat.height; h2 >= hAfterTool {

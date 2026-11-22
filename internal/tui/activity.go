@@ -602,19 +602,58 @@ func (a ActivityTree) durTag(d time.Duration) (string, int) {
 // ---- Kategorien --------------------------------------------------------------
 
 // toolKindOrder ist die ACP-Reihenfolge der Kategorien — sie bestimmt die
-// stabile Anzeige-Reihenfolge der Kind-Knoten.
+// stabile Anzeige-Reihenfolge der Kind-Knoten. "search" fehlt: kindOf()
+// verschmilzt es mit "read" (User-Entscheidung: Lesezugriff).
 var toolKindOrder = []string{
-	"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other",
+	"read", "edit", "delete", "move", "execute", "think", "fetch", "switch_mode", "other",
 }
 
-// kindOf liefert die effektive ACP-Kategorie eines Calls: das von goose
+// kindOf liefert die effektive Anzeige-Kategorie eines Calls: das von goose
 // gelieferte kind, sonst aus dem Tool-Namen abgeleitet (goose sendet kein
-// kind — der Name steckt in _meta.goose.toolCall.toolName).
+// kind — der Name steckt in _meta.goose.toolCall.toolName). Read und Search
+// fallen in EINE Kategorie (User-Entscheidung: beides Lesezugriff), und ein
+// Shell-Call wird am ersten Wort des Kommandos unterschieden — goose liest
+// Dateien per `shell cat` und sucht per `shell grep` (gegen goose 1.55.0
+// probed); der Tool-Name "shell" allein sagt nichts aus.
 func (t activityTool) kindOf() string {
-	if k := normalizeKind(t.kind); k != "" {
-		return k
+	k := normalizeKind(t.kind)
+	if k == "" {
+		k = inferKind(t.name)
 	}
-	return inferKind(t.name)
+	if k == "search" {
+		k = "read" // Read+Search verschmolzen — Lesezugriff ist Lesezugriff
+	}
+	if k == "execute" && t.command != "" {
+		k = shellKind(t.command)
+	}
+	return k
+}
+
+// shellKind unterscheidet Shell-Aufrufe am ersten Wort des Kommandos
+// (nach fuehrenden VAR=…-Zuweisungen): Inhalt holen oder Muster suchen ist
+// Lesen (read) — inklusive lesender git-Subkommandos —, alles andere
+// Ausfuehren (execute).
+func shellKind(command string) string {
+	fields := strings.Fields(command)
+	for len(fields) > 0 && strings.Contains(fields[0], "=") {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 {
+		return "execute"
+	}
+	if fields[0] == "git" && len(fields) > 1 {
+		switch fields[1] {
+		case "log", "show", "diff", "status", "blame":
+			return "read"
+		}
+		return "execute"
+	}
+	switch fields[0] {
+	case "cat", "head", "tail", "less", "more", "bat", "nl",
+		"grep", "rg", "find", "fd", "ag", "ack", "tree", "ls", "dir":
+		return "read"
+	}
+	return "execute"
 }
 
 // normalizeKind mappt beliebige Kind-Schreibweisen auf die ACP-Kategorien.

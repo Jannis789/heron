@@ -45,10 +45,10 @@ func specTurn() ActivityTree {
 			Kind: "execute", Command: "misc " + string(rune('a'+i)), Done: true})
 	}
 	a = a.Tool(ToolUpdate{CallID: "e1", Label: "edit_file", Text: "src/auth/session.rs", Done: true})
-	for _, cmd := range []string{"git status", "cargo test auth::", "pwd && ls -la"} {
+	for _, cmd := range []string{"git add -A", "cargo test auth::", "pwd && ls -la"} {
 		a = a.Tool(ToolUpdate{CallID: "b" + cmd, Label: "bash", Kind: "execute", Command: cmd, Done: true})
 	}
-	a = a.Tool(ToolUpdate{CallID: "run", Label: "bash", Kind: "execute", Command: "find ./src -type f -name \"*.java\" \\\n  | xargs grep -rn \"authenticate\" \\\n  | awk '{print $1}' \\\n  | sort -u"})
+	a = a.Tool(ToolUpdate{CallID: "run", Label: "bash", Kind: "execute", Command: "env find ./src -type f -name \"*.java\" \\\n  | xargs grep -rn \"authenticate\" \\\n  | awk '{print $1}' \\\n  | sort -u"})
 	return a
 }
 
@@ -66,7 +66,7 @@ func TestActivityDefaultLayout(t *testing.T) {
 		" ▸ "+iconTool+" Execute (13)",
 		" ● Working on",
 		" ╰─┬────  bash · <1s",
-		"   ┆ find ./src -type f -name \"*.java\" | xargs grep ...",
+		"   ┆ env find ./src -type f -name \"*.java\" | xargs ...",
 		"   ╰────")
 }
 
@@ -82,7 +82,7 @@ func TestActivityExpandedTools(t *testing.T) {
 	// der laufende mit Original-Zeilen — dynamisch lokalisiert.
 	i := 0
 	for j, r := range rows {
-		if strings.Contains(r, "✓ bash: git status") {
+		if strings.Contains(r, "✓ bash: git add -A") {
 			i = j
 			break
 		}
@@ -91,12 +91,12 @@ func TestActivityExpandedTools(t *testing.T) {
 		t.Fatalf("bash-Zeilen nicht gefunden:\n%s", strings.Join(rows, "\n"))
 	}
 	eq(t, rows[i:i+7],
-		" │  ├─   ✓ bash: git status",
+		" │  ├─   ✓ bash: git add -A",
 		" │  ├─   ✓ bash: cargo test auth::",
 		" │  ├─   ✓ bash: pwd && ls -la",
 		" │  └─   ● bash <1s",
 		" │     │",
-		" │     │  find ./src -type f -name \"*.java\" \\",
+		" │     │  env find ./src -type f -name \"*.java\" \\",
 		" │     │    | xargs grep -rn \"authenticate\" \\")
 	// Working on bleibt die kompakte Zwei-Zeilen-Vorschau desselben Calls.
 	w := 0
@@ -110,7 +110,7 @@ func TestActivityExpandedTools(t *testing.T) {
 		t.Fatalf("Working on nicht gefunden:\n%s", strings.Join(rows, "\n"))
 	}
 	eq(t, rows[w:w+3], " ● Working on", " ╰─┬────  bash · <1s",
-		"   ┆ find ./src -type f -name \"*.java\" | xargs grep -rn ...")
+		"   ┆ env find ./src -type f -name \"*.java\" | xargs grep -rn ...")
 }
 
 // TestActivityThinkingWorkingOn (§ 7): Thinking als aktueller Vorgang —
@@ -139,7 +139,7 @@ func TestActivitySelectionMode(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "denk"})
-	r.do(toolMsg{callID: "c1", name: "bash", kind: "execute", cmd: "ls"})
+	r.do(toolMsg{callID: "c1", name: "bash", kind: "execute", cmd: "make"})
 	if v := r.m.activityView(); !strings.Contains(stripANSI(v), "▸  Thinking (1)") {
 		t.Fatalf("Thinking startet eingeklappt: %q", stripANSI(v))
 	}
@@ -224,7 +224,7 @@ func TestActivitySelectionUnderlineOnHeader(t *testing.T) {
 	withTrueColor(t)
 	a := NewActivityTree(mustTheme(t)).
 		Thought("denken").
-		Tool(ToolUpdate{CallID: "c1", Label: "bash", Kind: "execute", Command: "ls", Done: true}).
+		Tool(ToolUpdate{CallID: "c1", Label: "bash", Kind: "execute", Command: "make", Done: true}).
 		Focus(60, 20)
 	rows := a.View(60, 20)
 	if !underlined(rows[0]) {
@@ -431,7 +431,7 @@ func TestActivityIdleSpinnerLine(t *testing.T) {
 		t.Fatalf("IdleFrame wird nicht angezeigt:\n%s", strings.Join(plain(a2.View(60, 20)), "\n"))
 	}
 	// Erstes echtes Kind verdraengt die Leerlaufzeile:
-	a3 := a.Tool(ToolUpdate{CallID: "c", Label: "bash", Kind: "execute", Command: "ls"})
+	a3 := a.Tool(ToolUpdate{CallID: "c", Label: "bash", Kind: "execute", Command: "make"})
 	v3 := strings.Join(plain(a3.View(60, 20)), "\n")
 	if strings.Contains(v3, "⠋") {
 		t.Fatalf("Spinner haengt neben laufendem Call:\n%s", v3)
@@ -473,7 +473,7 @@ func TestActivityColors(t *testing.T) {
 	a := NewActivityTree(th).
 		Thought("denken").
 		Tool(ToolUpdate{CallID: "ok", Label: "read_file", Text: "x", Done: true}).
-		Tool(ToolUpdate{CallID: "bad", Label: "bash", Kind: "execute", Command: "ls", Failed: true, Done: true}).
+		Tool(ToolUpdate{CallID: "bad", Label: "bash", Kind: "execute", Command: "make", Failed: true, Done: true}).
 		Tool(ToolUpdate{CallID: "run", Label: "bash", Kind: "execute", Command: "sleep 5"}).
 		ToggleTools().
 		ToggleThinking()
@@ -568,11 +568,11 @@ func TestActivityTimings(t *testing.T) {
 	}
 
 	// Kurzlaufzeit: unter einer Sekunde wird zu "<1s" gebuendelt.
-	b := NewActivityTree(nil).Tool(ToolUpdate{CallID: "k", Label: "bash", Kind: "execute", Command: "ls", Done: true}).
+	b := NewActivityTree(nil).Tool(ToolUpdate{CallID: "k", Label: "bash", Kind: "execute", Command: "make", Done: true}).
 		ToggleTools()
 	b.tools[0].started = base
 	b.tools[0].ended = base.Add(300 * time.Millisecond)
-	if v := strings.Join(plain(b.View(60, 20)), "\n"); !strings.Contains(v, "bash: ls <1s") {
+	if v := strings.Join(plain(b.View(60, 20)), "\n"); !strings.Contains(v, "bash: make <1s") {
 		t.Fatalf("Kurzlaufzeit fehlt:\n%s", v)
 	}
 
@@ -592,7 +592,7 @@ func TestActivityCountsAndSections(t *testing.T) {
 	if a.ThinkingCount() != 1 {
 		t.Fatal("offene Sektion zaehlt")
 	}
-	a = a.Tool(ToolUpdate{CallID: "c1", Label: "bash", Kind: "execute", Command: "ls"})
+	a = a.Tool(ToolUpdate{CallID: "c1", Label: "bash", Kind: "execute", Command: "make"})
 	if a.ThinkingCount() != 1 || a.ToolCount() != 1 {
 		t.Fatalf("nach Tool: think=%d tools=%d", a.ThinkingCount(), a.ToolCount())
 	}
@@ -600,7 +600,7 @@ func TestActivityCountsAndSections(t *testing.T) {
 	if a.ThinkingCount() != 2 {
 		t.Fatalf("neue Sektion: %d", a.ThinkingCount())
 	}
-	a = a.Tool(ToolUpdate{CallID: "c1", Label: "bash", Kind: "execute", Command: "ls -la", Done: true})
+	a = a.Tool(ToolUpdate{CallID: "c1", Label: "bash", Kind: "execute", Command: "make -j4", Done: true})
 	if a.ToolCount() != 1 {
 		t.Fatalf("Update zaehlt doppelt: %d", a.ToolCount())
 	}
@@ -614,10 +614,10 @@ func TestActivityCountsAndSections(t *testing.T) {
 // verloren gehen (sonst rendert die Zeile "tool(insgesamt 14892)").
 func TestActivityUpdateKeepsStartMetadata(t *testing.T) {
 	a := NewActivityTree(nil).
-		Tool(ToolUpdate{CallID: "c1", Label: "shell", Kind: "execute", Command: "ls -la"})
+		Tool(ToolUpdate{CallID: "c1", Label: "shell", Kind: "execute", Command: "make -j4"})
 	a = a.Tool(ToolUpdate{CallID: "c1", Text: "insgesamt 14892", Done: true}).ToggleKind("execute")
 	v := strings.Join(plain(a.View(80, 20)), "\n")
-	if !strings.Contains(v, "shell: ls -la") {
+	if !strings.Contains(v, "shell: make -j4") {
 		t.Fatalf("Name/Kommando verloren:\n%s", v)
 	}
 	if strings.Contains(v, "tool(insgesamt") {
@@ -628,7 +628,7 @@ func TestActivityUpdateKeepsStartMetadata(t *testing.T) {
 // TestActivityHidesEmptyThinking: ohne Denk-Chunk gibt es keinen
 // "Thinking (0)"-Kopf — der Baum zeigt nur, was wirklich passiert ist.
 func TestActivityHidesEmptyThinking(t *testing.T) {
-	a := NewActivityTree(nil).Tool(ToolUpdate{CallID: "c", Label: "bash", Kind: "execute", Command: "ls", Done: true})
+	a := NewActivityTree(nil).Tool(ToolUpdate{CallID: "c", Label: "bash", Kind: "execute", Command: "make", Done: true})
 	v := strings.Join(plain(a.View(60, 20)), "\n")
 	if strings.Contains(v, "Thinking") {
 		t.Fatalf("leerer Thinking-Knoten sichtbar:\n%s", v)
@@ -838,5 +838,33 @@ func TestActivityEmptyTreeHidden(t *testing.T) {
 	r2.m.endTurn()
 	if v := r2.m.activityView(); v != "" {
 		t.Fatalf("settled Turn ohne Inhalt zeigt trotzdem einen Baum: %q", v)
+	}
+}
+
+// TestKindMergesReadAndSearch: Read und Search fallen in EINE Kategorie
+// (User-Entscheidung: beides Lesezugriff) — egal ob als Protokoll-kind,
+// als Tool-Name oder als shell-Kommando gemeldet. goose 1.55 liest per
+// `shell cat`, listet per `tree` und sucht per `shell grep` (probed);
+// schreibende/ bauende Kommandos bleiben Execute.
+func TestKindMergesReadAndSearch(t *testing.T) {
+	a := NewActivityTree(nil)
+	a = a.Tool(ToolUpdate{CallID: "1", Kind: "search", Label: "search", Text: "x", Done: true}) // Protokoll-kind
+	a = a.Tool(ToolUpdate{CallID: "2", Kind: "read", Label: "read_file", Text: "x", Done: true})
+	a = a.Tool(ToolUpdate{CallID: "3", Label: "tree", Text: "x", Done: true}) // Name-Inferenz (früher: search)
+	a = a.Tool(ToolUpdate{CallID: "4", Label: "shell", Command: "cat README.md", Done: true})
+	a = a.Tool(ToolUpdate{CallID: "5", Label: "shell", Command: "LC_ALL=C grep -n heron main.go", Done: true})
+	a = a.Tool(ToolUpdate{CallID: "6", Label: "shell", Command: "git log --oneline", Done: true})
+	a = a.Tool(ToolUpdate{CallID: "7", Label: "shell", Command: "go build ./...", Done: true})
+	a = a.Tool(ToolUpdate{CallID: "8", Label: "shell", Command: "git commit -m x", Done: true})
+
+	ks := a.kinds()
+	if len(ks) != 2 || ks[0] != "read" || ks[1] != "execute" {
+		t.Fatalf("kinds = %v, want [read execute]", ks)
+	}
+	if n := a.KindCount("read"); n != 6 {
+		t.Fatalf("read count = %d, want 6 (search+read+tree+cat+grep+git-log)", n)
+	}
+	if n := a.KindCount("execute"); n != 2 {
+		t.Fatalf("execute count = %d, want 2 (build+commit)", n)
 	}
 }

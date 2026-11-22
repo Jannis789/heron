@@ -131,7 +131,7 @@ func TestActivityBlockAboveInput(t *testing.T) {
 	r.m.width = 60
 	r.m.startTurn()
 	r.do(thoughtMsg{text: "denken"})
-	r.do(toolMsg{callID: "c1", name: "bash", kind: "execute", cmd: "ls -la"})
+	r.do(toolMsg{callID: "c1", name: "bash", kind: "execute", cmd: "make -C src"})
 	av := r.m.activityView()
 	if av == "" {
 		t.Fatal("activityView leer im laufenden Turn")
