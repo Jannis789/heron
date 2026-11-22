@@ -21,24 +21,24 @@ func TestTranslateKittyShiftEnter(t *testing.T) {
 		in, want, held string
 	}{
 		{"abc", "abc", ""},
-		{"\x1b[13;2u", "\x1b[Z", ""},                             // shift+enter
-		{"A\x1b[13;2uB", "A\x1b[ZB", ""},                         // eingebettet
-		{"\x1b[27u", "\x1b", ""},                                 // esc
-		{"\x1b[13;5u", "", ""},                                   // ctrl+enter: ungebunden, weg
-		{"\x1b[13;5;13u", "", ""},                                // WezTerm ctrl+enter MIT Text
-		{"\x1b[27;1u", "\x1b", ""},                               // WezTerm esc: Modifier-Feld steht IMMER da
-		{"\x1b[27;1:1u", "\x1b", ""},                             // WezTerm esc, Event-Typ press
-		{"\x1b[27;1:3u", "", ""},                                 // WezTerm esc RELEASE: kein zweiter Druck
-		{"\x1b[27;129:3u", "", ""},                               // WezTerm esc, NumLock+shift, release
-		{"\x1b[27;3u", "", ""},                                   // alt+esc: ungebunden, weg
-		{"\x1b[13;2;13u", "\x1b[Z", ""},                          // WezTerm shift+enter MIT Text
-		{"\x1b[13;2:1u", "\x1b[Z", ""},                           // WezTerm shift+enter, event press
-		{"\x1b[13;2:2u", "\x1b[Z", ""},                           // shift+enter repeat
-		{"\x1b[13;2:3u", "", ""},                                 // shift+enter RELEASE: weg
-		{"\x1b[97;5u", "", ""},                                   // ctrl+a: ungebunden, weg
-		{"\x1b[A", "\x1b[A", ""},                                 // Pfeil hoch
-		{"\x1b[1;2C", "\x1b[1;2C", ""},                           // shift+right
-		{"\x1b[<0;1;1M", "\x1b[<0;1;1M", ""},                     // SGR-Maus
+		{"\x1b[13;2u", "\x1b[Z", ""},         // shift+enter
+		{"A\x1b[13;2uB", "A\x1b[ZB", ""},     // eingebettet
+		{"\x1b[27u", "\x1b", ""},             // esc
+		{"\x1b[13;5u", "", ""},               // ctrl+enter: ungebunden, weg
+		{"\x1b[13;5;13u", "", ""},            // WezTerm ctrl+enter MIT Text
+		{"\x1b[27;1u", "\x1b", ""},           // WezTerm esc: Modifier-Feld steht IMMER da
+		{"\x1b[27;1:1u", "\x1b", ""},         // WezTerm esc, Event-Typ press
+		{"\x1b[27;1:3u", "", ""},             // WezTerm esc RELEASE: kein zweiter Druck
+		{"\x1b[27;129:3u", "", ""},           // WezTerm esc, NumLock+shift, release
+		{"\x1b[27;3u", "", ""},               // alt+esc: ungebunden, weg
+		{"\x1b[13;2;13u", "\x1b[Z", ""},      // WezTerm shift+enter MIT Text
+		{"\x1b[13;2:1u", "\x1b[Z", ""},       // WezTerm shift+enter, event press
+		{"\x1b[13;2:2u", "\x1b[Z", ""},       // shift+enter repeat
+		{"\x1b[13;2:3u", "", ""},             // shift+enter RELEASE: weg
+		{"\x1b[97;5u", "", ""},               // ctrl+a: ungebunden, weg
+		{"\x1b[A", "\x1b[A", ""},             // Pfeil hoch
+		{"\x1b[1;2C", "\x1b[1;2C", ""},       // shift+right
+		{"\x1b[<0;1;1M", "\x1b[<0;1;1M", ""}, // SGR-Maus
 		// SGR-Maus vollstaendig (Regression 2026-11-01): Der Scan kannte '<'
 		// nicht, zerlegte \x1b[<0;1;1M in "\x1b[<" + Runen-Rest — bei
 		// Split-Reads an der ESC-Grenze lief der Rest OHNE ESC als Getippe

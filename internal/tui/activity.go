@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -43,15 +44,28 @@ type ActivityTree struct {
 	tools []activityTool
 
 	expandThinking bool
-	expandTools    bool
-	// scroll: Zeilen, die im aufgeklappten Tool-Call-Bereich nach OBEN
+	// expandKinds: aufgeklappte Tool-Kind-Knoten (Kind → offen). Die
+	// Kategorien sind dynamisch — nur vorhandene Kinds bekommen einen Kopf.
+	expandKinds map[string]bool
+	// scroll: Zeilen, die im aufgeklappten Bereich eines Kinds nach OBEN
 	// ueber das Fenster hinaus sichtbar gemacht werden (0 = Tail).
-	scroll int
+	scroll map[string]int
+
+	// selCall: die ausgewaehlte callID INNERHALB des Kategorie-Knotens
+	// (leer = der Kategorie-Kopf selbst ist selektiert).
+	selCall string
+
+	// selThought: die ausgewaehlte Denk-Sektion INNERHALB des Thinking-
+	// Knotens (0 = der Kopf selbst, i+1 = Sektion i). Wie selCall haengt
+	// die Auswahl an der STRUKTUR, nicht an der Zeilennummer — die
+	// Detail-Alertbox zeigt so auch fuer Thoughts den Volltext.
+	selThought int
 
 	// sel: der Knoten des Auswahlmodus (nodeNone = Baum nicht selektiert).
-	// ↑/↓ laufen Thinking ↔ Tool Calls ab, enter klappt den Knoten unter
-	// dem Cursor auf und wieder zu. Der Cursor haengt an der STRUKTUR, nicht
-	// an Zeilennummern — Aufklappen verschiebt die Zeilen darunter.
+	// ↑/↓ laufen Thinking und die Tool-Kind-Knoten ab, enter klappt den
+	// Knoten unter dem Cursor auf und wieder zu. Der Cursor haengt an der
+	// STRUKTUR, nicht an Zeilennummern — Aufklappen verschiebt die Zeilen
+	// darunter.
 	sel activityNode
 	// settled: der Turn ist abgeschlossen — Working on verschwindet,
 	// die Zusammenfassung (Thinking/Tool Calls) bleibt.
@@ -84,10 +98,91 @@ type activityTool struct {
 	kind    string // ACP-Kategorie (execute/fetch/edit/create/think/other)
 	text    string // generischer Inhalt (Legacy-/Demo-Pfad)
 	command string // rawInput.command (Shell)
-	running bool
-	failed  bool
-	started time.Time // Beginn des Calls (erster Kontakt)
-	ended   time.Time // Ende des Calls (Update mit Done); zero = laeuft
+	// Vollstaendige Ausfuehrungsdaten fuer die Detail-Alertbox.
+	stdout, stderr string
+	live           string
+	exit           int
+	hasOutput      bool
+	running        bool
+	failed         bool
+	started        time.Time // Beginn des Calls (erster Kontakt)
+	ended          time.Time // Ende des Calls (Update mit Done); zero = laeuft
+}
+
+// Detail beschreibt EIN selektierbares Element des Activity-Baums
+// vollstaendig — Tool-Call ODER Denk-Sektion. Die Detail-Alertbox kennt
+// damit nur EINE Form: Jedes auswaehlbare Element (auch eine einzelne
+// Thought-Sektion) oeffnet dieselbe Box mit Titel, Kategorie, Status,
+// Laufzeit, Metadaten und dem vollstaendigen Inhalt.
+type Detail struct {
+	Title    string
+	Kind     string
+	Status   string
+	Duration time.Duration
+	Meta     []string
+	Body     string
+}
+
+// detail baut die Detailbeschreibung eines Tool-Calls: alles, was dort
+// wirklich ausgefuehrt wurde (Kommando, stdout/stderr, exit, live).
+func (t activityTool) detail() Detail {
+	title := t.name
+	if title == "" {
+		title = kindLabel(t.kindOf())
+	}
+	status := "✓ fertig"
+	switch {
+	case t.running:
+		status = "● läuft"
+	case t.failed:
+		status = "✗ Fehler"
+	}
+	d := Detail{Title: title, Kind: kindLabel(t.kindOf()), Status: status,
+		Duration: t.duration()}
+	d.Meta = append(d.Meta, "call "+t.callID)
+	var b strings.Builder
+	if t.command != "" {
+		b.WriteString("$ " + t.command + "\n\n")
+	}
+	if t.stdout != "" {
+		b.WriteString("── stdout ──\n" + t.stdout + "\n")
+	}
+	if t.stderr != "" {
+		b.WriteString("── stderr ──\n" + t.stderr + "\n")
+	}
+	if t.hasOutput {
+		fmt.Fprintf(&b, "── exit: %d ──\n", t.exit)
+	}
+	if t.live != "" {
+		b.WriteString("── live ──\n" + t.live + "\n")
+	}
+	if b.Len() == 0 {
+		b.WriteString(t.text)
+	}
+	d.Body = strings.TrimRight(b.String(), "\n")
+	return d
+}
+
+// detail baut die Detailbeschreibung EINER Denk-Sektion: vollstaendiger
+// Denktext plus Laufzeit und Status (offene Sektion = laeuft noch).
+func (s thoughtSection) detail() Detail {
+	status := "✓ fertig"
+	if s.ended.IsZero() {
+		status = "● läuft"
+	}
+	return Detail{Title: "Thinking", Kind: "Thinking", Status: status,
+		Duration: s.duration(), Body: s.text}
+}
+
+// allThoughts liefert alle Denk-Sektionen in Anzeige-Reihenfolge —
+// geschlossene zuerst, die noch offene (live) zuletzt.
+func (a ActivityTree) allThoughts() []thoughtSection {
+	secs := a.thoughts
+	if strings.TrimSpace(a.live) != "" {
+		secs = append(append([]thoughtSection(nil), secs...),
+			thoughtSection{text: a.live, started: a.liveStart})
+	}
+	return secs
 }
 
 // NewActivityTree baut den leeren Baum; Thinking/Tool Calls starten
@@ -133,6 +228,18 @@ func (a ActivityTree) hasTool(callID string) bool {
 	return false
 }
 
+// snapSelKind haelt den Cursor auf einem existierenden Kind-Knoten: Der
+// Platzhalter "Tool Calls (0)" verschwindet, sobald der erste echte Call
+// eintrifft — der Cursor wandert dann auf den ersten sichtbaren Kind-Knoten.
+func (a ActivityTree) snapSelKind() ActivityTree {
+	if k, ok := kindOfNode(a.sel); ok && a.KindCount(k) == 0 {
+		if ks := a.kinds(); len(ks) > 0 {
+			a.sel = toolNode(ks[0])
+		}
+	}
+	return a
+}
+
 // Tool nimmt ein Tool-Update entgegen: ein NEUER Call schliesst zuerst die
 // laufende Denk-Sektion (der Agent denkt nicht weiter, während er werkelt),
 // danach wird der Eintrag angelegt oder in Place aktualisiert.
@@ -143,6 +250,8 @@ func (a ActivityTree) Tool(u ToolUpdate) ActivityTree {
 	now := time.Now()
 	entry := activityTool{callID: u.CallID, name: u.Label, kind: u.Kind,
 		text: u.Text, command: u.Command, running: !u.Done, failed: u.Failed,
+		stdout: u.Stdout, stderr: u.Stderr, live: u.Live,
+		exit: u.Exit, hasOutput: u.HasOutput,
 		started: now, ended: now}
 	if !u.Done {
 		entry.ended = time.Time{} // laeuft noch — die Uhr tickt weiter
@@ -152,6 +261,34 @@ func (a ActivityTree) Tool(u ToolUpdate) ActivityTree {
 			// In-place-Update: der Startzeitpunkt bleibt — die Laufzeit
 			// misst den GESAMTEN Call, nicht das letzte Update.
 			entry.started = a.tools[i].started
+			// In-place-Update: fehlende Anzeige-Felder aus dem Start-Frame
+			// behalten — goose schickt im finalen tool_call_update oft nur
+			// status/content/rawOutput, ohne Name/Kind/Kommando.
+			prev := a.tools[i]
+			if entry.name == "" {
+				entry.name = prev.name
+			}
+			if entry.kind == "" {
+				entry.kind = prev.kind
+			}
+			if entry.command == "" {
+				entry.command = prev.command
+			}
+			if entry.text == "" {
+				entry.text = prev.text
+			}
+			if entry.stdout == "" {
+				entry.stdout = prev.stdout
+			}
+			if entry.stderr == "" {
+				entry.stderr = prev.stderr
+			}
+			if entry.live == "" {
+				entry.live = prev.live
+			}
+			if !entry.hasOutput {
+				entry.exit, entry.hasOutput = prev.exit, prev.hasOutput
+			}
 			if u.Done {
 				if a.tools[i].ended.IsZero() {
 					entry.ended = now
@@ -162,47 +299,167 @@ func (a ActivityTree) Tool(u ToolUpdate) ActivityTree {
 				entry.ended = time.Time{}
 			}
 			a.tools[i] = entry
-			return a
+			return a.snapSelKind()
 		}
 	}
 	a.tools = append(a.tools, entry)
-	return a
+	return a.snapSelKind()
 }
 
 // ToggleThinking klappt den Thinking-Knoten um.
 func (a ActivityTree) ToggleThinking() ActivityTree {
 	a.expandThinking = !a.expandThinking
-	return a
-}
-
-// ToggleTools klappt den Tool-Call-Knoten um; Zuklappen setzt den Scroll
-// zurueck (aufgeklappt startet der Blick am aktuellsten Call).
-func (a ActivityTree) ToggleTools() ActivityTree {
-	a.expandTools = !a.expandTools
-	if !a.expandTools {
-		a.scroll = 0
+	if !a.expandThinking && a.sel == nodeThinking {
+		a.selThought = 0
 	}
 	return a
 }
 
-// Wheel scrollt den aufgeklappten Tool-Call-Bereich (dir: +1 aelterer
-// Inhalt sichtbar, -1 zurueck zum Tail). Ohne aufgeklappte Tool Calls ist
-// das Rad ein No-Op.
-func (a ActivityTree) Wheel(dir int) ActivityTree {
-	if !a.expandTools {
+// ToggleKind klappt den Knoten EINES Tool-Kinds um; Zuklappen setzt
+// dessen Scroll zurueck (aufgeklappt startet der Blick am aktuellsten Call).
+func (a ActivityTree) ToggleKind(kind string) ActivityTree {
+	if kind == "" {
 		return a
 	}
-	a.scroll += dir
-	if a.scroll < 0 {
-		a.scroll = 0
+	m := make(map[string]bool, len(a.expandKinds)+1)
+	for k, v := range a.expandKinds {
+		m[k] = v
 	}
-	if rows, _ := a.toolChildren(80); a.scroll > len(rows)-1 {
-		a.scroll = len(rows) - 1
+	m[kind] = !m[kind]
+	a.expandKinds = m
+	if !m[kind] && a.selCall != "" {
+		if k, ok := kindOfNode(a.sel); ok && k == kind {
+			a.selCall = ""
+		}
 	}
-	if a.scroll < 0 {
-		a.scroll = 0
+	if !m[kind] {
+		s := make(map[string]int, len(a.scroll))
+		for k, v := range a.scroll {
+			s[k] = v
+		}
+		s[kind] = 0
+		a.scroll = s
 	}
 	return a
+}
+
+// ToggleAllTools klappt ALLE Tool-Kind-Knoten gemeinsam um — offen, falls
+// noch nicht alle offen sind; sonst zu.
+func (a ActivityTree) ToggleAllTools() ActivityTree {
+	ks := a.kinds()
+	if len(ks) == 0 {
+		return a
+	}
+	open := false
+	for _, k := range ks {
+		if !a.expanded(k) {
+			open = true
+			break
+		}
+	}
+	m := make(map[string]bool, len(ks))
+	if open {
+		for _, k := range ks {
+			m[k] = true
+		}
+	}
+	a.expandKinds = m
+	if !open {
+		a.scroll = nil
+	}
+	return a
+}
+
+// ToggleTools bleibt als Alias fuer den Gesamt-Schalter (Tests/Demo).
+func (a ActivityTree) ToggleTools() ActivityTree { return a.ToggleAllTools() }
+
+// expanded meldet, ob der Knoten eines Kinds offen ist.
+func (a ActivityTree) expanded(kind string) bool { return a.expandKinds[kind] }
+
+// Wheel scrollt den aufgeklappten Bereich des gewaehlten Kinds (dir: +1
+// aelterer Inhalt sichtbar, -1 zurueck zum Tail); ohne Auswahl den zuletzt
+// aufgeklappten Kind-Knoten. Ohne offenen Kind-Knoten ist das Rad ein No-Op.
+func (a ActivityTree) Wheel(dir int) ActivityTree {
+	kind := ""
+	if k, ok := kindOfNode(a.sel); ok && a.expanded(k) {
+		kind = k
+	} else {
+		ks := a.kinds()
+		for i := len(ks) - 1; i >= 0; i-- {
+			if a.expanded(ks[i]) {
+				kind = ks[i]
+				break
+			}
+		}
+	}
+	if kind == "" {
+		return a
+	}
+	s := make(map[string]int, len(a.scroll)+1)
+	for k, v := range a.scroll {
+		s[k] = v
+	}
+	s[kind] += dir
+	if s[kind] < 0 {
+		s[kind] = 0
+	}
+	if rows, _ := a.kindChildren(kind, 80); s[kind] > len(rows)-1 {
+		s[kind] = len(rows) - 1
+	}
+	if s[kind] < 0 {
+		s[kind] = 0
+	}
+	a.scroll = s
+	return a
+}
+
+// callsOf liefert die Calls eines Kinds in Reihenfolge.
+func (a ActivityTree) callsOf(kind string) []activityTool {
+	var out []activityTool
+	for _, t := range a.tools {
+		if t.kindOf() == kind {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// SelectedCall liefert den Call unter dem Cursor (Detail-Alertbox).
+func (a ActivityTree) SelectedCall() (activityTool, bool) {
+	if a.selCall == "" {
+		return activityTool{}, false
+	}
+	for _, t := range a.tools {
+		if t.callID == a.selCall {
+			return t, true
+		}
+	}
+	return activityTool{}, false
+}
+
+// SelectedDetail liefert das Detail des ausgewaehlten Elements — ein
+// Tool-Call oder eine Thought-Sektion. Nur ein KOPF (Kategorie bzw.
+// Thinking) hat kein Detail: enter klappt ihn dann auf/zu.
+func (a ActivityTree) SelectedDetail() (Detail, bool) {
+	if a.selCall != "" {
+		if t, ok := a.SelectedCall(); ok {
+			return t.detail(), true
+		}
+	}
+	if a.sel == nodeThinking && a.selThought > 0 {
+		secs := a.allThoughts()
+		if i := a.selThought - 1; i >= 0 && i < len(secs) {
+			return secs[i].detail(), true
+		}
+	}
+	return Detail{}, false
+}
+
+// DetailSelected: der Cursor steht auf einem Call oder einer Thought-
+// Sektion, nicht auf einem Kopf.
+func (a ActivityTree) DetailSelected() bool {
+	_, ok := a.SelectedDetail()
+	return ok
 }
 
 // ThinkingCount: Zahl der Denk-Sektionen (geschlossene + die offene).
@@ -216,6 +473,66 @@ func (a ActivityTree) ThinkingCount() int {
 
 // ToolCount: Zahl der Tool-Calls (distinct callIDs).
 func (a ActivityTree) ToolCount() int { return len(a.tools) }
+
+// KindCount: Zahl der Calls eines Kinds.
+func (a ActivityTree) KindCount(kind string) int {
+	n := 0
+	for _, t := range a.tools {
+		if t.kindOf() == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// kindRunning meldet, ob in diesem Kind gerade ein Call laeuft.
+func (a ActivityTree) kindRunning(kind string) bool {
+	for _, t := range a.tools {
+		if t.running && t.kindOf() == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// kinds liefert die vorhandenen Tool-Kinds in ACP-Reihenfolge (nur Kinds
+// mit mindestens einem Call). Die Reihenfolge ist stabil — sie bestimmt die
+// Anzeige-Reihenfolge der Knoten.
+func (a ActivityTree) kinds() []string {
+	counts := make(map[string]int, len(a.tools))
+	for _, t := range a.tools {
+		counts[t.kindOf()]++
+	}
+	var out []string
+	for _, k := range toolKindOrder {
+		if counts[k] > 0 {
+			out = append(out, k)
+			delete(counts, k)
+		}
+	}
+	// Unbekannte Kinds (sollte nicht vorkommen) hinten anhaengen.
+	for k := range counts {
+		out = append(out, k)
+	}
+	return out
+}
+
+// childOrder: aufgeklappte Kinds werden in dieser Reihenfolge mit Budget
+// versorgt — laufende Calls zuerst, dann die uebrigen; Thinking zuletzt.
+func (a ActivityTree) kindChildOrder(kinds []string) []string {
+	out := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		if a.kindRunning(k) {
+			out = append(out, k)
+		}
+	}
+	for _, k := range kinds {
+		if !a.kindRunning(k) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
 
 // Empty: kein Thinking, kein Tool-Call — nichts zu zeigen. AUSNAHME: ein
 // laufender Turn mit armierter Leerlauf-Anzeige (Idle) bleibt sichtbar —
@@ -282,13 +599,111 @@ func (a ActivityTree) durTag(d time.Duration) (string, int) {
 	return a.muted().Render(tag), runewidth.StringWidth(tag)
 }
 
+// ---- Kategorien --------------------------------------------------------------
+
+// toolKindOrder ist die ACP-Reihenfolge der Kategorien — sie bestimmt die
+// stabile Anzeige-Reihenfolge der Kind-Knoten.
+var toolKindOrder = []string{
+	"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other",
+}
+
+// kindOf liefert die effektive ACP-Kategorie eines Calls: das von goose
+// gelieferte kind, sonst aus dem Tool-Namen abgeleitet (goose sendet kein
+// kind — der Name steckt in _meta.goose.toolCall.toolName).
+func (t activityTool) kindOf() string {
+	if k := normalizeKind(t.kind); k != "" {
+		return k
+	}
+	return inferKind(t.name)
+}
+
+// normalizeKind mappt beliebige Kind-Schreibweisen auf die ACP-Kategorien.
+func normalizeKind(kind string) string {
+	k := strings.ToLower(strings.TrimSpace(kind))
+	switch k {
+	case "":
+		return ""
+	case "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other":
+		return k
+	}
+	return "other"
+}
+
+// inferKind leitet die Kategorie aus dem Tool-Namen ab (Fallback fuer
+// Legacy-/Demo-Frames ohne kind und fuer goose-Tools, deren Name die
+// Bedeutung traegt: read_file, edit_file, bash, …).
+func inferKind(name string) string {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "read_image"), strings.Contains(n, "read_file"), n == "read":
+		return "read"
+	case strings.Contains(n, "edit"), strings.Contains(n, "write"),
+		strings.Contains(n, "apply_patch"), n == "text_editor", n == "editor":
+		return "edit"
+	case strings.Contains(n, "grep"), strings.Contains(n, "search"),
+		strings.Contains(n, "find"), n == "tree", strings.Contains(n, "list_dir"):
+		return "search"
+	case strings.Contains(n, "fetch"), strings.Contains(n, "curl"),
+		strings.Contains(n, "http"):
+		return "fetch"
+	case strings.Contains(n, "delete"), strings.Contains(n, "remove"), n == "rm":
+		return "delete"
+	case strings.Contains(n, "move"), strings.Contains(n, "rename"):
+		return "move"
+	case n == "think", strings.Contains(n, "thinking"):
+		return "think"
+	}
+	switch {
+	case n == "bash", n == "shell", strings.HasPrefix(n, "bash "),
+		strings.Contains(n, "execute"), strings.Contains(n, "terminal"):
+		return "execute"
+	}
+	return "other"
+}
+
+// kindLabel: lesbares Label eines Kinds.
+func kindLabel(kind string) string {
+	switch kind {
+	case "switch_mode":
+		return "Switch Mode"
+	case "other", "":
+		return "Other"
+	}
+	return strings.ToUpper(kind[:1]) + kind[1:]
+}
+
+// kindIcon: Nerd-Font-Icon (Octicons, BMP F4xx) eines Kinds.
+func kindIcon(kind string) string {
+	switch kind {
+	case "read":
+		return iconRead
+	case "edit":
+		return iconEdit
+	case "delete":
+		return iconDelete
+	case "move":
+		return iconMove
+	case "search":
+		return iconSearch
+	case "execute":
+		return iconTool
+	case "think":
+		return iconThinking
+	case "fetch":
+		return iconFetch
+	case "switch_mode":
+		return iconSwitch
+	}
+	return iconOther
+}
+
 // ---- Prädikate ---------------------------------------------------------------
 
 // isBash: der Call zeigt einen Shell-Befehl (ACP execute-Kategorie oder
-// bash/shell-Name) — sein Name leuchtet Neon-Pink und sein Befehl bekommt
-// das mehrzeilige Detail-Rendering (§ 6).
+// bash/shell-Name) — sein Befehl bekommt das mehrzeilige Detail-Rendering
+// (§ 6).
 func (t activityTool) isBash() bool {
-	if t.kind == "execute" {
+	if t.kindOf() == "execute" {
 		return true
 	}
 	n := strings.ToLower(t.name)
@@ -393,6 +808,18 @@ const (
 const (
 	iconThinking = "\uF400" //  oct-light_bulb
 	iconTool     = "\uF489" //  oct-terminal
+
+	// Kind-Icons: read/edit/execute/thinking sind User-Vorgabe (Font
+	// Awesome), die uebrigen sinnvoll ergaenzt. Das Label traegt die
+	// Bedeutung auch ohne Nerd Font.
+	iconRead   = "\uF02D" //  fa-book
+	iconEdit   = "\uF044" //  fa-pencil
+	iconDelete = "\uF1F8" //  fa-trash
+	iconMove   = "\uF047" //  fa-arrows
+	iconSearch = "\uF002" //  fa-search
+	iconFetch  = "\uF019" //  fa-download
+	iconSwitch = "\uF021" //  fa-refresh
+	iconOther  = "\uF013" //  fa-cog
 )
 
 // Pods des Working-on-Knotens (User-Prototyp, 21.11.): Jede Kapsel
@@ -416,10 +843,7 @@ func (a ActivityTree) thinkingChildren(width int) []string {
 	if inner < 8 {
 		inner = 8
 	}
-	secs := a.thoughts
-	if strings.TrimSpace(a.live) != "" {
-		secs = append(secs, thoughtSection{text: a.live, started: a.liveStart})
-	}
+	secs := a.allThoughts()
 	var rows []string
 	for i, sec := range secs {
 		first := strings.TrimSpace(sec.text)
@@ -430,6 +854,9 @@ func (a ActivityTree) thinkingChildren(width int) []string {
 		if i == len(secs)-1 {
 			branch = actLast
 		}
+		if a.sel == nodeThinking && a.selThought == i+1 {
+			branch = "│  ▶ "
+		}
 		tag, tagW := a.durTag(sec.duration())
 		rows = append(rows, a.muted().Render(branch)+
 			a.soft().Render(cutWords(first, inner-tagW))+tag)
@@ -438,10 +865,13 @@ func (a ActivityTree) thinkingChildren(width int) []string {
 }
 
 // toolRow baut EINE Historienzeile: Zustandssymbol + Call-Label.
-func (a ActivityTree) toolRow(t activityTool, last bool, width int) string {
+func (a ActivityTree) toolRow(t activityTool, last bool, width int, selected bool) string {
 	branch := actChild
 	if last {
 		branch = actLast
+	}
+	if selected {
+		branch = "│  ▶ "
 	}
 	sym := "✓"
 	if t.running {
@@ -480,9 +910,15 @@ func (a ActivityTree) toolRow(t activityTool, last bool, width int) string {
 		label = a.textSt().Render(cutCells(name, iw)) +
 			a.textSt().Render(": "+cutWords(joinCommandLines(cmd), iw-6))
 	} else {
-		label = a.textSt().Render(cutCells(t.name, iw))
-		if arg := firstLine(t.text); arg != "" {
-			label += a.textSt().Render("(" + cutWords(arg, iw-runewidth.StringWidth(t.name)-2) + ")")
+		name := t.name
+		if name == "" {
+			name = kindLabel(t.kindOf())
+		}
+		label = a.textSt().Render(cutCells(name, iw))
+		// Nur ein BENANNTES Tool bekommt die Argument-Vorschau; sonst
+		// wuerde roher Output als "tool(insgesamt 14892)" erscheinen.
+		if arg := firstLine(t.text); arg != "" && t.name != "" {
+			label += a.textSt().Render("(" + cutWords(arg, iw-runewidth.StringWidth(name)-2) + ")")
 		}
 	}
 	return a.muted().Render(branch) + a.stateSt(t).Render(sym) + " " + label + tag
@@ -529,16 +965,54 @@ func (a ActivityTree) toolDetail(t activityTool, width int) []string {
 // gerendert); Tail-Anker + Scroll regelt View. lastStart ist der Index der
 // Kopfzeile des LETZTEN Calls — View ankert ihn im Fenster, damit der
 // laufende Call nie mitten im Detail abgeschnitten startet.
-func (a ActivityTree) toolChildren(width int) (rows []string, lastStart int) {
-	for i, t := range a.tools {
-		last := i == len(a.tools)-1
+func (a ActivityTree) kindChildren(kind string, width int) (rows []string, lastStart int) {
+	var calls []activityTool
+	for _, t := range a.tools {
+		if t.kindOf() == kind {
+			calls = append(calls, t)
+		}
+	}
+	for i, t := range calls {
+		last := i == len(calls)-1
 		lastStart = len(rows)
-		rows = append(rows, a.toolRow(t, last, width))
+		rows = append(rows, a.toolRow(t, last, width, a.selCall != "" && t.callID == a.selCall))
 		if t.running {
 			rows = append(rows, a.toolDetail(t, width)...)
 		}
 	}
 	return rows, lastStart
+}
+
+// windowRows schneidet die Kind-Historie aufs Budget: Tail-Fenster,
+// Scroll-Offset und Anker am Kopf des LETZTEN Calls (er startet nie
+// mitten im Detail).
+func windowRows(rows []string, budget, scroll, lastStart int) []string {
+	if budget <= 0 || len(rows) == 0 {
+		return nil
+	}
+	n := len(rows)
+	if n > budget {
+		n = budget
+	}
+	bottom := len(rows) - scroll
+	if bottom < n {
+		bottom = n
+	}
+	if bottom > len(rows) {
+		bottom = len(rows)
+	}
+	top := bottom - n
+	if top < 0 {
+		top = 0
+	}
+	if scroll == 0 && top > lastStart {
+		top = lastStart
+		bottom = top + n
+		if bottom > len(rows) {
+			bottom = len(rows)
+		}
+	}
+	return rows[top:bottom]
 }
 
 // workingChildren baut die Pods des Working-on-Knotens: Thinking-Pod
@@ -559,7 +1033,7 @@ func (a ActivityTree) workingChildren(width int) [][]string {
 		tag, tagW := a.durTag(t.duration())
 		label := t.name
 		if label == "" {
-			label = "tool"
+			label = kindLabel(t.kindOf())
 		}
 		body := firstLine(t.text)
 		if t.isBash() {
@@ -572,7 +1046,7 @@ func (a ActivityTree) workingChildren(width int) [][]string {
 			// Tool-Calls-Knoten.
 			body = cutWords(joinCommandLines(cmd), width-6)
 		}
-		pods = append(pods, a.workPod(iconTool, label, body, tag, tagW, width))
+		pods = append(pods, a.workPod(kindIcon(t.kindOf()), label, body, tag, tagW, width))
 	}
 	// Leerlauf (User-Report: "Working on gar nicht angezeigt, obwohl noch
 	// nicht fertig"): Spinner-Zeile mit Turn-Laufzeit; das erste Event
@@ -692,20 +1166,84 @@ func (a ActivityTree) headerRow(n activityNode, collapsed bool, label string, co
 	return markSt.Render(mark) + " " + labelSt.Render(txt)
 }
 
-// activityNode benennt die aufklappbaren Hauptknoten des Baums. Der
-// Auswahlmodus laeuft GENAU diese beiden ab: Working on ist kein
+// activityNode benennt die aufklappbaren Hauptknoten des Baums: Thinking
+// und je einen Knoten pro vorhandenem Tool-Kind. Working on ist kein
 // Faltknoten und zeigt nur die laufenden Vorgaenge — dort gibt es auch
 // keinen Cursor.
-type activityNode int
+type activityNode string
 
 const (
-	nodeNone activityNode = iota
-	nodeThinking
-	nodeTools
+	nodeNone     activityNode = ""
+	nodeThinking activityNode = "thinking"
 )
 
-// activityNodes ist die Anzeige-Reihenfolge der aufklappbaren Knoten.
-var activityNodes = []activityNode{nodeThinking, nodeTools}
+// toolNode ist der Knoten eines Tool-Kinds ("tool:read", "tool:execute", …).
+func toolNode(kind string) activityNode { return activityNode("tool:" + kind) }
+
+// kindOfNode liest den Kind-Namen aus einem Tool-Knoten.
+func kindOfNode(n activityNode) (string, bool) {
+	s := string(n)
+	if strings.HasPrefix(s, "tool:") {
+		return strings.TrimPrefix(s, "tool:"), true
+	}
+	return "", false
+}
+
+// activityHeader ist eine Kopfzeile samt zugehoerigem Knoten.
+type activityHeader struct {
+	node activityNode
+	row  string
+}
+
+// headerRank: Prioritaet beim Kuerzen der Kopfzeilen — laufende Kinds
+// zuerst, dann sonstige Kinds (groessere zuerst), Thinking zuletzt.
+func (a ActivityTree) headerRank(h activityHeader) (int, int) {
+	if h.node == nodeThinking {
+		return 2, -a.ThinkingCount()
+	}
+	k, _ := kindOfNode(h.node)
+	r := 1
+	if a.kindRunning(k) {
+		r = 0
+	}
+	return r, -a.KindCount(k)
+}
+
+// pickHeaders waehlt n Kopfzeilen nach headerRank und gibt sie in der
+// urspruenglichen Anzeige-Reihenfolge zurueck.
+func (a ActivityTree) pickHeaders(hdrs []activityHeader, n int) []activityHeader {
+	if n <= 0 {
+		return nil
+	}
+	if n >= len(hdrs) {
+		return hdrs
+	}
+	picked := make([]bool, len(hdrs))
+	for c := 0; c < n; c++ {
+		best := -1
+		br, bc := 0, 0
+		for i, h := range hdrs {
+			if picked[i] {
+				continue
+			}
+			r, cnt := a.headerRank(h)
+			if best < 0 || r < br || (r == br && cnt < bc) {
+				best, br, bc = i, r, cnt
+			}
+		}
+		if best < 0 {
+			break
+		}
+		picked[best] = true
+	}
+	out := make([]activityHeader, 0, n)
+	for i, h := range hdrs {
+		if picked[i] {
+			out = append(out, h)
+		}
+	}
+	return out
+}
 
 // activityLayout ist das gerenderte Bild samt Struktur fuer den
 // Auswahlmodus: rowNode ordnet jeder Zeile ihren Hauptknoten zu
@@ -715,6 +1253,9 @@ var activityNodes = []activityNode{nodeThinking, nodeTools}
 type activityLayout struct {
 	rows    []string
 	rowNode []activityNode
+	// nodes: die sichtbaren Hauptknoten in Anzeige-Reihenfolge (fuer ↑/↓,
+	// snap und Klick-Zuordnung).
+	nodes []activityNode
 }
 
 // headRow: Zeile der Kopfzeile des Knotens (-1 = nicht sichtbar). Der Kopf
@@ -745,14 +1286,11 @@ func (a ActivityTree) layout(width, budget int) activityLayout {
 	}
 	aw := width - 1 // 1 Zelle linker Rand
 
-	thinkHdr := a.headerRow(nodeThinking, !a.expandThinking, iconThinking+" Thinking", a.ThinkingCount(), a.valida())
-	toolsHdr := a.headerRow(nodeTools, !a.expandTools, iconTool+" Tool Calls", a.ToolCount(), a.valida())
-
+	// Working on zuerst bestimmen: Header + Pods haben Vorrang.
 	workPods := a.workingChildren(aw)
 	if a.settled {
 		// Fertiger Turn: Working on verschwindet KOMPLETT — der Agent
-		// arbeitet nicht mehr, die Zusammenfassung (Thinking/Tool Calls)
-		// reicht (User-Wunsch).
+		// arbeitet nicht mehr, die Zusammenfassung reicht (User-Wunsch).
 		workPods = nil
 	}
 	hasWork := len(workPods) > 0
@@ -760,101 +1298,94 @@ func (a ActivityTree) layout(width, budget int) activityLayout {
 	if hasWork {
 		workHdr = a.workHeader()
 	}
-	// Keine Textzeilen mehr (die Antwort streamt im Chat, FR-2): Das
-	// ganze Budget gehoert den drei Knoten.
-	avail := budget
 
-	if avail < 4 {
-		// Kein Platz fuer alle Hauptknoten: Working on hat Vorrang vor
-		// Thinking/Tool Calls (§ 9); die Reihenfolge bleibt immer
-		// Thinking → Tool Calls → Working on. Thinking faellt zuerst weg —
-		// sein Cursor ist dann unsichtbar und wird gesnappt. Ohne aktiven
-		// Vorgang rueckt Tool Calls nach (Working on ist dann ganz weg).
-		var head []string
-		var nodes []activityNode
-		if hasWork {
-			switch avail {
-			case 3:
-				head = []string{toolsHdr, workHdr}
-				nodes = []activityNode{nodeTools, nodeNone}
-			case 1, 2:
-				head = []string{workHdr}
-				nodes = []activityNode{nodeNone}
-			}
-		} else {
-			switch avail {
-			case 3:
-				head = []string{thinkHdr, toolsHdr}
-				nodes = []activityNode{nodeThinking, nodeTools}
-			case 1, 2:
-				head = []string{toolsHdr}
-				nodes = []activityNode{nodeTools}
-			}
-		}
-		return a.pack(head, nodes, nil)
+	// Kopfzeilen in Anzeige-Reihenfolge: Thinking, dann die vorhandenen
+	// Tool-Kinds (ACP-Reihenfolge). Ohne Calls bleibt der vertraute
+	// Platzhalter "Tool Calls (0)".
+	var hdrs []activityHeader
+	// Thinking nur zeigen, wenn es wirklich Denk-Sektionen gibt — kein
+	// leerer "Thinking (0)"-Kopf (User-Wunsch).
+	if a.ThinkingCount() > 0 {
+		hdrs = append(hdrs, activityHeader{nodeThinking,
+			a.headerRow(nodeThinking, !a.expandThinking, iconThinking+" Thinking", a.ThinkingCount(), a.valida())})
 	}
-	fixed := 2 // thinkHdr + toolsHdr
+	kinds := a.kinds()
+	if len(kinds) == 0 {
+		n := toolNode("other")
+		hdrs = append(hdrs, activityHeader{n,
+			a.headerRow(n, true, iconTool+" Tool Calls", 0, a.valida())})
+	} else {
+		for _, k := range kinds {
+			n := toolNode(k)
+			hdrs = append(hdrs, activityHeader{n,
+				a.headerRow(n, !a.expanded(k), kindIcon(k)+" "+kindLabel(k), a.KindCount(k), a.valida())})
+		}
+	}
+
+	// Bei knappem Budget weichen Kopfzeilen (Thinking zuerst, dann Kinds
+	// ohne laufenden Call) — Working on bleibt sichtbar (§ 9).
+	hdrBudget := budget
 	if hasWork {
-		fixed = 3
+		// Working-on-Kopf + mindestens eine Pod-Zeile reservieren.
+		hdrBudget -= 2
 	}
-	avail -= fixed
-	work := fitWork(workPods, avail) // Pods geschlossen kappen — nie offen
-	avail -= len(work)
+	if hdrBudget < 0 {
+		hdrBudget = 0
+	}
+	sel := hdrs
+	if len(sel) > hdrBudget {
+		sel = a.pickHeaders(hdrs, hdrBudget)
+	}
 
-	var thinkRows, toolRows []string
-	lastStart := 0
-	if a.expandThinking {
-		thinkRows = a.thinkingChildren(aw)
+	// Working-on-Pods fuellen den Rest; Kinder bekommen, was uebrig bleibt.
+	remaining := budget - len(sel)
+	var work []string
+	if hasWork {
+		work = fitWork(workPods, remaining-1)
+		remaining -= 1 + len(work)
 	}
-	if a.expandTools {
-		toolRows, lastStart = a.toolChildren(aw)
+	if remaining < 0 {
+		remaining = 0
 	}
-	kids := avail
-	nTool := len(toolRows)
-	if nTool > kids {
-		nTool = kids
+
+	// Kinder in Prioritaets-Reihenfolge verteilen (laufende Kinds zuerst,
+	// Thinking zuletzt) — gerendert wird wieder in Anzeige-Reihenfolge.
+	kindRows := make(map[string][]string, len(kinds))
+	for _, k := range a.kindChildOrder(kinds) {
+		if !a.expanded(k) || remaining <= 0 {
+			continue
+		}
+		rows, lastStart := a.kindChildren(k, aw)
+		rows = windowRows(rows, remaining, a.scroll[k], lastStart)
+		kindRows[k] = rows
+		remaining -= len(rows)
 	}
-	if nTool < 0 {
-		nTool = 0
+	var thinkRows []string
+	if a.expandThinking && remaining > 0 {
+		all := a.thinkingChildren(aw)
+		n := len(all)
+		if n > remaining {
+			n = remaining
+		}
+		thinkRows = all[len(all)-n:]
 	}
-	bottom := len(toolRows) - a.scroll
-	if bottom < nTool {
-		bottom = nTool
-	}
-	if bottom > len(toolRows) {
-		bottom = len(toolRows)
-	}
-	top := bottom - nTool
-	if top < 0 {
-		top = 0
-	}
-	if a.scroll == 0 && top > lastStart {
-		top = lastStart
-		bottom = top + nTool
-		if bottom > len(toolRows) {
-			bottom = len(toolRows)
+
+	head := make([]string, 0, len(sel)+len(thinkRows)+len(work))
+	headNode := make([]activityNode, 0, cap(head))
+	for _, h := range sel {
+		head = append(head, h.row)
+		headNode = append(headNode, h.node)
+		if h.node == nodeThinking {
+			head = append(head, thinkRows...)
+			headNode = append(headNode, repeatNode(nodeThinking, len(thinkRows))...)
+			continue
+		}
+		if k, ok := kindOfNode(h.node); ok {
+			rows := kindRows[k]
+			head = append(head, rows...)
+			headNode = append(headNode, repeatNode(h.node, len(rows))...)
 		}
 	}
-	toolRows = toolRows[top:bottom]
-	nThink := len(thinkRows)
-	if r := kids - nTool; nThink > r {
-		nThink = r
-	}
-	if nThink < 0 {
-		nThink = 0
-	}
-	thinkRows = thinkRows[len(thinkRows)-nThink:]
-
-	head := make([]string, 0, 2+len(thinkRows)+len(toolRows)+len(work))
-	headNode := make([]activityNode, 0, cap(head))
-	head = append(head, thinkHdr)
-	headNode = append(headNode, nodeThinking)
-	head = append(head, thinkRows...)
-	headNode = append(headNode, repeatNode(nodeThinking, len(thinkRows))...)
-	head = append(head, toolsHdr)
-	headNode = append(headNode, nodeTools)
-	head = append(head, toolRows...)
-	headNode = append(headNode, repeatNode(nodeTools, len(toolRows))...)
 	if hasWork {
 		head = append(head, workHdr)
 		headNode = append(headNode, nodeNone)
@@ -887,7 +1418,15 @@ func (a ActivityTree) pack(head []string, headNode []activityNode, tail []string
 	for i := range rows {
 		rows[i] = actIndent + rows[i]
 	}
-	return activityLayout{rows: rows, rowNode: nodes}
+	seen := make(map[activityNode]bool, len(nodes))
+	visible := make([]activityNode, 0, len(nodes))
+	for _, n := range nodes {
+		if n != nodeNone && !seen[n] {
+			seen[n] = true
+			visible = append(visible, n)
+		}
+	}
+	return activityLayout{rows: rows, rowNode: nodes, nodes: visible}
 }
 
 // View rendert den Activity-Tree in maximal budget Zeilen.
@@ -920,7 +1459,7 @@ func (a ActivityTree) snap(width, budget int) ActivityTree {
 	if l.headRow(a.sel) >= 0 {
 		return a
 	}
-	for _, n := range activityNodes {
+	for _, n := range l.nodes {
 		if l.headRow(n) >= 0 {
 			a.sel = n
 			return a
@@ -932,6 +1471,8 @@ func (a ActivityTree) snap(width, budget int) ActivityTree {
 // Blur raeumt den Cursor (zurueck in die Kette).
 func (a ActivityTree) Blur() ActivityTree {
 	a.sel = nodeNone
+	a.selCall = ""
+	a.selThought = 0
 	return a
 }
 
@@ -941,9 +1482,20 @@ func (a ActivityTree) Blur() ActivityTree {
 func (a ActivityTree) Enter() ActivityTree {
 	switch a.sel {
 	case nodeThinking:
+		// Eine ausgewaehlte Thought-Sektion oeffnet die Detail-Alertbox
+		// im Model; nur der Thinking-Kopf klappt auf/zu.
+		if a.selThought != 0 {
+			return a
+		}
 		return a.ToggleThinking()
-	case nodeTools:
-		return a.ToggleTools()
+	}
+	if k, ok := kindOfNode(a.sel); ok {
+		// Ein ausgewaehlter CALL oeffnet die Detail-Alertbox im Model;
+		// nur der Kategorie-Kopf klappt auf/zu.
+		if a.selCall != "" {
+			return a
+		}
+		return a.ToggleKind(k)
 	}
 	return a
 }
@@ -953,36 +1505,49 @@ func (a ActivityTree) Enter() ActivityTree {
 // nicht sichtbar sind, werden uebersprungen.
 func (a ActivityTree) Move(dir, width, budget int) ActivityTree {
 	l := a.layout(width, budget)
-	var vis []activityNode
-	for _, n := range activityNodes {
-		if l.headRow(n) >= 0 {
-			vis = append(vis, n)
+	type item struct {
+		node    activityNode
+		call    string
+		thought int
+	}
+	var items []item
+	for _, n := range l.nodes {
+		items = append(items, item{node: n})
+		if n == nodeThinking && a.expandThinking {
+			for i := range a.allThoughts() {
+				items = append(items, item{node: n, thought: i + 1})
+			}
+			continue
+		}
+		if k, ok := kindOfNode(n); ok && a.expanded(k) {
+			for _, t := range a.callsOf(k) {
+				items = append(items, item{node: n, call: t.callID})
+			}
 		}
 	}
-	if len(vis) == 0 {
+	if len(items) == 0 {
 		return a
 	}
 	cur := -1
-	for i, n := range vis {
-		if n == a.sel {
+	for i, it := range items {
+		if it.node == a.sel && it.call == a.selCall && it.thought == a.selThought {
 			cur = i
+			break
 		}
 	}
 	if cur < 0 {
 		// (Noch) kein sichtbarer Cursor: in Laufrichtung aufsetzen.
 		if dir < 0 {
-			a.sel = vis[len(vis)-1]
+			cur = len(items) - 1
 		} else {
-			a.sel = vis[0]
+			cur = 0
 		}
-		return a
-	}
-	if cur += dir; cur < 0 {
+	} else if cur += dir; cur < 0 {
 		cur = 0
-	} else if cur >= len(vis) {
-		cur = len(vis) - 1
+	} else if cur >= len(items) {
+		cur = len(items) - 1
 	}
-	a.sel = vis[cur]
+	a.sel, a.selCall, a.selThought = items[cur].node, items[cur].call, items[cur].thought
 	return a
 }
 
@@ -998,8 +1563,21 @@ func (a ActivityTree) Click(row, width, budget int) ActivityTree {
 	if n := l.rowNode[row]; n != nodeNone {
 		a.sel = n
 		if l.headRow(n) == row {
+			a.selCall, a.selThought = "", 0
 			return a.Enter()
 		}
+		// Zeile im aufgeklappten Thinking: die einzelne Denk-Sektion
+		// unter dem Klick selektieren (enter oeffnet dann ihr Detail).
+		if n == nodeThinking && a.expandThinking {
+			if idx := row - l.headRow(n); idx >= 1 && idx <= len(a.allThoughts()) {
+				a.selCall, a.selThought = "", idx
+				return a
+			}
+		}
+		// Zeile in einem Kind-Knoten: eine Call-Auswahl einer anderen
+		// Zeile faellt weg, der Klick waehlt den Knoten.
+		a.selThought = 0
+		a.selCall = ""
 		return a
 	}
 	if n := l.nodeAbove(row); n != nodeNone {
@@ -1012,14 +1590,14 @@ func (a ActivityTree) Click(row, width, budget int) ActivityTree {
 // liegt (der Knoten, zu dem eine Zeile ohne eigene Zuordnung gehoert).
 func (l activityLayout) nodeAbove(row int) activityNode {
 	found := nodeNone
-	for _, n := range activityNodes {
+	for _, n := range l.nodes {
 		if h := l.headRow(n); h >= 0 && h < row {
 			found = n
 		}
 	}
-	if found == nodeNone && len(activityNodes) > 0 {
-		if h := l.headRow(activityNodes[0]); h >= 0 {
-			found = activityNodes[0]
+	if found == nodeNone && len(l.nodes) > 0 {
+		if h := l.headRow(l.nodes[0]); h >= 0 {
+			found = l.nodes[0]
 		}
 	}
 	return found

@@ -256,3 +256,31 @@ func TestNeonFadeInOut(t *testing.T) {
 		t.Fatal("Volles Band muss sich vom halben Blend unterscheiden")
 	}
 }
+
+// TestInputHistoryRecall: ↑/↓ im Eingabefeld laufen die abgeschickten
+// Prompts ab; ↓ am neuesten Eintrag stellt den ungesendeten Draft wieder her.
+func TestInputHistoryRecall(t *testing.T) {
+	r := newRig(t)
+	r.m.inputHistory = []string{"eins", "zwei"}
+	r.m.input.SetValue("draft")
+	r.key("up")
+	if got := r.m.input.Value(); got != "zwei" {
+		t.Fatalf("up = %q, want zwei", got)
+	}
+	r.key("up")
+	if got := r.m.input.Value(); got != "eins" {
+		t.Fatalf("up2 = %q, want eins", got)
+	}
+	r.key("up")
+	if got := r.m.input.Value(); got != "eins" {
+		t.Fatalf("up am aeltesten darf nicht weiter: %q", got)
+	}
+	r.key("down")
+	if got := r.m.input.Value(); got != "zwei" {
+		t.Fatalf("down = %q, want zwei", got)
+	}
+	r.key("down")
+	if got := r.m.input.Value(); got != "draft" {
+		t.Fatalf("down am neuesten = %q, want draft", got)
+	}
+}

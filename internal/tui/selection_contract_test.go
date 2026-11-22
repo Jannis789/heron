@@ -86,7 +86,7 @@ func TestSelectionContractToggleExit(t *testing.T) {
 		name string
 		seed string
 		pre  func(r *rig) // Auswahl vorbereiten, Cursor-Modus betreten
-		md   string      // erwarteter c-Payload der erhaltenen Auswahl
+		md   string       // erwarteter c-Payload der erhaltenen Auswahl
 	}{
 		{
 			name: "frisches-caret-nicht-leer",
@@ -101,10 +101,10 @@ func TestSelectionContractToggleExit(t *testing.T) {
 			name: "konvertierte-block-auswahl",
 			seed: "aaa\n\nbbb\n\nccc",
 			pre: func(r *rig) {
-				r.key("tab")                          // Antwort-Modus, Fokus letzter Block (2)
-				r.key("up").key("up")                 // Fokus Block 0
-				r.key("shift+down")                   // Block-Auswahl 0..1 (grob)
-				r.key("shift+enter")                  // Konvertierung: fein ueber 0..1
+				r.key("tab")          // Antwort-Modus, Fokus letzter Block (2)
+				r.key("up").key("up") // Fokus Block 0
+				r.key("shift+down")   // Block-Auswahl 0..1 (grob)
+				r.key("shift+enter")  // Konvertierung: fein ueber 0..1
 			},
 			md: "aaa\n\nbbb",
 		},

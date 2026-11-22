@@ -61,7 +61,9 @@ func TestActivityDefaultLayout(t *testing.T) {
 	rows := plain(a.View(60, 20))
 	eq(t, rows,
 		" ▸  Thinking (4)",
-		" ▸  Tool Calls (18)",
+		" ▸ "+iconRead+" Read (4)",
+		" ▸ "+iconEdit+" Edit (1)",
+		" ▸ "+iconTool+" Execute (13)",
 		" ● Working on",
 		" ╰─┬────  bash · <1s",
 		"   ┆ find ./src -type f -name \"*.java\" | xargs grep ...",
@@ -75,30 +77,27 @@ func TestActivityExpandedTools(t *testing.T) {
 	a := specTurn().ToggleTools()
 	rows := plain(a.View(74, 40))
 	// Kopf + eingeklapptes Thinking
-	eq(t, rows[0:2], " ▸  Thinking (4)", " ▼  Tool Calls (18)")
+	eq(t, rows[0:2], " ▸ "+iconThinking+" Thinking (4)", " ▼ "+iconRead+" Read (4)")
 	// Die letzten Calls (18 gesamt): edit_file, drei fertige bash, dann
 	// der laufende mit Original-Zeilen — dynamisch lokalisiert.
 	i := 0
 	for j, r := range rows {
-		if strings.Contains(r, "│  ├─ ✓ edit_file") {
+		if strings.Contains(r, "✓ bash: git status") {
 			i = j
 			break
 		}
 	}
 	if i == 0 {
-		t.Fatalf("edit_file-Zeile nicht gefunden:\n%s", strings.Join(rows, "\n"))
+		t.Fatalf("bash-Zeilen nicht gefunden:\n%s", strings.Join(rows, "\n"))
 	}
-	eq(t, rows[i:i+10],
-		" │  ├─ ✓ edit_file(src/auth/session.rs)",
+	eq(t, rows[i:i+7],
 		" │  ├─ ✓ bash: git status",
 		" │  ├─ ✓ bash: cargo test auth::",
 		" │  ├─ ✓ bash: pwd && ls -la",
 		" │  └─ ● bash <1s",
 		" │     │",
 		" │     │  find ./src -type f -name \"*.java\" \\",
-		" │     │    | xargs grep -rn \"authenticate\" \\",
-		" │     │    | awk '{print $1}' \\",
-		" │     │    | sort -u")
+		" │     │    | xargs grep -rn \"authenticate\" \\")
 	// Working on bleibt die kompakte Zwei-Zeilen-Vorschau desselben Calls.
 	w := 0
 	for j, r := range rows {
@@ -151,7 +150,7 @@ func TestActivitySelectionMode(t *testing.T) {
 		t.Fatal("tab muss den Baum selektieren")
 	}
 	r.key("enter") // Cursor auf Thinking
-	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▼  Thinking (1)") || !strings.Contains(v, "▸  Tool Calls (1)") {
+	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▼  Thinking (1)") || !strings.Contains(v, "▸ "+iconTool+" Execute (1)") {
 		t.Fatalf("enter klappt nur den Knoten unter dem Cursor: %q", v)
 	}
 	r.key("enter") // und wieder zu
@@ -162,7 +161,7 @@ func TestActivitySelectionMode(t *testing.T) {
 	// ↓ auf Tool Calls, enter klappt die Historie auf.
 	r.key("down")
 	r.key("enter")
-	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▼  Tool Calls (1)") || !strings.Contains(v, "└─ ● bash") {
+	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▼ "+iconTool+" Execute (1)") || !strings.Contains(v, "└─ ● bash") {
 		t.Fatalf("Tool Calls aufgeklappt fehlt: %q", v)
 	}
 
@@ -197,16 +196,24 @@ func TestActivityCursorFollowsStructure(t *testing.T) {
 	if v := strings.Join(plain(a.View(60, 40)), "\n"); !strings.Contains(v, "▼  Thinking (4)") {
 		t.Fatalf("Thinking nicht aufgeklappt:\n%s", v)
 	}
-	a = a.Move(1, 60, 40) // ↓: Tool Calls steht jetzt NICHT mehr in Zeile 1
+	// ↓ laeuft zuerst durch die Denk-Sektionen (Reinnavigieren in den
+	// aufgeklappten Knoten), danach auf den Read-Kopf — der steht jetzt
+	// NICHT mehr in Zeile 1.
+	for i := 0; i < 5; i++ {
+		a = a.Move(1, 60, 40)
+	}
+	if a.selThought != 0 && len(a.allThoughts()) > 0 {
+		t.Fatal("nach 5x ↓ muss der Cursor auf dem Read-Kopf stehen")
+	}
 	a = a.Enter()
 	v := strings.Join(plain(a.View(60, 40)), "\n")
-	if !strings.Contains(v, "▼  Tool Calls (18)") {
+	if !strings.Contains(v, "▼ "+iconRead+" Read (4)") {
 		t.Fatalf("enter muss den Knoten unter dem Cursor treffen:\n%s", v)
 	}
 	// Und wieder zu — derselbe Druck, kein zweiter Modus.
 	a = a.Enter()
 	v = strings.Join(plain(a.View(60, 40)), "\n")
-	if !strings.Contains(v, "▸  Tool Calls (18)") {
+	if !strings.Contains(v, "▸ "+iconRead+" Read (4)") {
 		t.Fatalf("enter muss auch zuklappen:\n%s", v)
 	}
 }
@@ -277,12 +284,12 @@ func underlined(s string) bool {
 // (Working on) selektiert nur den Baum.
 func TestActivityClickTogglesHeader(t *testing.T) {
 	a := specTurn()
-	a = a.Click(1, 60, 20) // Tool-Calls-Kopf
-	if !a.Focused() || !a.expandTools {
+	a = a.Click(1, 60, 20) // Read-Kopf (erster Kind-Knoten)
+	if !a.Focused() || !a.expanded("read") {
 		t.Fatal("Klick auf die Kopfzeile muss aufklappen")
 	}
 	a = a.Click(1, 60, 20) // derselbe Kopf: wieder zu
-	if a.expandTools {
+	if a.expanded("read") {
 		t.Fatal("zweiter Klick muss zuklappen")
 	}
 	w := -1
@@ -296,7 +303,7 @@ func TestActivityClickTogglesHeader(t *testing.T) {
 		t.Fatal("Working on fehlt")
 	}
 	a = a.Blur().Click(w, 60, 20)
-	if !a.Focused() || a.expandThinking || a.expandTools {
+	if !a.Focused() || a.expandThinking || a.expanded("read") {
 		t.Fatal("Klick auf Working on darf nur selektieren, nicht klappen")
 	}
 }
@@ -329,7 +336,7 @@ func TestActivitySettledHidesWorkingOn(t *testing.T) {
 	if strings.Contains(v, "Working on") {
 		t.Fatalf("abgeschlossener Turn zeigt noch Working on:\n%s", v)
 	}
-	if !strings.Contains(v, "Thinking (4)") || !strings.Contains(v, "Tool Calls (18)") {
+	if !strings.Contains(v, "Thinking (4)") || !strings.Contains(v, "Read (4)") || !strings.Contains(v, "Execute (13)") {
 		t.Fatalf("Zusammenfassung fehlt:\n%s", v)
 	}
 }
@@ -369,8 +376,15 @@ func TestActivityHugeCommand(t *testing.T) {
 
 	// Eingeklappt: Working on haelt ZWEI Zeilen, gekuerzt am Wortuebergang.
 	rows := plain(a.View(60, 20))
-	if got := rows[4]; runewidth0(got) > 60 || !strings.HasSuffix(got, "...") {
-		t.Fatalf("Vorschau nicht gekuerzt: %q", got)
+	preview := ""
+	for _, r := range rows {
+		if strings.Contains(r, "┆") {
+			preview = r
+			break
+		}
+	}
+	if preview == "" || runewidth0(preview) > 60 || !strings.HasSuffix(preview, "...") {
+		t.Fatalf("Vorschau nicht gekuerzt: %q", preview)
 	}
 
 	// Aufgeklappt: das Detail bleibt begrenzt (Cap + Budget-Fenster),
@@ -472,7 +486,7 @@ func TestActivityColors(t *testing.T) {
 		switch {
 		case strings.Contains(stripANSI(r), "Thinking ("):
 			thinking = i
-		case strings.Contains(stripANSI(r), "Tool Calls ("):
+		case strings.Contains(stripANSI(r), "Read ("):
 			tools = i
 		case strings.Contains(stripANSI(r), "Working on"):
 			work = i
@@ -482,7 +496,7 @@ func TestActivityColors(t *testing.T) {
 		t.Fatalf("Thinking-Label nicht Valida: %q", rows[max(thinking, 0)])
 	}
 	if tools < 0 || !strings.Contains(rows[tools], "38;2;185;153;255") {
-		t.Fatalf("Tool Calls-Label nicht Valida: %q", rows[max(tools, 0)])
+		t.Fatalf("Read-Label nicht Valida: %q", rows[max(tools, 0)])
 	}
 	if work < 0 || !strings.Contains(rows[work], "38;2;185;153;255") {
 		t.Fatalf("Working on-Label nicht Valida: %q", rows[max(work, 0)])
@@ -592,6 +606,148 @@ func TestActivityCountsAndSections(t *testing.T) {
 	}
 	if a.ThinkingCount() != 2 {
 		t.Fatalf("Update darf Thinking nicht schliessen: %d", a.ThinkingCount())
+	}
+}
+
+// TestActivityUpdateKeepsStartMetadata: ein tool_call_update traegt oft nur
+// status/content — Name, Kind und Kommando des Start-Frames duerfen nicht
+// verloren gehen (sonst rendert die Zeile "tool(insgesamt 14892)").
+func TestActivityUpdateKeepsStartMetadata(t *testing.T) {
+	a := NewActivityTree(nil).
+		Tool(ToolUpdate{CallID: "c1", Label: "shell", Kind: "execute", Command: "ls -la"})
+	a = a.Tool(ToolUpdate{CallID: "c1", Text: "insgesamt 14892", Done: true}).ToggleKind("execute")
+	v := strings.Join(plain(a.View(80, 20)), "\n")
+	if !strings.Contains(v, "shell: ls -la") {
+		t.Fatalf("Name/Kommando verloren:\n%s", v)
+	}
+	if strings.Contains(v, "tool(insgesamt") {
+		t.Fatalf("Fallback-Tool mit Output als Argument:\n%s", v)
+	}
+}
+
+// TestActivityHidesEmptyThinking: ohne Denk-Chunk gibt es keinen
+// "Thinking (0)"-Kopf — der Baum zeigt nur, was wirklich passiert ist.
+func TestActivityHidesEmptyThinking(t *testing.T) {
+	a := NewActivityTree(nil).Tool(ToolUpdate{CallID: "c", Label: "bash", Kind: "execute", Command: "ls", Done: true})
+	v := strings.Join(plain(a.View(60, 20)), "\n")
+	if strings.Contains(v, "Thinking") {
+		t.Fatalf("leerer Thinking-Knoten sichtbar:\n%s", v)
+	}
+	if !strings.Contains(v, "Execute (1)") {
+		t.Fatalf("Execute-Knoten fehlt:\n%s", v)
+	}
+	// Mit Denk-Chunk bleibt der Kopf.
+	b := NewActivityTree(nil).Thought("denk")
+	if v := strings.Join(plain(b.View(60, 20)), "\n"); !strings.Contains(v, "Thinking (1)") {
+		t.Fatalf("Thinking-Knoten fehlt mit Inhalt:\n%s", v)
+	}
+}
+
+// TestActivityNavigatesIntoExpandedCalls: nach dem Aufklappen laeuft der
+// Cursor in die einzelnen Calls; enter auf einem Call klappt NICHT zu.
+func TestActivityNavigatesIntoExpandedCalls(t *testing.T) {
+	a := NewActivityTree(nil).
+		Tool(ToolUpdate{CallID: "c1", Label: "shell", Kind: "execute", Command: "echo one", Done: true}).
+		Tool(ToolUpdate{CallID: "c2", Label: "shell", Kind: "execute", Command: "echo two", Done: true}).
+		Focus(80, 30)
+	a = a.Enter() // Execute aufklappen
+	if _, ok := a.SelectedCall(); ok {
+		t.Fatal("nach Aufklappen steht der Cursor auf dem Kopf")
+	}
+	a = a.Move(1, 80, 30)
+	if c, ok := a.SelectedCall(); !ok || c.callID != "c1" {
+		t.Fatalf("erster Call nicht selektiert: %+v", c)
+	}
+	a = a.Move(1, 80, 30)
+	if c, ok := a.SelectedCall(); !ok || c.callID != "c2" {
+		t.Fatalf("zweiter Call nicht selektiert: %+v", c)
+	}
+	a = a.Enter()
+	if !a.expanded("execute") {
+		t.Fatal("enter auf einem Call darf die Kategorie nicht zuklappen")
+	}
+}
+
+// TestToolDetailAlertOpens: enter auf einem Call oeffnet die Alertbox mit
+// dem vollstaendigen Kommando und der Ausgabe; esc schliesst sie.
+func TestToolDetailAlertOpens(t *testing.T) {
+	r := newRig(t)
+	r.m.startTurn()
+	r.do(toolMsg{callID: "c1", name: "shell", kind: "execute", cmd: "echo hi",
+		out: "hi\n", hasOut: true, done: true})
+	r.key("tab")
+	r.key("enter") // Execute aufklappen
+	r.key("down")  // in den Call
+	r.key("enter") // Alertbox
+	if r.m.detail == nil {
+		t.Fatal("Alertbox wurde nicht geoeffnet")
+	}
+	// Fokus-Restore: Oeffnen mutiert die Baum-Auswahl nicht.
+	sel, callID, thought := r.m.activity.sel, r.m.activity.selCall, r.m.activity.selThought
+	v := stripANSI(r.m.View())
+	if !strings.Contains(v, "echo hi") || !strings.Contains(v, "hi") || !strings.Contains(v, "exit: 0") {
+		t.Fatalf("Alertbox unvollstaendig:\n%s", v)
+	}
+	// Die Box ist ein Overlay: die normale TUI bleibt ringsum sichtbar.
+	if !strings.Contains(v, "heron · goose acp") {
+		t.Fatalf("Overlay verdraengt die Basis-TUI (Header fehlt):\n%s", v)
+	}
+	r.key("esc")
+	if r.m.detail != nil {
+		t.Fatal("esc muss die Alertbox schliessen")
+	}
+	if r.m.activity.sel != sel || r.m.activity.selCall != callID || r.m.activity.selThought != thought {
+		t.Fatalf("Schliessen hat die Auswahl veraendert: %v/%q/%d -> %v/%q/%d",
+			sel, callID, thought, r.m.activity.sel, r.m.activity.selCall, r.m.activity.selThought)
+	}
+}
+
+// TestActivityThinkingDetailOverlay: der Thinking-Knoten ist genauso
+// selektierbar wie ein Tool-Call — aufgeklappt laufen ↑/↓ in die einzelnen
+// Denk-Sektionen, enter oeffnet deren Volltext als Overlay, esc kehrt
+// exakt zur selben Sektion zurueck.
+func TestActivityThinkingDetailOverlay(t *testing.T) {
+	r := newRig(t)
+	r.m.startTurn()
+	r.do(thoughtMsg{text: "erste Idee"})
+	r.do(toolMsg{callID: "c1", name: "shell", kind: "execute", cmd: "echo", done: true})
+	r.do(thoughtMsg{text: "zweite Idee\nmit zweiter Zeile"})
+	r.key("tab")   // Eingabe -> Activity-Baum (Cursor auf Thinking)
+	r.key("enter") // Thinking aufklappen
+	r.key("down")  // Thought-Sektion 1
+	r.key("down")  // Thought-Sektion 2
+	if r.m.activity.sel != nodeThinking || r.m.activity.selThought != 2 {
+		t.Fatalf("Thought-Sektion nicht selektiert: sel=%v thought=%d",
+			r.m.activity.sel, r.m.activity.selThought)
+	}
+	d, ok := r.m.activity.SelectedDetail()
+	if !ok {
+		t.Fatal("Thought-Sektion hat kein Detail")
+	}
+	if !strings.Contains(d.Body, "zweite Idee") || !strings.Contains(d.Body, "mit zweiter Zeile") {
+		t.Fatalf("Detail ohne Volltext: %q", d.Body)
+	}
+	if d.Kind != "Thinking" || d.Status == "" {
+		t.Fatalf("Detail ohne Kategorie/Status: %+v", d)
+	}
+	sel, callID, thought := r.m.activity.sel, r.m.activity.selCall, r.m.activity.selThought
+	r.key("enter")
+	if r.m.detail == nil {
+		t.Fatal("enter auf einer Thought-Sektion oeffnet keine Alertbox")
+	}
+	v := stripANSI(r.m.View())
+	for _, want := range []string{"zweite Idee", "mit zweiter Zeile", "Thinking", "heron · goose acp"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("Overlay unvollstaendig (%q fehlt):\n%s", want, v)
+		}
+	}
+	r.key("esc")
+	if r.m.detail != nil {
+		t.Fatal("esc muss das Overlay schliessen")
+	}
+	if r.m.activity.sel != sel || r.m.activity.selCall != callID || r.m.activity.selThought != thought {
+		t.Fatalf("Schliessen hat die Thought-Auswahl veraendert: %v/%q/%d -> %v/%q/%d",
+			sel, callID, thought, r.m.activity.sel, r.m.activity.selCall, r.m.activity.selThought)
 	}
 }
 

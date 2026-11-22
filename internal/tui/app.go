@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 	"runtime/pprof"
 	"sync"
@@ -47,6 +48,14 @@ type Model struct {
 	// und die fertig gerenderte Antwort rueckt nach (FR-2).
 	streamID int
 
+	// inputHistory: zuletzt eingegebene Prompts (aeltester → neuester);
+	// histIdx -1 = Live-Draft, sonst Index in inputHistory. ↑/↓ im
+	// Eingabefeld laufen die Historie ab, ↓ am neuesten Eintrag stellt
+	// den noch nicht abgeschickten Draft wieder her.
+	inputHistory []string
+	histIdx      int
+	histDraft    string
+
 	// inputFocus: der Zustand der Zwei-Modus-Kette. STANDARD ist der
 	// Eingabe-Modus — das Eingabefeld ist selektiert (Neon-Rahmen,
 	// blinkender Cursor) und Getippe landet dort. tab schaltet in den
@@ -78,7 +87,13 @@ type Model struct {
 	// ehemaligen Think-/Tool-Karten und die Statuszeile — Agent-Text ist
 	// KEIN Prozess und streamt als wachsender Block in den Chat.
 	activity ActivityTree
-	spinner  int // frame index of the running animation
+	// detail: offene Detail-Alertbox — ein Element (Tool-Call ODER
+	// Thought-Sektion) als schwebendes Fenster ueber der TUI (nil = zu).
+	detail *Detail
+	// detailScroll: Zeilen-Offset im Box-Inhalt (pgup/pgdown); das Oeffnen
+	// und Schliessen laesst die Baum-Auswahl unberuehrt.
+	detailScroll int
+	spinner      int // frame index of the running animation
 	// neonPhase schiebt das Neon-Band am Eingaberahmen pro Spinner-Takt eine
 	// Zelle weiter (crushs Regenbogen-Spinner zyklisiert ebenso); unbounded,
 	// der Render nimmt es modulo Umfang.
@@ -188,7 +203,52 @@ func New(send Sender, th *render.Theme, copyFn CopyFunc) Model {
 	// Standard sitzt sie auf dem Eingabefeld (dort wird getippt), tab
 	// toggelt zu den Chat-Segmenten und zurueck, ↑/↓ laufen blockweise —
 	// aber NUR im Antwort-Modus.
-	return Model{input: ta, chat: NewBlockList().SetCopy(copyFn).SetTheme(th), activity: NewActivityTree(th), send: send, theme: th, copyFn: copyFn, inline: inlineEnabled(), inputFocus: true, charBlinkInterval: caretBlinkInterval}
+	return Model{input: ta, chat: NewBlockList().SetCopy(copyFn).SetTheme(th), activity: NewActivityTree(th), send: send, theme: th, copyFn: copyFn, inline: inlineEnabled(), inputFocus: true, charBlinkInterval: caretBlinkInterval, histIdx: -1}
+}
+
+// recordHistory merkt sich einen abgeschickten (oder queued) Prompt und
+// setzt die Historien-Navigation auf den Live-Draft zurueck.
+func (m *Model) recordHistory(prompt string) {
+	if prompt == "" {
+		return
+	}
+	m.inputHistory = append(m.inputHistory, prompt)
+	m.histIdx = -1
+	m.histDraft = ""
+}
+
+// recallHistory laeuft die Eingabe-Historie ab: dir<0 = ↑ (aelter),
+// dir>0 = ↓ (neuer); ↓ am neuesten Eintrag stellt den Live-Draft wieder her.
+func (m *Model) recallHistory(dir int) {
+	if len(m.inputHistory) == 0 {
+		return
+	}
+	if dir < 0 {
+		if m.histIdx == -1 {
+			m.histDraft = m.input.Value()
+			m.histIdx = len(m.inputHistory) - 1
+		} else if m.histIdx > 0 {
+			m.histIdx--
+		} else {
+			return // aeltester Eintrag erreicht
+		}
+	} else {
+		if m.histIdx == -1 {
+			return // schon im Live-Draft
+		}
+		if m.histIdx < len(m.inputHistory)-1 {
+			m.histIdx++
+		} else {
+			m.histIdx = -1
+			m.input.SetValue(m.histDraft)
+			m.input.CursorEnd()
+			m.syncInputSize()
+			return
+		}
+	}
+	m.input.SetValue(m.inputHistory[m.histIdx])
+	m.input.CursorEnd()
+	m.syncInputSize()
 }
 
 // WithStream wires the live-update bridge used by the backend to push chunk,
@@ -1033,6 +1093,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	case tea.KeyMsg:
+		// Detail-Alertbox (Overlay): schluckt alle Tasten; enter/esc/q
+		// schliesst, pgup/pgdown scrollen im Inhalt. Die Baum-Auswahl
+		// bleibt dabei unveraendert — Schliessen kehrt exakt zurueck.
+		if m.detail != nil {
+			switch msg.String() {
+			case "enter", "esc", "q":
+				m.detail = nil
+				m.detailScroll = 0
+			case "pgup":
+				if m.detailScroll > 5 {
+					m.detailScroll -= 5
+				} else {
+					m.detailScroll = 0
+				}
+			case "pgdown":
+				m.detailScroll += 5
+			}
+			return m, nil
+		}
 		// The open picker swallows keys first (FR-20).
 		if m.pickerOpen {
 			return m.pickerKey(msg)
@@ -1148,6 +1227,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Activity-Auswahlmodus: enter klappt den Knoten unter dem
 			// Cursor auf — und wieder zu (kein gesondertes Zuklappen).
 			if m.activity.Focused() {
+				// Ein ausgewaehltes Element (Call oder Thought-Sektion)
+				// oeffnet die Detail-Alertbox. Oeffnen mutiert die
+				// Auswahl NICHT — Schliessen kehrt genau hierher zurueck.
+				if d, ok := m.activity.SelectedDetail(); ok {
+					m.detail = &d
+					m.detailScroll = 0
+					return m, nil
+				}
 				m.activity = m.activity.Enter()
 				// Auf-/Zuklappen aendert die Baumzeilenzahl: Der Chat-
 				// Viewport folgt sofort (Relayout-Vertrag wie thought/
@@ -1189,6 +1276,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncInputSize()
 				return m, m.flushPrinted()
 			}
+			m.recordHistory(prompt)
 			// Queue (FR-46): Laeuft der Turn noch, wartet der Prompt in der
 			// Warteschlange und geht automatisch raus, sobald er endet —
 			// ctrl+c drengt ihn sofort nach (Abbruch + Versand), der
@@ -1239,6 +1327,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// AUSSCHLIESSLICH tab (esc bleibt der Reset auf den Standard).
 			if m.inputFocus {
 				s := msg.String()
+				if s == "up" || s == "down" {
+					if s == "up" {
+						m.recallHistory(-1)
+					} else {
+						m.recallHistory(1)
+					}
+					return m, nil
+				}
 				if s == "pgup" || s == "pgdown" {
 					// Bild-Seitenwechsel aus der Eingabe: reines Scrollen,
 					// KEIN Fokus-Wechsel (die Kette bleibt in der Eingabe).
@@ -1729,6 +1825,167 @@ func (m Model) activityVisible() bool {
 	return !m.activity.Empty()
 }
 
+// wrapDetailLines bricht Detail-Zeilen ANSI-frei auf die Innenbreite um;
+// Leerzeilen bleiben als Gliederung erhalten.
+func wrapDetailLines(src []string, width int) []string {
+	var out []string
+	for _, ln := range src {
+		if strings.TrimSpace(ln) == "" {
+			out = append(out, "")
+			continue
+		}
+		ws := render.WrapWords(ln, width)
+		if len(ws) == 0 {
+			ws = []string{""}
+		}
+		out = append(out, ws...)
+	}
+	return out
+}
+
+// detailBox baut die Zeilen der schwebenden Detail-Alertbox: runde
+// Rahmen, Kopf (Kategorie/Titel/Status), Metazeile, Volltext und
+// Fusszeile. Groesse: 80 % des Terminals, gedeckelt auf ~100x30. Zu
+// langer Inhalt wird gefenstert (pgup/pgdown) und als gekuerzt markiert.
+func (m Model) detailBox(d Detail) []string {
+	termW, termH := m.width, m.height
+	if termW <= 0 {
+		termW = 80
+	}
+	if termH <= 0 {
+		termH = 24
+	}
+	boxW := termW * 8 / 10
+	if boxW > 100 {
+		boxW = 100
+	}
+	if boxW < 20 {
+		boxW = 20
+	}
+	if boxW > termW {
+		boxW = termW
+	}
+	// Das Fenster ist SO GROSS WIE SEIN INHALT (hoechstens 80 % / 30
+	// Zeilen): eine kurze Ausgabe ergibt eine kompakte Alertbox, statt
+	// 20 leere Zeilen unter den Text zu haengen.
+	maxInnerH := termH * 8 / 10
+	if maxInnerH > 30 {
+		maxInnerH = 30
+	}
+	maxInnerH -= 2 // obere/untere Rahmenlinie
+	if maxInnerH < 2 {
+		maxInnerH = 2
+	}
+	innerW := boxW - 4
+	if innerW < 8 {
+		innerW = 8
+	}
+
+	headSrc := []string{d.Kind + " · " + d.Title + "  [" + d.Status + "]"}
+	if d.Duration > 0 {
+		headSrc = append(headSrc, "Dauer "+d.Duration.Round(time.Millisecond).String())
+	}
+	if len(d.Meta) > 0 {
+		headSrc = append(headSrc, strings.Join(d.Meta, " · "))
+	}
+	header := wrapDetailLines(headSrc, innerW)
+	body := wrapDetailLines(strings.Split(strings.ReplaceAll(d.Body, "\r\n", "\n"), "\n"), innerW)
+	for len(body) > 0 && strings.TrimSpace(body[len(body)-1]) == "" {
+		body = body[:len(body)-1]
+	}
+
+	// 2 Zeilen: Leerzeile + Fusszeile. Reicht der Platz fuer den ganzen
+	// Inhalt, zeigt die Box alles; sonst fenstert pgup/pgdn.
+	avail := maxInnerH - len(header) - 2
+	if avail < 1 {
+		avail = 1
+	}
+	if avail > len(body) {
+		avail = len(body)
+	}
+	innerH := len(header) + avail + 2
+	if innerH > maxInnerH {
+		innerH = maxInnerH
+	}
+	maxScroll := len(body) - avail
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	scroll := m.detailScroll
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	end := scroll + avail
+	if end > len(body) {
+		end = len(body)
+	}
+	footer := "enter/esc schliesst · pgup/pgdn scrollt"
+	if maxScroll > 0 {
+		footer = fmt.Sprintf("%d–%d/%d · pgup/pgdn · enter/esc schliesst", scroll+1, end, len(body))
+	}
+	content := append([]string{}, header...)
+	content = append(content, body[scroll:end]...)
+	content = append(content, "", footer)
+	if len(content) > innerH {
+		content = content[:innerH]
+	}
+	for len(content) < innerH {
+		content = append(content, "")
+	}
+	for i, ln := range content {
+		if w := lipgloss.Width(ln); w < innerW {
+			content[i] = ln + strings.Repeat(" ", innerW-w)
+		}
+	}
+	st := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#B999FF")).Padding(0, 1)
+	return strings.Split(st.Render(strings.Join(content, "\n")), "\n")
+}
+
+// overlayDetail komponiert die Detailbox MITTIG ueber die Basis-TUI: links
+// und rechts der Box bleibt die normale Ansicht sichtbar (Header, Chat,
+// Eingabe, Footer). Kein Vollbild-Ersatz.
+func (m Model) overlayDetail(base string, d Detail) string {
+	box := m.detailBox(d)
+	if m.width <= 0 || m.height <= 0 || len(box) == 0 {
+		return strings.Join(box, "\n")
+	}
+	lines := strings.Split(base, "\n")
+	if len(lines) > m.height {
+		lines = lines[:m.height]
+	}
+	for len(lines) < m.height {
+		lines = append(lines, "")
+	}
+	boxW := 0
+	for _, ln := range box {
+		if w := lipgloss.Width(ln); w > boxW {
+			boxW = w
+		}
+	}
+	x := (m.width - boxW) / 2
+	if x < 0 {
+		x = 0
+	}
+	y := (m.height - len(box)) / 2
+	if y < 0 {
+		y = 0
+	}
+	for i, bl := range box {
+		row := y + i
+		if row < 0 || row >= len(lines) {
+			continue
+		}
+		left := ansi.Truncate(lines[row], x, "")
+		right := ansi.TruncateLeft(lines[row], x+boxW, "")
+		lines[row] = left + bl + right
+	}
+	return strings.Join(lines, "\n")
+}
+
 // activityView rendert den Activity-Baum als Block ueber dem Eingabefeld
 // (Nachfolger der einzeiligen Working-Line). Leer, wenn nichts zu zeigen
 // ist — dann bleibt die Zeile wie bisher ganz weg.
@@ -1766,7 +2023,19 @@ func (m Model) activityRect() (yTop, rows int) {
 	return yTop, n
 }
 
+// View rendert die TUI. Ist die Detail-Alertbox offen, wird sie als
+// schwebendes Fenster MITTIG ueber die normale Ansicht komponiert — die
+// Basis-TUI (Header, Chat, Eingabe, Footer) bleibt ringsum sichtbar.
 func (m Model) View() string {
+	base := m.baseView()
+	if m.detail == nil {
+		return base
+	}
+	return m.overlayDetail(base, *m.detail)
+}
+
+// baseView: die normale TUI ohne Detail-Overlay.
+func (m Model) baseView() string {
 	vt0 := time.Now()
 	var tChat time.Duration
 	defer func() {

@@ -15,7 +15,7 @@ func TestShiftSelectionCopiesRange(t *testing.T) {
 	// Bloecke: 0=Heading, 1=Text, 2=Code, 3=Text. Antwort-Modus betreten
 	// (tab — shift+down startet keine Auswahl mehr aus der Eingabe) und
 	// den Fokus ans OBERSTE Segment fahren: Der Anker sitzt oben.
-	r.key("tab")        // Fokus: letztes sichtbares Segment (3)
+	r.key("tab")                    // Fokus: letztes sichtbares Segment (3)
 	r.key("up").key("up").key("up") // Fokus auf Block 0
 	r.key("shift+down")
 	if !r.m.chat.selActive() || r.m.chat.selCur != 1 || r.m.chat.selFrom != 0 {
@@ -55,7 +55,7 @@ func TestShiftSelectionExtendsDownAcrossHeterogeneous(t *testing.T) {
 	// Fokus auf das oberste Segment — dann erweitert shift+down die
 	// Auswahl ueber ALLE Bloecke, auch nicht klassisch fokussierbare
 	// Textbloecke (Codeblock-gefolgt-von-Text).
-	r.key("tab")        // Fokus: letztes sichtbares Segment (2)
+	r.key("tab")          // Fokus: letztes sichtbares Segment (2)
 	r.key("up").key("up") // Fokus auf Block 0
 	for i := 0; i < 3; i++ {
 		r.key("shift+down")

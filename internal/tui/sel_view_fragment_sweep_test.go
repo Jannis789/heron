@@ -76,7 +76,7 @@ func TestViewStateFragmentSweep(t *testing.T) {
 		r4 := newRig(t).seed(text)
 		r4.size(w, 30)
 		// Klick mitten in den ersten Textblock (x irgendwo im Text, y Zeile 2)
-		r4.click(w / 2, 2)
+		r4.click(w/2, 2)
 		check("marked", w, r4.m.View())
 		r4.key("tab")
 		r4.key("c")

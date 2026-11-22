@@ -599,11 +599,19 @@ func buildToolEvent(up update) ToolEvent {
 // kindForTool mappt goose-Tool-Namen auf ACP-Kategorien (goose sendet kein
 // kind — ohne Mapping faelle jede Karte auf das generische Icon zurueck).
 func kindForTool(toolName string) string {
-	switch toolName {
-	case "shell":
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "shell", "bash", "execute", "execute_bash":
 		return "execute"
-	case "apply_patch", "editor", "text_editor":
+	case "write", "edit", "apply_patch", "editor", "text_editor":
 		return "edit"
+	case "read", "read_file", "read_image":
+		return "read"
+	case "tree", "search", "grep", "find":
+		return "search"
+	case "fetch", "curl", "web_fetch":
+		return "fetch"
+	case "think":
+		return "think"
 	}
 	return ""
 }
@@ -649,6 +657,8 @@ func (e ToolEvent) Label() string {
 		return e.Title
 	case e.Name != "":
 		return e.Name
+	case e.Command != "":
+		return "shell"
 	case e.Kind != "":
 		return e.Kind
 	}

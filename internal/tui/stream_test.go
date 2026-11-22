@@ -138,7 +138,7 @@ func TestToolCallLivesInActivityTree(t *testing.T) {
 	r := newRig(t)
 	r.m.startTurn()
 	r.do(toolMsg{callID: "c1", name: "read_file.go", done: false})
-	r.contains("Tool Calls (1)")
+	r.contains("Read (1)")
 	r.contains("Working on")
 	r.contains("read_file.go")
 	// Auswahlmodus (tab) statt Modifier-Taste: ↓ auf Tool Calls, enter
@@ -148,7 +148,7 @@ func TestToolCallLivesInActivityTree(t *testing.T) {
 	r.key("enter")
 	r.contains("● read_file.go")
 	r.do(toolMsg{callID: "c1", name: "read_file.go", done: true})
-	r.contains("Tool Calls (1)") // Update zaehlt nicht doppelt (FR-31)
+	r.contains("Read (1)") // Update zaehlt nicht doppelt (FR-31)
 	r.contains("✓ read_file.go")
 	if n := len(r.m.chat.items); n != 0 {
 		t.Fatalf("Chat hat %d Bloecke, want 0 — der Prozess lebt im Baum", n)

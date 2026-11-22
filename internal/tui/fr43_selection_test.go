@@ -68,10 +68,10 @@ func TestSelectionSurvivesFocusMove(t *testing.T) {
 	// Antwort-Modus (tab — shift+down startet keine Auswahl mehr aus der
 	// Eingabe) und den Fokus ans OBERSTE Segment fahren: Der Anker sitzt
 	// oben, die Auswahl waechst nach unten.
-	r.key("tab")        // Fokus: letztes sichtbares Segment (3)
+	r.key("tab")                    // Fokus: letztes sichtbares Segment (3)
 	r.key("up").key("up").key("up") // Fokus auf Block 0
-	r.key("shift+down") // Anker 0, sofort +1
-	r.key("shift+down") // Bereich 0..2
+	r.key("shift+down")             // Anker 0, sofort +1
+	r.key("shift+down")             // Bereich 0..2
 	if lo, hi := r.m.chat.selBounds(); lo != 0 || hi != 2 {
 		t.Fatalf("Vorbedingung Bereich 0..2, got %d..%d", lo, hi)
 	}
@@ -357,7 +357,7 @@ func TestCharSelPlantUMLSourceIsCharwise(t *testing.T) {
 	t.Setenv("HERON_IMAGES", "force")
 	r := newRig(t).seed("```plantuml\n@startuml\nA -> B\n@enduml\n```\n")
 	r.do(diagramsDoneMsg{results: imgResults(r.m)})
-	r.key("tab")      // Fokus: der (einzige) Bildblock
+	r.key("tab")       // Fokus: der (einzige) Bildblock
 	r.key("shift+tab") // Auto-t: Quelltext-Ansicht, Caret DARIN
 	ib, ok := r.m.chat.items[0].(ImageBlock)
 	if !ok || !ib.showSrc {
@@ -573,7 +573,7 @@ func TestCharSelExitOutsideAnchorKeepsFineSelection(t *testing.T) {
 func TestCharSelShiftOutsideRunsClassic(t *testing.T) {
 	r := newRig(t).seed("aaa\n\nabcdef\n\nccc\n\nddd\n\neee")
 	r.key("tab").key("up").key("up").key("up") // Fokus Block 1 ("abcdef")
-	r.key("shift+enter")                        // Zeichen-Cursor in Block 1
+	r.key("shift+enter")                       // Zeichen-Cursor in Block 1
 	r.key("right").key("right").key("right")
 	if !r.m.chat.charEmptySelection() {
 		t.Fatal("Vorbedingung: Caret auf c3, OHNE Auswahl")
@@ -659,4 +659,3 @@ func TestCharSelAnchorSurvivesBlockWalkReentry(t *testing.T) {
 		t.Fatalf("Zeichen-Auswahl Anker..Caret: %q", got)
 	}
 }
-
