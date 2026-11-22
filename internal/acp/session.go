@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,11 +24,19 @@ type Session struct {
 	// und liefert die ERFRISCHTEN configOptions zurueck (neue Modellliste!).
 	provider        string
 	providerOptions []ProviderOption
+	// cfgMu waehrt den Konfigurations-Cache: SetConfigOption schreibt ihn
+	// (tea.Cmd-Goroutine), publishModelInfo/Prompt lesen ihn aus main.go
+	// (Prompt-Goroutine) — ohne Mutex ist das ein Data Race (NFR-2).
+	cfgMu sync.Mutex
 }
 
 // Model reports the model goose announced for this session (configOptions
 // "model"); empty when the agent does not say.
-func (s *Session) Model() string { return s.model }
+func (s *Session) Model() string {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	return s.model
+}
 
 // SessionID reports the id goose assigned to this session — the same id a
 // later /resume loads back (FR-44).
@@ -35,32 +44,96 @@ func (s *Session) SessionID() string { return s.sessionID }
 
 // Effort reports the thinking effort goose announced (configOptions
 // "thinking_effort"); empty when the agent does not say.
-func (s *Session) Effort() string { return s.effort }
+func (s *Session) Effort() string {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	return s.effort
+}
 
 // Provider reports the AI provider goose announced (configOptions
 // "provider"); empty when the agent does not say.
-func (s *Session) Provider() string { return s.provider }
+func (s *Session) Provider() string {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	return s.provider
+}
 
 // ProviderOptions lists the selectable providers goose announced; may be
 // empty. Name is the human-readable label, Value the config value.
-func (s *Session) ProviderOptions() []ProviderOption { return s.providerOptions }
+func (s *Session) ProviderOptions() []ProviderOption {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	out := make([]ProviderOption, len(s.providerOptions))
+	copy(out, s.providerOptions)
+	return out
+}
 
 // ModelOptions lists the selectable models goose announced; may be empty.
-func (s *Session) ModelOptions() []string { return s.modelOptions }
+func (s *Session) ModelOptions() []string {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	out := make([]string, len(s.modelOptions))
+	copy(out, s.modelOptions)
+	return out
+}
 
 // EffortOptions lists the selectable effort levels goose announced; may be
 // empty.
-func (s *Session) EffortOptions() []string { return s.effortOptions }
+func (s *Session) EffortOptions() []string {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	out := make([]string, len(s.effortOptions))
+	copy(out, s.effortOptions)
+	return out
+}
 
 // SetConfigOption changes a session config option (e.g. "model",
 // "thinking_effort") and returns the raw result with the refreshed
 // configOptions list.
 func (s *Session) SetConfigOption(ctx context.Context, id, value string) (json.RawMessage, error) {
-	return s.client.Request(ctx, "session/set_config_option", map[string]any{
+	res, err := s.client.Request(ctx, "session/set_config_option", map[string]any{
 		"sessionId": s.sessionID,
 		"configId":  id,
 		"value":     value,
 	})
+	if err != nil {
+		return res, err
+	}
+	// Der Cache MUSS aus der Antwort mitziehen: main.go ruft bei jedem
+	// Prompt publishModelInfo auf, und das liesse sonst den Altstand von
+	// session/new zurueckschreiben — der Footer fiel nach dem naechsten
+	// Prompt aufs alte Modell zurueck und der /model-Picker bot nach einem
+	// Provider-Wechsel die Modellliste des VORHERIGEN Providers an
+	// (FR-45). Die Antwort traegt dieselben configOptions wie session/new
+	// (gegen goose 1.55.0 probed), also spiegelt applyConfig sie 1:1.
+	s.applyConfig(parseSessionInfo(res))
+	return res, nil
+}
+
+// applyConfig spiegelt configOptions in den gecachten Session-Stand.
+// Leere Felder bleiben bewusst unangetastet — Schema-Drift darf den
+// Stand nicht leeren (dieselbe Toleranz wie parseSessionInfo).
+func (s *Session) applyConfig(si sessionInfo) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	if si.model != "" {
+		s.model = si.model
+	}
+	if si.effort != "" {
+		s.effort = si.effort
+	}
+	if si.provider != "" {
+		s.provider = si.provider
+	}
+	if len(si.modelOptions) > 0 {
+		s.modelOptions = si.modelOptions
+	}
+	if len(si.effortOptions) > 0 {
+		s.effortOptions = si.effortOptions
+	}
+	if len(si.providerOptions) > 0 {
+		s.providerOptions = si.providerOptions
+	}
 }
 
 // ConfiguredProviders liefert die IDs der Provider, die der Nutzer IN

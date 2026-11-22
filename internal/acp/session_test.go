@@ -51,6 +51,56 @@ func TestSessionInfoRealGoose(t *testing.T) {
 	}
 }
 
+// TestSessionConfigSwitchRealGoose reproduziert den Footer-Fallback-Bug
+// (FR-45): Nach set_config_option(model) muss Model() den NEUEN Stand
+// melden — main.go ruft bei jedem Prompt publishModelInfo auf, und ein
+// nicht gespiegelter Cache liesse den Footer beim naechsten Prompt aufs
+// alte Modell zurueckfallen ("glm-5.3 unswitchable").
+func TestSessionConfigSwitchRealGoose(t *testing.T) {
+	if os.Getenv("HERON_E2E_GOOSE") != "1" {
+		t.Skip("set HERON_E2E_GOOSE=1 for a direct goose test")
+	}
+	wd, _ := os.Getwd()
+	sess, err := NewSession(context.Background(), "goose", wd)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	before := sess.Model()
+	if before == "" {
+		t.Fatal("goose did not announce a model in session/new")
+	}
+	opts := sess.ModelOptions()
+	if len(opts) == 0 {
+		t.Skip("no model options announced — nothing to switch between")
+	}
+	target := before
+	for _, o := range opts {
+		if o != before {
+			target = o
+			break
+		}
+	}
+	if target == before {
+		t.Skipf("only one model option announced (%q)", before)
+	}
+	res, err := sess.SetConfigOption(context.Background(), "model", target)
+	if err != nil {
+		t.Fatalf("SetConfigOption: %v (%s)", err, string(res))
+	}
+	if got := sess.Model(); got != target {
+		t.Fatalf("after switch Model() = %q, want %q — cache not mirrored", got, target)
+	}
+	if got := sess.ModelOptions(); len(got) == 0 {
+		t.Fatal("model options list empty after switch")
+	}
+	// Zurueck, damit der Blick wieder dem Grundzustand entspricht.
+	if _, err := sess.SetConfigOption(context.Background(), "model", before); err != nil {
+		t.Logf("switch back failed: %v", err)
+	}
+}
+
 // TestSessionStreamRealGoose proves FR-2 end to end: chunks must reach the
 // callback while the prompt request is still in flight, not only at the end.
 func TestSessionStreamRealGoose(t *testing.T) {
