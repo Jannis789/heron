@@ -560,12 +560,20 @@ func headerLine(th *render.Theme, lang string, id, width int, bs lipgloss.Style)
 	if id > 0 {
 		lang = fmt.Sprintf("%s #%d", lang, id)
 	}
-	labelW := runewidth.StringWidth(lang)
+	return chromeHeader(lang, th.ActionStyle(), width, bs)
+}
+
+// chromeHeader baut die Kopfzeile ┌─ label ────┐: Rahmen in der Border-
+// Farbe (bs), Label im uebergebenen Stil, von den Ecken abgesetzt — die
+// gemeinsame Geometrie der CodeBlock-/ImageBlock-Kopfzeile (headerLine)
+// und der ErrorBlock-Karte.
+func chromeHeader(label string, labelStyle lipgloss.Style, width int, bs lipgloss.Style) string {
+	labelW := runewidth.StringWidth(label)
 	dashes := width - 5 - labelW
 	if dashes < 0 {
 		dashes = 0
 	}
-	return bs.Render("┌─ ") + th.ActionStyle().Render(lang) +
+	return bs.Render("┌─ ") + labelStyle.Render(label) +
 		bs.Render(" "+strings.Repeat("─", dashes)+"┐")
 }
 

@@ -98,14 +98,8 @@ func (b ErrorBlock) View(width int) string {
 	ls := b.th.LabelStyle()
 
 	label := b.stateLabel()
-	labelW := runewidth.StringWidth(label)
-	dashes := width - 5 - labelW
-	if dashes < 0 {
-		dashes = 0
-	}
 	lines := make([]string, 0, b.Height(width))
-	lines = append(lines, bs.Render("┌─ ")+actionStyle(b.th, b.hoverFoot).Render(label)+
-		bs.Render(" "+strings.Repeat("─", dashes)+"┐"))
+	lines = append(lines, chromeHeader(label, actionStyle(b.th, b.hoverFoot), width, bs))
 	for _, ln := range b.wrappedBody(inner) {
 		txt := ls.Render(ln)
 		gap := inner - lipgloss.Width(txt)

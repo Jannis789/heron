@@ -1894,11 +1894,16 @@ func (b ImageBlock) SetSource(lang, src string) Widget {
 // Bild: identische Kopfzeile (Sprache + Blocknummer), Koerper im Code-Stil,
 // Fußzeile mit [ IMAGE ]+[ COPY ]. ViewRange-Semantik wie beim Bild, damit
 // BlockList.all() den Block auch angeschnitten rendert.
-func (b ImageBlock) srcViewRange(width, from, to int) string {
+// codeChromeRange rendert einen CodeBlock-Koerper im ImageBlock-Chrome:
+// Kopfzeile (bei from==0), gerahmte Codezeilen im Code-Stil, Fußzeile mit
+// dem Modus-Switch (bei to>=h). srcViewRange (Quelltext-Ansicht) und
+// asciiViewRange (ASCII-Fallback) teilen sich dieses Fenster — sie
+// unterscheiden sich nur im gelieferten CodeBlock.
+func (b ImageBlock) codeChromeRange(cb CodeBlock, width, from, to int) string {
 	if width < 16 {
 		width = 16
 	}
-	body := b.srcBlock.bodyLines(width)
+	body := cb.bodyLines(width)
 	h := len(body) + 2
 	if from < 0 {
 		from = 0
@@ -1934,6 +1939,10 @@ func (b ImageBlock) srcViewRange(width, from, to int) string {
 	return strings.Join(out, "\n")
 }
 
+func (b ImageBlock) srcViewRange(width, from, to int) string {
+	return b.codeChromeRange(b.srcBlock, width, from, to)
+}
+
 // asciiViewRange: ASCII-Fallback, ebenfalls mit Switch-Chrome ([ TEXT ]),
 // wenn eine Quelle existiert — der Moduswechsel ist auch ohne Terminal-
 // Grafik sichtbar und klickbar.
@@ -1941,43 +1950,7 @@ func (b ImageBlock) asciiViewRange(width, from, to int) string {
 	if b.src == "" {
 		return b.fallback.View(width) // ohne Quelle: klassischer Codeblock
 	}
-	if width < 16 {
-		width = 16
-	}
-	body := b.fallback.bodyLines(width)
-	h := len(body) + 2
-	if from < 0 {
-		from = 0
-	}
-	if to > h {
-		to = h
-	}
-	if from >= to {
-		return ""
-	}
-	var out []string
-	if from == 0 {
-		out = append(out, headerLine(b.th, b.lang, b.id, width, b.borderStyle()))
-	}
-	bf, bt := from-1, to-1
-	if bf < 0 {
-		bf = 0
-	}
-	if bt > len(body) {
-		bt = len(body)
-	}
-	if bf < bt {
-		inner := codeInnerWidth(width)
-		bs := b.borderStyle()
-		fill := b.th.TableFill()
-		for _, ln := range body[bf:bt] {
-			out = append(out, codeBodyLine(ln, inner, bs, fill))
-		}
-	}
-	if to >= h {
-		out = append(out, b.footerView(width))
-	}
-	return strings.Join(out, "\n")
+	return b.codeChromeRange(b.fallback, width, from, to)
 }
 
 // SetSVG haelt die Vektor-Quelle (plantuml -tsvg) und setzt die Bildmasse

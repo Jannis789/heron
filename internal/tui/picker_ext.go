@@ -55,50 +55,22 @@ func (m Model) WithExtensions(list func() ([]ExtRow, error), toggle func(key str
 
 // filteredSkillRows wendet die Picker-Suche auf Name UND Herkunft an.
 func (m Model) filteredSkillRows() []SkillRow {
-	if m.pickerQuery == "" {
-		return m.skillRows
-	}
-	q := strings.ToLower(m.pickerQuery)
-	var out []SkillRow
-	for _, r := range m.skillRows {
-		if strings.Contains(strings.ToLower(r.Name+" "+r.Location), q) {
-			out = append(out, r)
-		}
-	}
-	return out
+	return pickerMatch(m.skillRows, m.pickerQuery, func(r SkillRow) string { return r.Name + " " + r.Location })
 }
 
 // filteredExtRows: Suche über Name/Key/Typ.
 func (m Model) filteredExtRows() []ExtRow {
-	if m.pickerQuery == "" {
-		return m.extRows
-	}
-	q := strings.ToLower(m.pickerQuery)
-	var out []ExtRow
-	for _, r := range m.extRows {
-		if strings.Contains(strings.ToLower(r.Label+" "+r.Key+" "+r.Type), q) {
-			out = append(out, r)
-		}
-	}
-	return out
+	return pickerMatch(m.extRows, m.pickerQuery, func(r ExtRow) string { return r.Label + " " + r.Key + " " + r.Type })
 }
 
 // cursorSkill liefert die Zeile unter dem Picker-Cursor.
 func (m Model) cursorSkill() (SkillRow, bool) {
-	rows := m.filteredSkillRows()
-	if m.pickerCursor < 0 || m.pickerCursor >= len(rows) {
-		return SkillRow{}, false
-	}
-	return rows[m.pickerCursor], true
+	return pickerRowAt(m.filteredSkillRows(), m.pickerCursor)
 }
 
 // cursorExt liefert die MCP-Zeile unter dem Picker-Cursor.
 func (m Model) cursorExt() (ExtRow, bool) {
-	rows := m.filteredExtRows()
-	if m.pickerCursor < 0 || m.pickerCursor >= len(rows) {
-		return ExtRow{}, false
-	}
-	return rows[m.pickerCursor], true
+	return pickerRowAt(m.filteredExtRows(), m.pickerCursor)
 }
 
 // toggleSkill hakt die Zeile unter dem Cursor ab (Leertaste).

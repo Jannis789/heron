@@ -311,6 +311,42 @@ type configResultMsg struct {
 // the rows of the list.
 // pickerOptions returns the options of the open picker: effort levels or
 // models — models filtered by the search query while one is typed (FR-20).
+// pickerMatch filtert Picker-Zeilen nach der Picker-Suche (FR-20): ohne
+// Suche unverändert, sonst Groß-/Kleinschreibung ignorieren — ein Treffer
+// im von hay gebauten Suchfeld genügt. Ein generischer Helfer statt fünf
+// typspezifischer Duplikate (Modelle, Sessions, Provider, Skills, MCP).
+func pickerMatch[T any](rows []T, query string, hay func(T) string) []T {
+	if query == "" {
+		return rows
+	}
+	q := strings.ToLower(query)
+	out := make([]T, 0, len(rows))
+	for _, r := range rows {
+		if strings.Contains(strings.ToLower(hay(r)), q) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// pickerRowAt liefert die Zeile unter dem Picker-Cursor, falls sie existiert.
+func pickerRowAt[T any](rows []T, cursor int) (T, bool) {
+	if cursor < 0 || cursor >= len(rows) {
+		var zero T
+		return zero, false
+	}
+	return rows[cursor], true
+}
+
+// favSet baut die Mengen-Sicht der Provider-Favoriten.
+func favSet(values []string) map[string]bool {
+	fav := make(map[string]bool, len(values))
+	for _, v := range values {
+		fav[v] = true
+	}
+	return fav
+}
+
 func (m Model) pickerOptions() []string {
 	if m.pickerKind == "effort" {
 		return m.effortOptions
@@ -347,34 +383,13 @@ func (m Model) pickerOptions() []string {
 		}
 		return labels
 	}
-	opts := m.modelOptions
-	if m.pickerQuery == "" {
-		return opts
-	}
-	q := strings.ToLower(m.pickerQuery)
-	var out []string
-	for _, o := range opts {
-		if strings.Contains(strings.ToLower(o), q) {
-			out = append(out, o)
-		}
-	}
-	return out
+	return pickerMatch(m.modelOptions, m.pickerQuery, func(o string) string { return o })
 }
 
 // filteredResumeRows wendet die Picker-Suche auf die Session-Zeilen an —
 // dieselbe Logik wie die Modell-Suche (FR-20), über Label UND Detail.
 func (m Model) filteredResumeRows() []SessionRow {
-	if m.pickerQuery == "" {
-		return m.resumeRows
-	}
-	q := strings.ToLower(m.pickerQuery)
-	var out []SessionRow
-	for _, r := range m.resumeRows {
-		if strings.Contains(strings.ToLower(r.Label+" "+r.Detail), q) {
-			out = append(out, r)
-		}
-	}
-	return out
+	return pickerMatch(m.resumeRows, m.pickerQuery, func(r SessionRow) string { return r.Label + " " + r.Detail })
 }
 
 // providerRows sortiert die Provider-Liste fuer den Picker in drei Zonen,
@@ -385,10 +400,7 @@ func (m Model) filteredResumeRows() []SessionRow {
 func (m Model) providerRows() []OptionRow {
 	rows := make([]OptionRow, len(m.providerOptions))
 	copy(rows, m.providerOptions)
-	fav := make(map[string]bool, len(m.providerFavorites))
-	for _, v := range m.providerFavorites {
-		fav[v] = true
-	}
+	fav := favSet(m.providerFavorites)
 	var active, own, rest []OptionRow
 	for _, r := range rows {
 		switch {
@@ -413,22 +425,12 @@ func (m Model) providerRows() []OptionRow {
 func (m Model) filteredProviderRows() []OptionRow {
 	rows := m.providerRows()
 	if m.pickerQuery != "" {
-		q := strings.ToLower(m.pickerQuery)
-		var out []OptionRow
-		for _, r := range rows {
-			if strings.Contains(strings.ToLower(r.Name+" "+r.Value), q) {
-				out = append(out, r)
-			}
-		}
-		return out
+		return pickerMatch(rows, m.pickerQuery, func(r OptionRow) string { return r.Name + " " + r.Value })
 	}
 	if len(m.providerFavorites) == 0 {
 		return rows
 	}
-	fav := make(map[string]bool, len(m.providerFavorites))
-	for _, v := range m.providerFavorites {
-		fav[v] = true
-	}
+	fav := favSet(m.providerFavorites)
 	var out []OptionRow
 	for _, r := range rows {
 		if r.Value == m.provider || fav[r.Value] {
