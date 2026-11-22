@@ -1,16 +1,12 @@
 package main
 
 import (
-	"context"
 	"flag"
-	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -89,360 +85,20 @@ func main() {
 	// attach.
 	stream := &tui.Stream{}
 
-	// sess is touched by the prompt goroutine and by Ctrl+C in the event
-	// loop, so every access goes through sessMu (NFR-2: no data races).
-	var (
-		sessMu sync.Mutex
-		sess   *acp.Session
-	)
-	ensureSession := func() (*acp.Session, error) {
-		sessMu.Lock()
-		defer sessMu.Unlock()
-		if sess != nil {
-			return sess, nil
-		}
-		s, err := acp.NewSession(context.Background(), *gooseBin, wd)
-		if err != nil {
-			return nil, err
-		}
-		sess = s
-		return sess, nil
-	}
-	session := func() *acp.Session {
-		sessMu.Lock()
-		defer sessMu.Unlock()
-		return sess
-	}
-
-	events := &acp.Events{
-		OnChunk:   func(text string) { stream.Chunk(text) },
-		OnThought: func(text string) { stream.Thought(text) },
-		OnTool: func(e acp.ToolEvent) {
-			stream.Tool(tui.ToolUpdate{
-				CallID: e.CallID, Label: e.Label(), Kind: e.Kind, Text: e.Text,
-				Command: e.Command, Stdout: e.Stdout, Stderr: e.Stderr,
-				Exit: e.ExitCode, HasOutput: e.HasOutput, Live: e.Live,
-				Done: e.Done, Failed: e.IsError,
-			})
-		},
-		OnUsage: func(u acp.Usage) { stream.Usage(u.InputTokens, u.OutputTokens) },
-	}
-
-	// The prompt box shows what goose really runs (ACP configOptions) —
-	// unless the user pinned a value via -model/-effort.
+	// Das goose-Session-Wiring (Prewarm/Resume, Config-Optionen, Inventar,
+	// Extensions) lebt als backend-Methoden in backend.go — main verdrahtet
+	// nur noch. pinned merkt die explizit gesetzten Flags: -model/-effort
+	// unterdruecken die Auto-Erkennung der Labels.
 	pinned := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { pinned[f.Name] = true })
-	publishModelInfo := func(s *acp.Session) {
-		mdl, eff := s.Model(), s.Effort()
-		if pinned["model"] {
-			mdl = ""
-		}
-		if pinned["effort"] {
-			eff = ""
-		}
-		// Provider ist nie gepinnt — er gehoert zur Session (FR-45).
-		if mdl == "" && eff == "" && s.Provider() == "" {
-			return
-		}
-		provOpts := make([]tui.OptionRow, len(s.ProviderOptions()))
-		for i, po := range s.ProviderOptions() {
-			provOpts[i] = tui.OptionRow{Value: po.Value, Name: po.Name}
-		}
-		stream.Info(mdl, eff, s.Provider(), s.ModelOptions(), s.EffortOptions(), provOpts)
-	}
+	b := newBackend(*gooseBin, wd, stream, pinned)
 
-	// publishConfiguredFallback ist der Weg fuer aelteres goose ohne
-	// providers/list: config/read (key "providers") nennt die Keys des
-	// providers:-Blocks, sonst bleibt alles wie bisher.
-	publishConfiguredFallback := func(s *acp.Session) {
-		own, err := s.ConfiguredProviders(context.Background())
-		if err == nil && len(own) > 0 {
-			stream.ProviderFavorites(own)
-		}
-	}
-
-	// publishInventory kitzelt das Provider-Inventar aus goose
-	// (_goose/unstable/providers/list) und fuettert daraus BEIDE Picker:
-	// die Provider-Zeilen mit den Katalog-Namen (abgekündigte ohne eigene
-	// Konfiguration fliegen raus), die Favoriten = die EINGERICHTETEN —
-	// und, falls die configOptions von session/new keine Modelle nennen,
-	// die Modellliste des aktiven Providers aus dem Inventar. Fehler
-	// bleiben stumm: dann sind die configOptions wie bisher die einzige
-	// Quelle. Gegen echtes goose 1.55.0 probed (87 Provider, Custom-
-	// Provider mit exakt deren Modellen).
-	//
-	// Favoriten-Quelle (2026-11-22, gegen goose 1.55.0 probed): NICHT das
-	// configured-Flag des Inventars — es markiert 17 von 88 Providern als
-	// "configured", darunter sämtliche Schlüssellosen (lmstudio, local,
-	// claude-code, atomic_chat, aws_bedrock …), die nie eingerichtet
-	// wurden. Wahrheit ist stattdessen: der providers:-Block aus
-	// config/read PLUS die eigenen Custom-Provider (ProviderType "Custom"
-	// — jede Datei in ~/.config/goose/custom_providers/ war bewusste
-	// Handarbeit). inventoryFavorites() vereint beide.
-	publishInventory := func(s *acp.Session) {
-		inv, err := s.ProviderInventory(context.Background())
-		if err != nil || len(inv) == 0 {
-			publishConfiguredFallback(s)
-			return
-		}
-		cur := s.Provider()
-		rows := make([]tui.OptionRow, 0, len(inv))
-		var curModels []string
-		for _, e := range inv {
-			if e.Deprecated && e.ProviderID != cur && !e.Configured {
-				continue
-			}
-			rows = append(rows, tui.OptionRow{Value: e.ProviderID, Name: e.Name})
-			if e.ProviderID == cur {
-				for _, m := range e.Models {
-					curModels = append(curModels, m.ID)
-				}
-			}
-		}
-		own, _ := s.ConfiguredProviders(context.Background())
-		stream.ProviderFavorites(inventoryFavorites(inv, own))
-		models := s.ModelOptions()
-		if len(models) == 0 {
-			models = curModels
-		}
-		stream.Info("", "", "", models, s.EffortOptions(), rows)
-	}
-
-	// publishConfigResult wertet die ERFRISCHTEN configOptions aus einer
-	// set_config_option-Antwort aus: Ein Provider-Wechsel meldet die NEUE
-	// Modellliste — Picker und Footer stehen danach nicht auf Altbestand.
-	publishConfigResult := func(res []byte) {
-		mdl, eff, prov, mdls, effs, provs := acp.ParseConfig(res)
-		if mdl == "" && eff == "" && prov == "" && len(mdls) == 0 && len(effs) == 0 && len(provs) == 0 {
-			return
-		}
-		provOpts := make([]tui.OptionRow, len(provs))
-		for i, po := range provs {
-			provOpts[i] = tui.OptionRow{Value: po.Value, Name: po.Name}
-		}
-		stream.Info(mdl, eff, prov, mdls, effs, provOpts)
-	}
-
-	// Resume (FR-44): Listing und Start als Callbacks ins TUI — dieselbe
-	// Naht wie /new. session/list liefert die gespeicherten Sessions,
-	// session/load lädt die gewählte in einem frischen goose-Prozess und
-	// replayt den Verlauf als Blöcke in den Chat.
-	listInfos := func() ([]acp.SessionInfo, error) {
-		if s := session(); s != nil {
-			return s.ListSessions(context.Background())
-		}
-		return acp.ListSessions(context.Background(), *gooseBin)
-	}
-	replayCollect := func(it acp.ReplayItem) {
-		switch it.Kind {
-		case acp.ReplayUser:
-			stream.ReplayUser(it.Text)
-		case acp.ReplayAgent:
-			stream.ReplayAgent(it.Text)
-		case acp.ReplayTool:
-			e := it.Tool
-			stream.Tool(tui.ToolUpdate{
-				CallID: e.CallID, Label: e.Label(), Kind: e.Kind, Text: e.Text,
-				Command: e.Command, Stdout: e.Stdout, Stderr: e.Stderr,
-				Exit: e.ExitCode, HasOutput: e.HasOutput, Live: e.Live,
-				Done: e.Done, Failed: e.IsError,
-			})
-		}
-	}
-	startResume := func(id string) error {
-		sessMu.Lock()
-		defer sessMu.Unlock()
-		if sess != nil {
-			sess.Close()
-			sess = nil
-		}
-		s, err := acp.LoadSession(context.Background(), *gooseBin, wd, id, replayCollect)
-		if err != nil {
-			return err
-		}
-		sess = s
-		publishModelInfo(s)
-		return nil
-	}
-	// resumeRows mappt goose's Sessionliste auf die Picker-Zeilen: Titel ·
-	// lokale Zeit, dahinter gedimmt Ordner · Nachrichten · Modell.
-	resumeRows := func() ([]tui.SessionRow, error) {
-		infos, err := listInfos()
-		if err != nil {
-			return nil, err
-		}
-		rows := make([]tui.SessionRow, 0, len(infos))
-		for _, in := range infos {
-			title := in.Title
-			if title == "" {
-				title = in.SessionID
-			}
-			when := in.UpdatedAt
-			if t, err := time.Parse(time.RFC3339, in.UpdatedAt); err == nil {
-				when = t.Local().Format("02.01. 15:04")
-			}
-			dir := in.Cwd
-			if base := filepath.Base(in.Cwd); base != "" && base != "." && base != "/" {
-				dir = base
-			}
-			detail := dir
-			if in.MessageCount > 0 {
-				detail += " · " + strconv.Itoa(in.MessageCount) + " msgs"
-			}
-			if in.ModelID != "" {
-				detail += " · " + in.ModelID
-			}
-			rows = append(rows, tui.SessionRow{ID: in.SessionID, Label: title + " · " + when, Detail: detail})
-		}
-		return rows, nil
-	}
-	// resumeNewest wählt die neueste Session dieses Ordners (FR-25) —
-	// listInfos sortiert bereits newest-first.
-	resumeNewest := func() error {
-		infos, err := listInfos()
-		if err != nil {
-			return err
-		}
-		for _, in := range infos {
-			if in.Cwd == wd {
-				return startResume(in.SessionID)
-			}
-		}
-		return fmt.Errorf("keine frühere Session in diesem Ordner")
-	}
-
-	sender := func(prompt string) (string, error) {
-		s, err := ensureSession()
-		if err != nil {
-			return "", err
-		}
-		publishModelInfo(s)
-		// /compress ist herons Alias fuer gooses Builtin /compact: Der
-		// Verlauf wird als echter LLM-Turn zusammengefasst (die Antwort
-		// ist die Komprimierung; ein session/compact-RPC existiert nicht).
-		if prompt == "/compress" {
-			prompt = "/compact"
-		}
-		return s.PromptStream(context.Background(), prompt, events)
-	}
-	// prewarmDone closes once the startup session attempt settled; main
-	// waits (bounded) for it before the final Close.
+	sender := b.send
 	prewarmDone := make(chan struct{})
 	if *demo {
 		sender = demoStreamingSender(stream)
-	} else if *cont {
-		// FR-25: heron -c übernimmt die letzte Session desselben Ordners —
-		// der Verlauf replayt als Blöcke. Fehlschlag: neue Session + Hinweis.
-		go func() {
-			defer close(prewarmDone)
-			if err := resumeNewest(); err != nil {
-				stream.Notice("Resume fehlgeschlagen: " + err.Error() + " — neue Session.")
-				if s, err := ensureSession(); err == nil {
-					publishModelInfo(s)
-					publishInventory(s)
-				}
-			}
-		}()
 	} else {
-		// Prewarm the session right after launch: the prompt box then shows
-		// the real model/effort without waiting for the first prompt.
-		// Failure is silent — the fallback labels stay.
-		go func() {
-			defer close(prewarmDone)
-			if s, err := ensureSession(); err == nil {
-				publishModelInfo(s)
-				publishInventory(s)
-			}
-		}()
-	}
-
-	// Ctrl+C during a turn aborts it asynchronously (FR-7): we notify the
-	// agent and wait for the prompt request to settle, never kill mid-write.
-	cancel := func() {
-		if s := session(); s != nil {
-			_ = s.Cancel(context.Background())
-		}
-	}
-
-	// The model/effort popup changes session config options through the live
-	// session — same mutex discipline as the sender (NFR-2).
-	configSet := func(id, value string) error {
-		s := session()
-		if s == nil {
-			return fmt.Errorf("keine goose-session")
-		}
-		res, err := s.SetConfigOption(context.Background(), id, value)
-		if err == nil {
-			publishConfigResult(res)
-		}
-		return err
-	}
-
-	// /new starts a fresh session: close the old goose subprocess and spawn
-	// a new one — the cleanest cut, no shared history state (FR-20).
-	resetSession := func() error {
-		sessMu.Lock()
-		defer sessMu.Unlock()
-		if sess != nil {
-			sess.Close()
-			sess = nil
-		}
-		s, err := acp.NewSession(context.Background(), *gooseBin, wd)
-		if err != nil {
-			return err
-		}
-		sess = s
-		publishModelInfo(s)
-		publishInventory(s)
-		return nil
-	}
-
-	// ---- Skills + MCP-Extensions (/skills, /mcp) --------------------
-	// /skills: Quelle ist `goose skills list` (goose hat keine ACP-Methode
-	// dafür). /mcp: Liste aus gooses config.yaml; das Umschalten wirkt
-	// sofort in der laufenden Session (ExtensionManager) UND wird in die
-	// config.yaml geschrieben (dauerhaft ab dem nächsten Start).
-
-	// listExtensions liest den extensions:-Block über die Session.
-	listExtensions := func() ([]tui.ExtRow, error) {
-		s, err := ensureSession()
-		if err != nil {
-			return nil, err
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		exts, err := s.Extensions(ctx)
-		if err != nil {
-			return nil, err
-		}
-		rows := make([]tui.ExtRow, 0, len(exts))
-		for _, e := range exts {
-			if !e.IsMCP() {
-				continue // nur echte MCP-Server — Platform-Extensions sind goose-intern
-			}
-			rows = append(rows, tui.ExtRow{Key: e.Key, Label: e.Label(), Type: e.Type,
-				Enabled: e.Enabled, Cmd: e.Cmd, EnvKeys: e.EnvKeys})
-		}
-		if len(rows) == 0 {
-			return nil, nil
-		}
-		return rows, nil
-	}
-	toggleExtension := func(key string, on bool) error {
-		s, err := ensureSession()
-		if err != nil {
-			return err
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := s.SetExtensionEnabled(ctx, key, on); err != nil {
-			return err
-		}
-		cfgPath, err := acp.DefaultConfigPath()
-		if err != nil {
-			return err
-		}
-		return acp.SetExtensionEnabledInFile(cfgPath, key, on)
+		b.prewarm(*cont, prewarmDone)
 	}
 
 	// Shorten the home prefix for display only — the session keeps the real
@@ -460,21 +116,19 @@ func main() {
 	if caps.LightBG {
 		th = th.Light()
 	}
-	model := tui.New(sender, th, copyFn).WithStream(stream).WithCancel(cancel).
-		WithConfigSet(configSet).WithNewSession(resetSession).
-		WithResumeList(resumeRows).WithResumeStart(startResume).
+	model := tui.New(sender, th, copyFn).WithStream(stream).WithCancel(b.cancel).
+		WithConfigSet(b.configSet).WithNewSession(b.resetSession).
+		WithResumeList(b.resumeRows).WithResumeStart(b.startResume).
 		WithSkillsList(func() ([]tui.SkillRow, error) { return tui.GooseSkills(*gooseBin) }).
-		WithExtensions(listExtensions, toggleExtension).
+		WithExtensions(b.listExtensions, b.toggleExtension).
 		WithContextWindow(*contextWindow).WithTermCaps(caps).
 		WithWorkspace(cwd).WithModel(*modelFlag).WithEffort(*effortFlag)
-	var seedText string
 	if *seedFile != "" {
 		b, err := os.ReadFile(*seedFile)
 		if err != nil {
 			log.Fatalf("seed %s: %v", *seedFile, err)
 		}
-		seedText = string(b)
-		model = model.SeedMarkdown(seedText)
+		model = model.SeedMarkdown(string(b))
 	}
 
 	if err := tui.RunModel(model); err != nil {
@@ -486,7 +140,7 @@ func main() {
 	case <-prewarmDone:
 	case <-time.After(2 * time.Second):
 	}
-	if s := session(); s != nil {
+	if s := b.session(); s != nil {
 		s.Close()
 	}
 }
