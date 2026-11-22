@@ -116,6 +116,11 @@ type InventoryEntry struct {
 	Name         string
 	Description  string
 	DefaultModel string
+	// ProviderType (goose 1.55.0: "Custom" | "Declarative" | "Builtin" |
+	// "Preferred") trennt die eigenen Custom-Provider-Dateien von den
+	// Built-ins — das configured-Flag lügt bei Schlüssellosen (lmstudio,
+	// local, claude-code …) und taugt nicht als "eingerichtet"-Signal.
+	ProviderType string
 	Configured   bool
 	Available    bool
 	ACP          bool
@@ -171,7 +176,8 @@ func parseProviderInventory(res []byte) []InventoryEntry {
 			continue
 		}
 		ie := InventoryEntry{ProviderID: e.ProviderID, Name: e.ProviderName, Description: e.Description,
-			DefaultModel: e.DefaultModel, Configured: e.Configured, Available: e.Available,
+			DefaultModel: e.DefaultModel, ProviderType: e.ProviderType,
+			Configured: e.Configured, Available: e.Available,
 			ACP: e.ACP, Deprecated: e.Deprecated}
 		for _, m := range e.Models {
 			ie.Models = append(ie.Models, InventoryModel{ID: m.ID, Name: m.Name,

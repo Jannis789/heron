@@ -1438,7 +1438,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The backend announced the real model/effort/provider (ACP
 		// configOptions); empty parts keep the current labels (flag
 		// overrides). Auch ERNEUT nach einem Config-Wechsel — der Provider-
-		// Wechsel meldet die NEUE Modellliste.
+		// Wechsel meldet die NEUE Modellliste. Die Options-Listen
+		// ueberschreibt nur eine GEFUELLTE Liste: eine Antwort ohne
+		// options (Schema-Drift) darf /model direkt nach /provider nicht
+		// die Liste leeren (FR-20/45: beide Befehle nacheinander nutzbar).
 		if msg.model != "" {
 			m.modelLabel = msg.model
 		}
@@ -1448,9 +1451,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.provider != "" {
 			m.provider = msg.provider
 		}
-		m.modelOptions = msg.modelOptions
-		m.effortOptions = msg.effortOptions
-		m.providerOptions = msg.providerOptions
+		if len(msg.modelOptions) > 0 {
+			m.modelOptions = msg.modelOptions
+		}
+		if len(msg.effortOptions) > 0 {
+			m.effortOptions = msg.effortOptions
+		}
+		if len(msg.providerOptions) > 0 {
+			m.providerOptions = msg.providerOptions
+		}
 		return m, nil
 	case usageMsg:
 		m.totalIn += msg.in

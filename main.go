@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -186,23 +187,20 @@ func main() {
 		}
 		cur := s.Provider()
 		rows := make([]tui.OptionRow, 0, len(inv))
-		favs := make([]string, 0, 8)
 		var curModels []string
 		for _, e := range inv {
 			if e.Deprecated && e.ProviderID != cur && !e.Configured {
 				continue
 			}
 			rows = append(rows, tui.OptionRow{Value: e.ProviderID, Name: e.Name})
-			if e.Configured {
-				favs = append(favs, e.ProviderID)
-			}
 			if e.ProviderID == cur {
 				for _, m := range e.Models {
 					curModels = append(curModels, m.ID)
 				}
 			}
 		}
-		stream.ProviderFavorites(favs)
+		own, _ := s.ConfiguredProviders(context.Background())
+		stream.ProviderFavorites(inventoryFavorites(inv, own))
 		models := s.ModelOptions()
 		if len(models) == 0 {
 			models = curModels
@@ -484,6 +482,32 @@ func splitChunks(s string, n int) []string {
 		r = r[cut:]
 	}
 	return out
+}
+
+// inventoryFavorites vereint die beiden wahren "eingerichtet"-Quellen für
+// die Ruhe-Liste des /provider-Pickers: die Keys des providers:-Blocks
+// (goose nennt sie via _goose/unstable/config/read) und die eigenen
+// Custom-Provider aus dem Inventar (ProviderType "Custom" — jede Datei
+// in custom_providers/ war bewusste Handarbeit). Das configured-Flag des
+// Inventars selbst lügt bei Schlüssellosen (lmstudio, local, claude-code,
+// atomic_chat …) und bleibt bewusst außen vor — gegen echtes goose 1.55.0
+// verifiziert: 17 von 88 als "configured" markiert, wahr sind 4.
+func inventoryFavorites(inv []acp.InventoryEntry, own []string) []string {
+	set := make(map[string]bool, len(own)+4)
+	for _, id := range own {
+		set[id] = true
+	}
+	for _, e := range inv {
+		if e.ProviderType == "Custom" {
+			set[e.ProviderID] = true
+		}
+	}
+	favs := make([]string, 0, len(set))
+	for id := range set {
+		favs = append(favs, id)
+	}
+	sort.Strings(favs)
+	return favs
 }
 
 // demoMarkdown is the canned answer used by -demo (text, fence, table).

@@ -116,6 +116,44 @@ func TestConfigResultDerivedValueReported(t *testing.T) {
 	}
 }
 
+// TestInfoMsgKeepsOptionsOnEmpty: infoMsg mit LEEREN Options-Listen (z. B.
+// Schema-Drift in einer set_config_option-Antwort) darf die bestehenden
+// Picker-Listen nicht ausloeschen — sonst bricht /model direkt nach einem
+// Provider-Wechsel (FR-20/45: beide Befehle nacheinander nutzbar).
+func TestInfoMsgKeepsOptionsOnEmpty(t *testing.T) {
+	r := newRig(t)
+	r.do(infoMsg{model: "glm-5.3", provider: "custom_zai",
+		modelOptions:    []string{"glm-5.3", "glm-5.3-flash"},
+		effortOptions:   []string{"low", "max"},
+		providerOptions: []OptionRow{{Value: "custom_zai", Name: "Z.AI (GLM)"}}})
+	// Antwort ohne options: nur das Label wandert, die Listen halten.
+	r.do(infoMsg{model: "~z-ai/glm-flash-latest", provider: "custom_nous"})
+	if len(r.m.modelOptions) != 2 || r.m.modelOptions[0] != "glm-5.3" {
+		t.Fatalf("model options were wiped: %v", r.m.modelOptions)
+	}
+	if len(r.m.providerOptions) != 1 {
+		t.Fatalf("provider options were wiped: %v", r.m.providerOptions)
+	}
+	if r.m.modelLabel != "~z-ai/glm-flash-latest" || r.m.provider != "custom_nous" {
+		t.Fatalf("labels must still follow the fresh truth: %q/%q",
+			r.m.modelLabel, r.m.provider)
+	}
+}
+
+// TestInfoMsgReplacesOptionsWhenFilled: Eine GEFUELLTE neue Liste ersetzt die
+// alte — nach dem Provider-Wechsel zeigt /model die Modelle des NEUEN
+// Providers (der eigentliche Sinn der Auffrischung).
+func TestInfoMsgReplacesOptionsWhenFilled(t *testing.T) {
+	r := newRig(t)
+	r.do(infoMsg{model: "glm-5.3",
+		modelOptions: []string{"glm-5.3", "glm-5.3-flash"}})
+	r.do(infoMsg{model: "~z-ai/glm-flash-latest",
+		modelOptions: []string{"~z-ai/glm-flash-latest", "openai/gpt-6.2-astra"}})
+	if len(r.m.modelOptions) != 2 || r.m.modelOptions[1] != "openai/gpt-6.2-astra" {
+		t.Fatalf("model options must follow the new provider: %v", r.m.modelOptions)
+	}
+}
+
 // TestConfigResultErrStillErrors: Ein RPC-Fehler bleibt der Fehlerblock —
 // die No-op-Erkennung aendert daran nichts.
 func TestConfigResultErrStillErrors(t *testing.T) {
