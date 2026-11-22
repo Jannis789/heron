@@ -790,10 +790,17 @@ func joinCommandLines(cmd string) string {
 
 // Tree-Grammatik (§ 3/§ 4): Kindpraefix `│  ├─ `/`│  └─ ` (6 Zellen),
 // Fortsetzung `│     `, Laufend-Detail `│     │` mit 2 Zellen Inhalt.
+//
+// actGutter ist der FESTE Auswahl-Steg hinter den Rahmenzeichen: der
+// Cursor-Pfeil ▶ spawnt dort (2 Zellen, immer reserviert), er ERSETZT
+// niemals `├─`/`└─` — sonst verliert die Zeile ihre Baumstruktur und
+// beim Selektieren springt der Inhalt (User-Wahl, 22.11.).
 const (
-	actChild = "│  ├─ "
-	actLast  = "│  └─ "
-	actCont  = "│     "
+	actChild  = "│  ├─ "
+	actLast   = "│  └─ "
+	actCont   = "│     "
+	actGutter = "  "
+	actCursor = "▶ "
 )
 
 // Nerd-Font-Icons für die Konzept-Knoten (aus der installierten FiraCode
@@ -839,7 +846,7 @@ const (
 // wenn das Budget kneift) — Inhalt in Soft-Grau (User-Wunsch: Gelesenes
 // kein Neon), je Zeile mit der Laufzeit der Sektion.
 func (a ActivityTree) thinkingChildren(width int) []string {
-	inner := width - 6
+	inner := width - 8 // ├─ (6) + Auswahl-Steg (2)
 	if inner < 8 {
 		inner = 8
 	}
@@ -854,11 +861,12 @@ func (a ActivityTree) thinkingChildren(width int) []string {
 		if i == len(secs)-1 {
 			branch = actLast
 		}
+		gutter := actGutter
 		if a.sel == nodeThinking && a.selThought == i+1 {
-			branch = "│  ▶ "
+			gutter = actCursor
 		}
 		tag, tagW := a.durTag(sec.duration())
-		rows = append(rows, a.muted().Render(branch)+
+		rows = append(rows, a.muted().Render(branch+gutter)+
 			a.soft().Render(cutWords(first, inner-tagW))+tag)
 	}
 	return rows
@@ -870,8 +878,9 @@ func (a ActivityTree) toolRow(t activityTool, last bool, width int, selected boo
 	if last {
 		branch = actLast
 	}
+	gutter := actGutter
 	if selected {
-		branch = "│  ▶ "
+		gutter = actCursor
 	}
 	sym := "✓"
 	if t.running {
@@ -880,7 +889,7 @@ func (a ActivityTree) toolRow(t activityTool, last bool, width int, selected boo
 		sym = "✗"
 	}
 	var label string
-	inner := width - 9 // │  ├─ + Symbol + Leerzeichen + Puffer
+	inner := width - 11 // │  ├─ + Auswahl-Steg + Symbol + Leerzeichen + Puffer
 	if inner < 8 {
 		inner = 8
 	}
@@ -900,7 +909,7 @@ func (a ActivityTree) toolRow(t activityTool, last bool, width int, selected boo
 		if t.running {
 			// Laufender bash-Call: NUR der Name — der Befehl lebt im
 			// aufklappbaren Detail darunter (§ 5), nicht als Inline-Kopie.
-			return a.muted().Render(branch) + a.stateSt(t).Render(sym) + " " +
+			return a.muted().Render(branch+gutter) + a.stateSt(t).Render(sym) + " " +
 				a.textSt().Render(cutCells(name, iw)) + tag
 		}
 		cmd := t.command
@@ -921,7 +930,7 @@ func (a ActivityTree) toolRow(t activityTool, last bool, width int, selected boo
 			label += a.textSt().Render("(" + cutWords(arg, iw-runewidth.StringWidth(name)-2) + ")")
 		}
 	}
-	return a.muted().Render(branch) + a.stateSt(t).Render(sym) + " " + label + tag
+	return a.muted().Render(branch+gutter) + a.stateSt(t).Render(sym) + " " + label + tag
 }
 
 // toolDetail baut den Laufend-Block eines bash-Calls: Original-Zeilenum-

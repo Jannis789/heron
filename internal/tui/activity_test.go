@@ -91,10 +91,10 @@ func TestActivityExpandedTools(t *testing.T) {
 		t.Fatalf("bash-Zeilen nicht gefunden:\n%s", strings.Join(rows, "\n"))
 	}
 	eq(t, rows[i:i+7],
-		" │  ├─ ✓ bash: git status",
-		" │  ├─ ✓ bash: cargo test auth::",
-		" │  ├─ ✓ bash: pwd && ls -la",
-		" │  └─ ● bash <1s",
+		" │  ├─   ✓ bash: git status",
+		" │  ├─   ✓ bash: cargo test auth::",
+		" │  ├─   ✓ bash: pwd && ls -la",
+		" │  └─   ● bash <1s",
 		" │     │",
 		" │     │  find ./src -type f -name \"*.java\" \\",
 		" │     │    | xargs grep -rn \"authenticate\" \\")
@@ -161,7 +161,7 @@ func TestActivitySelectionMode(t *testing.T) {
 	// ↓ auf Tool Calls, enter klappt die Historie auf.
 	r.key("down")
 	r.key("enter")
-	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▼ "+iconTool+" Execute (1)") || !strings.Contains(v, "└─ ● bash") {
+	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▼ "+iconTool+" Execute (1)") || !strings.Contains(v, "└─   ● bash") {
 		t.Fatalf("Tool Calls aufgeklappt fehlt: %q", v)
 	}
 
@@ -665,6 +665,36 @@ func TestActivityNavigatesIntoExpandedCalls(t *testing.T) {
 	a = a.Enter()
 	if !a.expanded("execute") {
 		t.Fatal("enter auf einem Call darf die Kategorie nicht zuklappen")
+	}
+}
+
+// TestActivitySelectionKeepsBranches: der Cursor-Pfeil ▶ spawnt HINTER
+// den Rahmenzeichen (fester Auswahl-Steg), er ersetzt sie nicht — sonst
+// verliert die Zeile ihre Baumstruktur und `└─` verschwaende (User-Wahl).
+func TestActivitySelectionKeepsBranches(t *testing.T) {
+	a := NewActivityTree(nil).
+		Tool(ToolUpdate{CallID: "c1", Label: "shell", Kind: "execute", Command: "echo one", Done: true}).
+		Tool(ToolUpdate{CallID: "c2", Label: "shell", Kind: "execute", Command: "echo two", Done: true}).
+		Focus(80, 30).
+		Enter()
+	a = a.Move(1, 80, 30) // erster Call
+	a = a.Move(1, 80, 30) // letzter Call
+	a = a.Move(1, 80, 30) // Wendepunkt: bleibt stehen
+	rows := plain(a.View(80, 30))
+	var got string
+	for _, r := range rows {
+		if strings.Contains(r, "echo two") {
+			got = r
+		}
+	}
+	if !strings.Contains(got, "└─ ▶") {
+		t.Fatalf("Auswahl ersetzt das Zweigzeichen statt dahinter zu spawnen: %q", got)
+	}
+	// Und die Nachbarzeile behaelt ihren Steg (nichts springt).
+	for _, r := range rows {
+		if strings.Contains(r, "echo one") && !strings.Contains(r, "├─   ") {
+			t.Fatalf("nicht selektierte Zeile ohne Steg: %q", r)
+		}
 	}
 }
 
