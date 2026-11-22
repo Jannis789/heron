@@ -18,6 +18,11 @@ func TestProviderPickerFlow(t *testing.T) {
 	var gotID, gotVal string
 	r.m = r.m.WithConfigSet(func(id, val string) error {
 		gotID, gotVal = id, val
+		// Der echte Ablauf: configSet veroeffentlicht VOR dem
+		// configResultMsg die ERFRISCHTEN configOptions (infoMsg),
+		// die configResultMsg-Behandlung verlaesst sich darauf. Das
+		// Stub simuliert genau diese Reihenfolge.
+		r.m.provider = val
 		return nil
 	})
 	r.do(infoMsg{model: "glm-5.3", effort: "max", provider: "zai_coding_plan",
@@ -74,6 +79,9 @@ func TestProviderFavoritesFirst(t *testing.T) {
 	var gotVal string
 	r.m = r.m.WithConfigSet(func(id, val string) error {
 		gotVal = val
+		// Simulation der echten Reihenfolge: infoMsg (angenommener
+		// Wechsel) vor configResultMsg.
+		r.m.provider = val
 		return nil
 	}).WithProviderFavorites([]string{"custom_nous", "zai_coding_plan"})
 	r.do(infoMsg{provider: "custom_nous",

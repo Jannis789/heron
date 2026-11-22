@@ -13,6 +13,17 @@ func pickerRig(t *testing.T) (*rig, *[]string) {
 	var calls []string
 	r.m = r.m.WithConfigSet(func(id, value string) error {
 		calls = append(calls, id+"="+value)
+		// Der echte Ablauf veroeffentlicht VOR dem configResultMsg die
+		// ERFRISCHTEN configOptions (infoMsg) — das Stub simuliert die
+		// Annahme durch goose exakt in dieser Reihenfolge.
+		switch id {
+		case "thinking_effort":
+			r.m.effort = value
+		case "provider":
+			r.m.provider = value
+		default:
+			r.m.modelLabel = value
+		}
 		return nil
 	})
 	r.m.modelOptions = []string{"glm-5.2", "glm-5.3"}

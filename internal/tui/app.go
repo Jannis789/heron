@@ -224,11 +224,15 @@ func (m Model) WithProviderFavorites(values []string) Model {
 	return m
 }
 
-// configResultMsg reports a finished model change.
+// configResultMsg reports a finished model change. prevModel/prevProvider
+// halten den Stand VOR dem Wechsel — die Silent-no-op-Erkennung vergleicht
+// damit den echten Nachher-Stand (FR-45-Nachfass).
 type configResultMsg struct {
-	kind  string
-	value string
-	err   error
+	kind         string
+	value        string
+	err          error
+	prevModel    string
+	prevProvider string
 }
 
 // pickerOptions returns the announced options for the open picker kind —
@@ -533,7 +537,8 @@ func (m Model) pickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		kind, fn := m.pickerKind, m.configSet
 		return m, func() tea.Msg {
-			return configResultMsg{kind: kind, value: value, err: fn(id, value)}
+			return configResultMsg{kind: kind, value: value, err: fn(id, value),
+				prevModel: m.modelLabel, prevProvider: m.provider}
 		}
 	case "esc":
 		m.closePicker()
@@ -706,19 +711,6 @@ func trimHints(hints string, maxW int) string {
 func (m Model) footerView() string {
 	left := m.stateLabel()
 	use := m.usageLabel()
-	// FR-31: Anzahl der Tool-Calls des (letzten) Turns als eigenes Segment
-	// vor der Token-Anzeige — Updates derselben Karte zaehlen einfach, ein
-	// neuer Turn startet bei 0. Ohne Tool-Calls bleibt das Segment weg.
-	if n := m.activity.ToolCount(); n > 0 {
-		seg := fmt.Sprintf("🔧 %d tool call", n)
-		if n != 1 {
-			seg += "s"
-		}
-		if use != "" {
-			seg += " · " + use
-		}
-		use = seg
-	}
 	hints := ""
 	if m.running {
 		hints = "ctrl+c abort"
@@ -1529,9 +1521,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chat = m.chat.Append(NewTextBlock("Fehler: "+msg.err.Error(), "1"))
 			return m, nil
 		}
+		// Echter Stand nach dem Wechsel: das infoMsg mit den FRISCHEN
+		// configOptions ist vor dieser Message durchs Update gelaufen
+		// (publishConfigResult sendet, bevor das Cmd configResultMsg
+		// zurueckgibt) — die Labels hier sind also das, was goose wirklich
+		// uebernommen hat, nicht der Picker-Wunsch.
+		var actual string
+		switch msg.kind {
+		case "effort":
+			actual = m.effort
+		case "provider":
+			actual = m.provider
+		default:
+			actual = m.modelLabel
+		}
 		m.pickerKind = msg.kind
-		m.applyPicker(msg.value)
+		m.applyPicker(actual)
 		m.closePicker()
+		// Silent no-op abfangen (FR-45-Nachfass, gegen echtes goose 1.55.0
+		// verifiziert): goose akzeptiert set_config_option und behaelt
+		// trotzdem den alten Stand — beim unkonfigurierten Default-Provider
+		// "goose" ohne JEDE Fehlermeldung, dafuer mit still zurueckgesetztem
+		// Modell. Der Chat meldet hier klar, was wirklich passiert ist.
+		if msg.kind == "provider" || msg.kind == "model" {
+			label := "Modell"
+			if msg.kind == "provider" {
+				label = "Provider"
+			}
+			switch {
+			case actual == msg.value:
+				// sauber uebernommen
+			case actual == msg.prevProvider && msg.kind == "provider",
+				actual == msg.prevModel && msg.kind == "model":
+				note := fmt.Sprintf("%s-Wechsel verworfen: goose bleibt bei „%s“ — „%s“ wurde nicht übernommen.",
+					label, actual, msg.value)
+				if msg.kind == "provider" && m.modelLabel != msg.prevModel {
+					// goose setzt beim verworfenen Provider-Wechsel still
+					// das Modell auf den Session-Default zurueck.
+					note += fmt.Sprintf(" Das Modell wurde dabei auf %s zurückgesetzt.", m.modelLabel)
+				}
+				m.chat = m.chat.Append(NewTextBlock(note, "1"))
+				return m, m.flushPrinted()
+			default:
+				// goose hat einen eigenen Wert gewaehlt (Normalisierung/
+				// Ableitung) — sichtbar machen statt still differieren.
+				m.chat = m.chat.Append(NewTextBlock(
+					fmt.Sprintf("%s-Wechsel: goose hat „%s“ übernommen statt „%s“.", label, actual, msg.value), "1"))
+				return m, m.flushPrinted()
+			}
+		}
 		return m, nil
 	case diagramsDoneMsg:
 		m.chat, _ = m.chat.applyDiagrams(msg.results, m.imagesEnabled(), m.caps)

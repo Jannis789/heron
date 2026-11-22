@@ -20,6 +20,7 @@ var commands = []command{
 	{"effort", "choose effort level"},
 	{"resume", "resume a past session"},
 	{"new", "start a new session"},
+	{"compress", "compress session history"},
 	{"quit", "quit heron"},
 }
 
@@ -152,6 +153,30 @@ func (m Model) execCommand(full string) (tea.Model, tea.Cmd) {
 			rows, err := fn()
 			return resumeListMsg{rows: rows, err: err}
 		}
+	case "/compress":
+		// Verlauf verdichten: kein eigener RPC — goose verdichtet ueber sein
+		// Builtin /compact, das als LLM-Turn laeuft (session/compact gibt es
+		// nicht, -32601). heron schickt den Alias durch den Sender, main.go
+		// uebersetzt ihn — so kommen Running-State, Activity-Tree, gestreamte
+		// Zusammenfassung und Retry (FR-33) gratis mit.
+		if m.running {
+			m.chat = m.chat.Append(NewTextBlock("Ein Turn läuft noch — brich ihn erst mit ctrl+c ab.", "1"))
+			return m, nil
+		}
+		if m.send == nil {
+			m.chat = m.chat.Append(NewTextBlock("Kein Backend zum Komprimieren (Demo-Modus).", "1"))
+			return m, nil
+		}
+		// Dieselbe Kette wie der Enter-Versand: User-Block, Turn-Start,
+		// Versand parallel, Spinner bis zur Antwort (FR-2).
+		m.chat = m.chat.Append(NewUserBlock("/compress"))
+		m.startTurn()
+		send := m.send
+		sendCmd := func() tea.Msg {
+			text, err := send("/compress")
+			return replyMsg{text: text, err: err, prompt: "/compress"}
+		}
+		return m, tea.Batch(sendCmd, m.flushPrinted(), nextSpinner())
 	case "/quit":
 		return m, tea.Quit
 	}

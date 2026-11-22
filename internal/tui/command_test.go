@@ -68,6 +68,50 @@ func TestSlashRightAcceptsGhost(t *testing.T) {
 	}
 }
 
+// TestSlashCompressRunsTurn: /compress verdichtet den Verlauf als regulärer
+// Turn — User-Block, gerenderte Zusammenfassung, und der Sender sieht den
+// Alias (main.go übersetzt ihn nach goose /compact).
+func TestSlashCompressRunsTurn(t *testing.T) {
+	var sent string
+	r := newRig(t).withSender(func(p string) (string, error) {
+		sent = p
+		return "Der Verlauf wurde komprimiert.", nil
+	})
+	typeRunes(r, "/compress")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if sent != "/compress" {
+		t.Fatalf("sender got %q, want /compress", sent)
+	}
+	if r.m.running {
+		t.Fatal("turn still running after the reply")
+	}
+	r.contains("/compress") // User-Block zeigt den Befehl
+	r.contains("Verlauf wurde komprimiert")
+}
+
+// TestSlashCompressBlockedWhileRunning: Verdichten mitten in einem Turn
+// wuerde zwei Prompte kreuzen — dieselbe Blockade wie /new (FR-20).
+func TestSlashCompressBlockedWhileRunning(t *testing.T) {
+	r := newRig(t)
+	r.m.running = true
+	typeRunes(r, "/compress")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
+
+	r.contains("Ein Turn läuft noch")
+}
+
+// TestSlashCompressDemoMode: ohne Backend gibt es einen Hinweis statt eines
+// stillen No-Ops (gleiche Naht wie /new, FR-20).
+func TestSlashCompressDemoMode(t *testing.T) {
+	r := newRig(t)
+	r.m.send = nil
+	typeRunes(r, "/compress")
+	r.do(tea.KeyMsg{Type: tea.KeyEnter})
+
+	r.contains("Kein Backend zum Komprimieren")
+}
+
 // TestSlashUnknownCommandErrors (FR-20): an unknown command reports an error
 // instead of sending the prompt.
 func TestSlashUnknownCommandErrors(t *testing.T) {

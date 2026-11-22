@@ -169,6 +169,15 @@ func main() {
 	// bleiben stumm: dann sind die configOptions wie bisher die einzige
 	// Quelle. Gegen echtes goose 1.55.0 probed (87 Provider, Custom-
 	// Provider mit exakt deren Modellen).
+	//
+	// Favoriten-Quelle (2026-11-22, gegen goose 1.55.0 probed): NICHT das
+	// configured-Flag des Inventars — es markiert 17 von 88 Providern als
+	// "configured", darunter sämtliche Schlüssellosen (lmstudio, local,
+	// claude-code, atomic_chat, aws_bedrock …), die nie eingerichtet
+	// wurden. Wahrheit ist stattdessen: der providers:-Block aus
+	// config/read PLUS die eigenen Custom-Provider (ProviderType "Custom"
+	// — jede Datei in ~/.config/goose/custom_providers/ war bewusste
+	// Handarbeit). inventoryFavorites() vereint beide.
 	publishInventory := func(s *acp.Session) {
 		inv, err := s.ProviderInventory(context.Background())
 		if err != nil || len(inv) == 0 {
@@ -310,6 +319,12 @@ func main() {
 			return "", err
 		}
 		publishModelInfo(s)
+		// /compress ist herons Alias fuer gooses Builtin /compact: Der
+		// Verlauf wird als echter LLM-Turn zusammengefasst (die Antwort
+		// ist die Komprimierung; ein session/compact-RPC existiert nicht).
+		if prompt == "/compress" {
+			prompt = "/compact"
+		}
 		return s.PromptStream(context.Background(), prompt, events)
 	}
 	// prewarmDone closes once the startup session attempt settled; main
