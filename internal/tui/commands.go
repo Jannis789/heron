@@ -19,6 +19,8 @@ var commands = []command{
 	{"provider", "choose AI provider"},
 	{"effort", "choose effort level"},
 	{"resume", "resume a past session"},
+	{"skills", "pick skills (space to check, enter to use)"},
+	{"mcp", "enable/disable configured MCP servers"},
 	{"new", "start a new session"},
 	{"compress", "compress session history"},
 	{"quit", "quit heron"},
@@ -152,6 +154,36 @@ func (m Model) execCommand(full string) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg {
 			rows, err := fn()
 			return resumeListMsg{rows: rows, err: err}
+		}
+	case "/skills":
+		// Picker sofort aus dem Cache (erneut geöffnet = sofort), sonst
+		// `goose skills list` asynchron laden — 220 ms dürfen den Event-
+		// Loop nicht blockieren (NFR-2).
+		if len(m.skillRows) > 0 {
+			m.skillSel = map[string]bool{}
+			m.openPicker("skills")
+			return m, nil
+		}
+		if m.skillsList == nil {
+			m.chat = m.chat.Append(NewTextBlock("Kein Backend für Skills (Demo-Modus).", "1"))
+			return m, nil
+		}
+		fn := m.skillsList
+		return m, func() tea.Msg {
+			rows, err := fn()
+			return skillsLoadedMsg{rows: rows, err: err}
+		}
+	case "/mcp":
+		// Immer frisch lesen: die config.yaml kann sich zwischen zwei
+		// Aufrufen geändert haben (goose configure, manage_extensions).
+		if m.extList == nil {
+			m.chat = m.chat.Append(NewTextBlock("Kein Backend für Extensions (Demo-Modus).", "1"))
+			return m, nil
+		}
+		fn := m.extList
+		return m, func() tea.Msg {
+			rows, err := fn()
+			return extLoadedMsg{rows: rows, err: err}
 		}
 	case "/compress":
 		// Verlauf verdichten: kein eigener RPC — goose verdichtet ueber sein

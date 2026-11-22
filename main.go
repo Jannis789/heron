@@ -397,6 +397,54 @@ func main() {
 		return nil
 	}
 
+	// ---- Skills + MCP-Extensions (/skills, /mcp) --------------------
+	// /skills: Quelle ist `goose skills list` (goose hat keine ACP-Methode
+	// dafür). /mcp: Liste aus gooses config.yaml; das Umschalten wirkt
+	// sofort in der laufenden Session (ExtensionManager) UND wird in die
+	// config.yaml geschrieben (dauerhaft ab dem nächsten Start).
+
+	// listExtensions liest den extensions:-Block über die Session.
+	listExtensions := func() ([]tui.ExtRow, error) {
+		s, err := ensureSession()
+		if err != nil {
+			return nil, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		exts, err := s.Extensions(ctx)
+		if err != nil {
+			return nil, err
+		}
+		rows := make([]tui.ExtRow, 0, len(exts))
+		for _, e := range exts {
+			if !e.IsMCP() {
+				continue // nur echte MCP-Server — Platform-Extensions sind goose-intern
+			}
+			rows = append(rows, tui.ExtRow{Key: e.Key, Label: e.Label(), Type: e.Type,
+				Enabled: e.Enabled, Cmd: e.Cmd, EnvKeys: e.EnvKeys})
+		}
+		if len(rows) == 0 {
+			return nil, nil
+		}
+		return rows, nil
+	}
+	toggleExtension := func(key string, on bool) error {
+		s, err := ensureSession()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.SetExtensionEnabled(ctx, key, on); err != nil {
+			return err
+		}
+		cfgPath, err := acp.DefaultConfigPath()
+		if err != nil {
+			return err
+		}
+		return acp.SetExtensionEnabledInFile(cfgPath, key, on)
+	}
+
 	// Shorten the home prefix for display only — the session keeps the real
 	// absolute working directory.
 	cwd := wd
@@ -415,6 +463,8 @@ func main() {
 	model := tui.New(sender, th, copyFn).WithStream(stream).WithCancel(cancel).
 		WithConfigSet(configSet).WithNewSession(resetSession).
 		WithResumeList(resumeRows).WithResumeStart(startResume).
+		WithSkillsList(func() ([]tui.SkillRow, error) { return tui.GooseSkills(*gooseBin) }).
+		WithExtensions(listExtensions, toggleExtension).
 		WithContextWindow(*contextWindow).WithTermCaps(caps).
 		WithWorkspace(cwd).WithModel(*modelFlag).WithEffort(*effortFlag)
 	var seedText string

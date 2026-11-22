@@ -97,10 +97,10 @@ type BlockList struct {
 // Modus: Sie sind nur bedeutsam, solange active oder als Rest fuer den
 // Wiedereintritt (Toggle-Austritt, residualSelShown).
 type charState struct {
-	active  bool
-	from    int // Anker-Offset
-	to      int // Caret-Offset
-	block   int // Caret-Block (auch Wiedereinstiegs-Merkmal)
+	active    bool
+	from      int // Anker-Offset
+	to        int // Caret-Offset
+	block     int // Caret-Block (auch Wiedereinstiegs-Merkmal)
 	fromBlock int // Anker-Block
 	// fromSel merkt die Herkunft des Zeichen-Cursors: wurde er durch
 	// KONVERTIERUNG ueber einer laufenden Block-Auswahl geoeffnet, hat der

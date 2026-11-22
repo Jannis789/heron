@@ -119,11 +119,23 @@ type Model struct {
 	resumeStart  func(id string) error
 	resumeRows   []SessionRow
 	caps         TermCaps // Term-Probe (FR-27): Platzhalter + Zellpixel
-	pickerKind   string   // "model" or "effort" while open
+	pickerKind   string   // "model" | "effort" | "resume" | "provider" | "skills" | "mcp"
 	pickerOpen   bool
 	pickerCursor int
 	pickerScroll int
 	pickerQuery  string // /model filters the list as you type (FR-20)
+
+	// Skills (/skills): Quelle ist `goose skills list` (kein ACP-Pendant),
+	// deshalb ein Callback. skillSel ist die Mehrfachauswahl: Leertaste
+	// hakt ab, enter übernimmt ALLE Haken in den Prompt.
+	skillsList func() ([]SkillRow, error)
+	skillRows  []SkillRow
+	skillSel   map[string]bool
+	// MCP-Extensions (/mcp): Liste aus gooses config.yaml, Umschalten
+	// wirkt sofort in der Session UND persistent in der config.yaml.
+	extList   func() ([]ExtRow, error)
+	extToggle func(key string, on bool) error
+	extRows   []ExtRow
 
 	// provider/providerOptions: aktueller ACP-Provider und die waehlbaren
 	// Alternativen (/provider, FR-45) — Name ist das lesbare Label, Value
@@ -319,6 +331,22 @@ func (m Model) pickerOptions() []string {
 		}
 		return labels
 	}
+	if m.pickerKind == "skills" {
+		rows := m.filteredSkillRows()
+		labels := make([]string, len(rows))
+		for i, r := range rows {
+			labels[i] = r.Name
+		}
+		return labels
+	}
+	if m.pickerKind == "mcp" {
+		rows := m.filteredExtRows()
+		labels := make([]string, len(rows))
+		for i, r := range rows {
+			labels[i] = r.Label
+		}
+		return labels
+	}
 	opts := m.modelOptions
 	if m.pickerQuery == "" {
 		return opts
@@ -413,6 +441,19 @@ func (m Model) filteredProviderRows() []OptionRow {
 // openPicker expands the prompt box into the option list for the given kind
 // ("model", "effort" or "resume"). No-op without announced options.
 func (m *Model) openPicker(kind string) {
+	if kind == "skills" || kind == "mcp" {
+		// Eigene Quellen (goose skills list / config.yaml): kein
+		// "aktiver" Eintrag, also ohne Cursor-Vorpositionierung.
+		m.pickerKind = kind
+		if len(m.pickerOptions()) == 0 {
+			m.pickerKind = ""
+			return
+		}
+		m.pickerOpen = true
+		m.pickerCursor, m.pickerScroll, m.pickerQuery = 0, 0, ""
+		m.clampPickerScroll()
+		return
+	}
 	if kind == "resume" {
 		if len(m.resumeRows) == 0 {
 			return
@@ -549,7 +590,29 @@ func (m Model) pickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pickerCursor < len(m.pickerOptions())-1 {
 			m.pickerCursor++
 		}
+	case " ":
+		// /skills: Leertaste hakt die Zeile ab (Mehrfachauswahl). /mcp:
+		// Leertaste schaltet den Server um. Alle anderen Picker nutzen
+		// die Leertaste als Suchzeichen.
+		if m.pickerKind == "skills" {
+			m.toggleSkill()
+			return m, nil
+		}
+		if m.pickerKind == "mcp" {
+			return m.mcpKey()
+		}
+		m.pickerQuery += " "
+		return m, nil
 	case "enter":
+		// /skills: enter übernimmt ALLE Häkchen (ohne Häkchen die Zeile
+		// unter dem Cursor) als Prompt-Prefix. /mcp: enter schaltet wie
+		// die Leertaste um — der Picker bleibt offen.
+		if m.pickerKind == "skills" {
+			return m.applySkills()
+		}
+		if m.pickerKind == "mcp" {
+			return m.mcpKey()
+		}
 		// Resume (FR-44): enter startet die markierte Session — Chat und
 		// Token-Zähler werden vorher geleert, der Replay füllt beides neu.
 		if m.pickerKind == "resume" {
@@ -607,7 +670,8 @@ func (m Model) pickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// The model and resume lists filter as you type; the effort list is
 	// short enough to browse without a query (FR-20/FR-44). A changed
 	// query restarts at the top.
-	if m.pickerKind == "model" || m.pickerKind == "resume" || m.pickerKind == "provider" {
+	if m.pickerKind == "model" || m.pickerKind == "resume" || m.pickerKind == "provider" ||
+		m.pickerKind == "skills" || m.pickerKind == "mcp" {
 		changed := false
 		switch msg.String() {
 		case "backspace":
@@ -1585,6 +1649,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resumeRows = msg.rows
 		m.openPicker("resume")
 		return m, nil
+	case skillsLoadedMsg:
+		if msg.err != nil {
+			m.chat = m.chat.Append(NewTextBlock("Skill-Liste fehlgeschlagen: "+msg.err.Error(), "1"))
+			return m, m.flushPrinted()
+		}
+		if len(msg.rows) == 0 {
+			m.chat = m.chat.Append(NewTextBlock("goose meldet keine Skills.", "1"))
+			return m, m.flushPrinted()
+		}
+		m.skillRows = msg.rows
+		m.skillSel = map[string]bool{}
+		m.openPicker("skills")
+		return m, nil
+	case extLoadedMsg:
+		if msg.err != nil {
+			m.chat = m.chat.Append(NewTextBlock("Extension-Liste fehlgeschlagen: "+msg.err.Error(), "1"))
+			return m, m.flushPrinted()
+		}
+		if len(msg.rows) == 0 {
+			m.chat = m.chat.Append(NewTextBlock("goose meldet keine konfigurierten MCP-Server.", "1"))
+			return m, m.flushPrinted()
+		}
+		m.extRows = msg.rows
+		m.openPicker("mcp")
+		return m, nil
+	case extToggledMsg:
+		return m.applyExtToggled(msg)
 	case resumeStartMsg:
 		if msg.err != nil {
 			m.chat = m.chat.Append(NewTextBlock("Resume fehlgeschlagen: "+msg.err.Error(), "1"))

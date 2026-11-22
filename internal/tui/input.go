@@ -306,7 +306,8 @@ func (m Model) inputView() string {
 		}
 		// /model and /resume carry a search line above the list; /effort
 		// is short enough to browse without one (FR-20/FR-44).
-		if m.pickerKind == "model" || m.pickerKind == "resume" {
+		if m.pickerKind == "model" || m.pickerKind == "resume" ||
+			m.pickerKind == "skills" || m.pickerKind == "mcp" {
 			if m.pickerQuery == "" {
 				lines = append(lines, row("> "+ls.Render("search")))
 			} else {
@@ -342,6 +343,39 @@ func (m Model) inputView() string {
 				lines = append(lines, row(prefix+runewidth.Truncate(rowText, inner-5, "…")))
 				continue
 			}
+			// Skills (/skills): Checkbox — mehrere Skills in EINEM Prompt.
+			if m.pickerKind == "skills" {
+				box := "[ ]"
+				if m.skillSel[name] {
+					box = "[x]"
+				}
+				txt := box + " " + name
+				if srows := m.filteredSkillRows(); idx < len(srows) && srows[idx].Desc != "" {
+					txt += "  " + srows[idx].Desc
+				}
+				lines = append(lines, row(prefix+runewidth.Truncate(txt, inner-5, "…")))
+				continue
+			}
+			// MCP (/mcp): ●/○ + Typ + Kommando — der Zustand ist die
+			// einzige Information, die beim Umschalten zählt.
+			if m.pickerKind == "mcp" {
+				state, kind, cmd := "○", "", ""
+				if erows := m.filteredExtRows(); idx < len(erows) {
+					if erows[idx].Enabled {
+						state = "●"
+					}
+					kind, cmd = erows[idx].Type, erows[idx].Cmd
+				}
+				txt := state + " " + name
+				if kind != "" {
+					txt += "  " + kind
+				}
+				if cmd != "" {
+					txt += " · " + cmd
+				}
+				lines = append(lines, row(prefix+runewidth.Truncate(txt, inner-5, "…")))
+				continue
+			}
 			// The active option keeps its ✓ even while the cursor is
 			// somewhere else — scrolling must not hide what is live (FR-20).
 			suffix := ""
@@ -349,6 +383,13 @@ func (m Model) inputView() string {
 				suffix = " ✓"
 			}
 			lines = append(lines, row(prefix+name+suffix))
+		}
+		if m.pickerKind == "skills" || m.pickerKind == "mcp" {
+			hint := "space abhaken · enter übernehmen · esc schließt"
+			if m.pickerKind == "mcp" {
+				hint = "space/enter schalten · esc schließt"
+			}
+			lines = append(lines, row(ls.Faint(true).Render(hint)))
 		}
 		lines = append(lines, bs.Render("└"+strings.Repeat("─", w-2)+"╯"))
 		return strings.Join(lines, "\n")

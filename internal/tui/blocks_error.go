@@ -22,7 +22,7 @@ type ErrorBlock struct {
 	message string
 	// prompt ist der gescheiterte Prompt — leer bedeutet: kein Retry
 	// moeglich (dann fehlt die Footer-Aktion).
-	prompt string
+	prompt  string
 	focused bool
 	marked  bool
 	// stale: Teil der VERGANGENEN Auswahl (FR-43) — Rahmen in der
