@@ -537,6 +537,11 @@ func junctionPositions(widths []int) []int {
 // Column budgets are proportional to natural content width (sqrt-weighted)
 // so wide columns dominate without crushing narrow ones. width is the wrap
 // budget (dynamic: pass the live viewport width).
+//
+// Der Koerper ist eine Pipeline: Spalten kuerzen (truncateCols), Budgets
+// verteilen (columnBudgets), Breiten messen (measureColumnWidths), auf
+// Footer-Breite wachsen und auffuellen (footerMinWidth/fillWidths), dann
+// zeichnen (renderBoxBody).
 func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []string, widths []int) {
 	if len(cells) == 0 {
 		return nil, nil
@@ -551,37 +556,7 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 		return nil, nil
 	}
 
-	// Spalten, die selbst mit 1 Inhaltszelle nicht mehr in die Breite
-	// passen (Chrome je Spalte: 2 Padding + 1 Junction, plus 2 Rand),
-	// fallen von rechts ab — eine …-Spalte markiert den Schnitt. Das
-	// Kopieren (FR-29) liefert weiterhin ALLE Spalten: Markdown() liest
-	// die Original-Zellen, nicht die Anzeige-Breiten.
-	if width < 16 {
-		width = 16
-	}
-	maxCols := cols
-	for maxCols > 1 && 4*maxCols+1 > width {
-		maxCols--
-	}
-	if maxCols < cols {
-		keep := maxCols - 1
-		trunc := make([][]string, len(cells))
-		for i, row := range cells {
-			n := min(keep, len(row))
-			r := append([]string{}, row[:n]...)
-			if i == 0 {
-				r = append(r, "…")
-			} else {
-				r = append(r, "")
-			}
-			trunc[i] = r
-		}
-		cells = trunc
-		if len(aligns) > keep {
-			aligns = append(append([]Align{}, aligns[:keep]...), AlignDefault)
-		}
-		cols = maxCols
-	}
+	cells, aligns, cols = truncateCols(cells, aligns, cols, width)
 
 	// ERST kuerzen, DANN header/rows ableiten — sonst rendern die beiden
 	// noch die Original-Spalten gegen die gekuerzten Budgets.
@@ -608,59 +583,7 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 	if avail < cols {
 		avail = cols
 	}
-	budgets := make([]int, cols)
-	natSum := 0
-	for _, n := range nat {
-		natSum += n
-	}
-	if natSum <= avail {
-		copy(budgets, nat)
-	} else {
-		wSum := 0.0
-		for _, n := range nat {
-			wSum += math.Sqrt(float64(n))
-		}
-		assigned := 0
-		widest := 0
-		for c, n := range nat {
-			b := int(math.Round(math.Sqrt(float64(n)) / wSum * float64(avail)))
-			if b < 1 {
-				b = 1
-			}
-			budgets[c] = b
-			assigned += b
-			if n > nat[widest] {
-				widest = c
-			}
-		}
-		if rem := avail - assigned; rem > 0 {
-			budgets[widest] += rem // Ueberschuss an die breiteste Spalte
-		}
-		// Negative Reste durfen keine Spalte unter 1 druecken (Inhalt muss
-		// rein) und duerfen die Summe nicht ueber avail heben — sonst
-		// ueberlaeuft die Box strukturell die Zielbreite.
-		for rem := avail - assigned; rem < 0; {
-			reduced := false
-			for c := range budgets {
-				if rem == 0 {
-					break
-				}
-				if budgets[c] > 1 {
-					budgets[c]--
-					rem++
-					reduced = true
-				}
-			}
-			if !reduced {
-				break
-			}
-		}
-		for c, b := range budgets {
-			if b < 1 {
-				budgets[c] = 1
-			}
-		}
-	}
+	budgets := columnBudgets(nat, avail)
 
 	headerW := wrapCells(header, budgets)
 	rowsW := make([][][]string, 0, len(rows))
@@ -668,7 +591,118 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 		rowsW = append(rowsW, wrapCells(r, budgets))
 	}
 
-	widths = make([]int, cols)
+	widths = measureColumnWidths(headerW, rowsW, cols)
+
+	// Grow the last column if the footer line would not fit.
+	footerMin := footerMinWidth(len(rows), cols, width)
+	if total := boxWidth(widths); total < footerMin {
+		widths[len(widths)-1] += footerMin - total
+	}
+
+	// Fill the available width: distribute surplus evenly across columns so
+	// tables span the viewport like pi renders them.
+	fillWidths(widths, width)
+
+	return renderBoxBody(headerW, rowsW, len(header) > 0, widths, aligns, th), widths
+}
+
+// truncateCols: Spalten, die selbst mit 1 Inhaltszelle nicht mehr in die
+// Breite passen (Chrome je Spalte: 2 Padding + 1 Junction, plus 2 Rand),
+// fallen von rechts ab — eine …-Spalte markiert den Schnitt. Das
+// Kopieren (FR-29) liefert weiterhin ALLE Spalten: Markdown() liest
+// die Original-Zellen, nicht die Anzeige-Breiten.
+func truncateCols(cells [][]string, aligns []Align, cols, width int) ([][]string, []Align, int) {
+	if width < 16 {
+		width = 16
+	}
+	maxCols := cols
+	for maxCols > 1 && 4*maxCols+1 > width {
+		maxCols--
+	}
+	if maxCols >= cols {
+		return cells, aligns, cols
+	}
+	keep := maxCols - 1
+	trunc := make([][]string, len(cells))
+	for i, row := range cells {
+		n := min(keep, len(row))
+		r := append([]string{}, row[:n]...)
+		if i == 0 {
+			r = append(r, "…")
+		} else {
+			r = append(r, "")
+		}
+		trunc[i] = r
+	}
+	if len(aligns) > keep {
+		aligns = append(append([]Align{}, aligns[:keep]...), AlignDefault)
+	}
+	return trunc, aligns, maxCols
+}
+
+// columnBudgets verteilt avail Anzeige-Zellen auf die Spalten: naturale
+// Breiten, wenn sie zusammen passen, sonst sqrt-gewichtete Anteile am
+// Platz. Jede Spalte behaelt mindestens 1 Zelle Inhalt.
+func columnBudgets(nat []int, avail int) []int {
+	budgets := make([]int, len(nat))
+	natSum := 0
+	for _, n := range nat {
+		natSum += n
+	}
+	if natSum <= avail {
+		copy(budgets, nat)
+		return budgets
+	}
+	wSum := 0.0
+	for _, n := range nat {
+		wSum += math.Sqrt(float64(n))
+	}
+	assigned := 0
+	widest := 0
+	for c, n := range nat {
+		b := int(math.Round(math.Sqrt(float64(n)) / wSum * float64(avail)))
+		if b < 1 {
+			b = 1
+		}
+		budgets[c] = b
+		assigned += b
+		if n > nat[widest] {
+			widest = c
+		}
+	}
+	if rem := avail - assigned; rem > 0 {
+		budgets[widest] += rem // Ueberschuss an die breiteste Spalte
+	}
+	// Negative Reste duerfen keine Spalte unter 1 druecken (Inhalt muss
+	// rein) und duerfen die Summe nicht ueber avail heben — sonst
+	// ueberlaeuft die Box strukturell die Zielbreite.
+	for rem := avail - assigned; rem < 0; {
+		reduced := false
+		for c := range budgets {
+			if rem == 0 {
+				break
+			}
+			if budgets[c] > 1 {
+				budgets[c]--
+				rem++
+				reduced = true
+			}
+		}
+		if !reduced {
+			break
+		}
+	}
+	for c, b := range budgets {
+		if b < 1 {
+			budgets[c] = 1
+		}
+	}
+	return budgets
+}
+
+// measureColumnWidths misst nach dem Wrap die breiteste Zeile je Spalte.
+func measureColumnWidths(headerW [][]string, rowsW [][][]string, cols int) []int {
+	widths := make([]int, cols)
 	for c := 0; c < cols; c++ {
 		wmax := 0
 		for _, ln := range headerW[c] {
@@ -685,23 +719,27 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 		}
 		widths[c] = wmax
 	}
+	return widths
+}
 
-	// Grow the last column if the footer line would not fit.
-	footerMin := runewidth.StringWidth(DimsLabel(len(rows), cols)) + len("COPY") + 12
+// footerMinWidth ist die Ziel-Untergrenze fuer die Boxbreite, damit die
+// Footer-Zeile (Dims-Label + COPY-Action) noch passt. Niemals ueber die
+// Zielbreite wachsen: der Footer degradiert selbst (FooterLine laesst das
+// Label zuerst fallen), die Box aber nie.
+func footerMinWidth(rows, cols, width int) int {
+	footerMin := runewidth.StringWidth(DimsLabel(rows, cols)) + len("COPY") + 12
 	if footerMin > width {
 		footerMin -= 4 // drop the inner box padding instead of exceeding the cap
 	}
-	// Niemals ueber die Zielbreite wachsen: der Footer degradiert selbst
-	// (FooterLine laesst das Label zuerst fallen), die Box aber nie.
 	if footerMin > width {
 		footerMin = width
 	}
-	if total := boxWidth(widths); total < footerMin {
-		widths[len(widths)-1] += footerMin - total
-	}
+	return footerMin
+}
 
-	// Fill the available width: distribute surplus evenly across columns so
-	// tables span the viewport like pi renders them.
+// fillWidths verteilt ueberschuessige Breite gleichmaessig auf die Spalten,
+// damit die Tabelle den Viewport spaennt wie pi; der Rest geht ans Ende.
+func fillWidths(widths []int, width int) {
 	if total := boxWidth(widths); width > total {
 		extra := (width - total) / len(widths)
 		for c := range widths {
@@ -711,7 +749,13 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 			widths[len(widths)-1] += rem
 		}
 	}
+}
 
+// renderBoxBody zeichnet Kopf- und Datenzeilen in die Box: Doppellinie
+// unter dem Header (falls einer existiert), dim Separatoren zwischen den
+// Datenzeilen; Zellen mit Padding und spaltenweiser Ausrichtung.
+func renderBoxBody(headerW [][]string, rowsW [][][]string, hasHeader bool, widths []int, aligns []Align, th *Theme) []string {
+	cols := len(widths)
 	bs := th.BorderStyle()
 	fill := th.TableFill()
 	alignOf := func(c int) Align {
@@ -759,9 +803,9 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 		}
 		return out
 	}
-
+	var lines []string
 	lines = append(lines, sep("┌", "┬", "┐", "─"))
-	if len(header) > 0 {
+	if hasHeader {
 		lines = append(lines, rowLines(headerW, true)...)
 		// Double-line header separation so the column header stays recognizable.
 		lines = append(lines, sep("╞", "╪", "╡", "═"))
@@ -773,7 +817,7 @@ func tableBody(cells [][]string, aligns []Align, th *Theme, width int) (lines []
 			lines = append(lines, sep("├", "┼", "┤", "─"))
 		}
 	}
-	return lines, widths
+	return lines
 }
 
 // BoxWidth returns the total rendered width of a box with the given column
