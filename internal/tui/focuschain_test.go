@@ -60,6 +60,75 @@ func TestTabTogglesInputAndSegments(t *testing.T) {
 	}
 }
 
+// TestTabLiftsSelection: tab hebt die Auswahl auf, wenn die Kette weiter-
+// zieht (User-Report 24.11.: "tab ohne shift sollte auch eine Auswahl
+// aufheben") — zurueck ins Eingabefeld wie hinein in den Activity-Baum.
+// Vorher blieb die Block-Auswahl sichtbar stehen, während man schon wieder
+// tippte: setInputFocus raeumt zwar Zeichen-Cursor und Markierungen ab,
+// aber NICHT die laufende Block-Auswahl (l.sel) und die vergangene Auswahl
+// (prevSel) — LiftSelection schliesst genau diese Luecke.
+func TestTabLiftsSelection(t *testing.T) {
+	m := chainModel(t)
+	m.activity = m.activity.Thought("d") // Baum sichtbar: Eingabe → Baum → Chat
+	// Block-Auswahl aufbauen: zwei Tabs bis in den Chat, shift+up waehlt.
+	m = step(m, tea.KeyMsg{Type: tea.KeyTab})     // → Activity-Baum
+	m = step(m, tea.KeyMsg{Type: tea.KeyTab})     // → Chat (letzter Block)
+	m = step(m, tea.KeyMsg{Type: tea.KeyShiftUp}) // Auswahl 1..2
+	if !m.chat.selActive() {
+		t.Fatal("shift+up muss eine Block-Auswahl starten")
+	}
+	// tab zurueck ins Eingabefeld: die Auswahl muss geloest sein.
+	m = step(m, tea.KeyMsg{Type: tea.KeyTab})
+	if !m.inputFocus {
+		t.Fatal("tab muss zurueck ins Eingabefeld fuehren")
+	}
+	if m.chat.selActive() || m.chat.markedCount() > 0 || m.chat.prevSel {
+		t.Fatalf("tab muss die Auswahl aufheben: sel=%v marks=%d prevSel=%v",
+			m.chat.selActive(), m.chat.markedCount(), m.chat.prevSel)
+	}
+	// tab in den Activity-Baum: keine Auswahl bleibt daneben stehen.
+	m = step(m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.inputFocus || !m.activity.Focused() {
+		t.Fatalf("tab muss den Activity-Baum fokussieren: input=%v tree=%v",
+			m.inputFocus, m.activity.Focused())
+	}
+	if m.chat.selActive() || m.chat.markedCount() > 0 || m.chat.prevSel {
+		t.Fatal("im Baum darf keine Auswahl daneben stehen bleiben")
+	}
+}
+
+// TestTabLiftsCharSelection: laufender Zeichen-Cursor mit Auswahl — tab
+// hebt alles auf: kein blinkendes Caret, keine sichtbare Auswahl, kein
+// Residual neben der Eingabe. Der ANKER faellt MIT (setInputFocus-Vertrag:
+// Eingabefokus und Zeichen-Cursor schliessen sich aus — "Anker und
+// Caret-Rest weg, kein Residual beim Tippen"); shift+enter spawnt danach
+// wieder an der Leseposition (der Cursor spawnt IMMER, nie stumm).
+func TestTabLiftsCharSelection(t *testing.T) {
+	m := chainModel(t)
+	m = step(m, tea.KeyMsg{Type: tea.KeyTab})      // Chat (letzter Block)
+	m = step(m, tea.KeyMsg{Type: tea.KeyShiftTab})  // Zeichen-Cursor oeffnen
+	if !m.chat.charActive() {
+		t.Fatal("shift+enter muss den Zeichen-Cursor starten")
+	}
+	m = step(m, tea.KeyMsg{Type: tea.KeyShiftRight}) // einen Buchstaben waehlen
+	m = step(m, tea.KeyMsg{Type: tea.KeyTab})        // Lift zurueck ins Eingabefeld
+	if !m.inputFocus {
+		t.Fatal("tab muss zurueck ins Eingabefeld fuehren")
+	}
+	if m.chat.charActive() || m.chat.charSelVisible() || m.chat.residualSelShown() {
+		t.Fatalf("tab muss Cursor und Zeichen-Auswahl aufheben: active=%v visible=%v residual=%v",
+			m.chat.charActive(), m.chat.charSelVisible(), m.chat.residualSelShown())
+	}
+	if m.chat.char.block >= 0 {
+		t.Fatal("der Anker muss beim Rueckweg ins Feld fallen (Exklusivitaets-Vertrag)")
+	}
+	// Wiedereintritt: shift+enter spawnt den Cursor wieder (Leseposition).
+	m = step(m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if !m.chat.charActive() {
+		t.Fatal("shift+enter muss den Cursor wieder oeffnen")
+	}
+}
+
 // TestDownStopsAtLastBlock: ↓ am letzten Block STOPPT — die Kette leakt
 // nicht mehr ins Eingabefeld. Der Rueckweg fuehrt AUSSCHLIESSLICH tab
 // (esc bleibt der Reset auf den Standard-Zustand).

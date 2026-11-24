@@ -1578,6 +1578,28 @@ func skipEscape(rs []rune, i int, lastSGR *string) int {
 // Seite ruft das beim Umschalten).
 func (l BlockList) Unfocus() BlockList { return l.clearFocus() }
 
+// LiftSelection hebt JEDE Auswahl-Generation auf und gibt den Chat
+// neutral zurueck: die laufende Shift-Auswahl (clearSel schliesst auch
+// den Zeichen-Cursor-Modus), die vergangene Auswahl (FR-43), die
+// Markierung (FR-29) und den Block-Fokus. tab ruft das bei JEDEM
+// Kettenwechsel — zurueck ins Eingabefeld, hinein in den Activity-Baum,
+// Baum → Chat: "tab ohne shift soll auch eine Auswahl aufheben"
+// (User-Report 24.11.). Vorher blieb die Auswahl sichtbar stehen, während
+// man schon wieder tippte. Der Zeichen-ANKER ueberlebt bewusst:
+// from/to kollabieren aufs Caret (Rest-Auswahl unsichtbar), aber
+// char.block/fromBlock bleiben stehen — der shift+enter-Wiedereintritt
+// landet weiter an der Rest-Position, NUR esc resettet den Anker
+// (Vertrag s. resetCharResidual). fromSel faellt weg, damit ein
+// spaeteres esc keine langst geloeste Block-Auswahl restauriert.
+func (l BlockList) LiftSelection() BlockList {
+	l = l.clearSel()
+	l = l.clearPrevSel()
+	l = l.clearMarks()
+	l.char.fromSel = false
+	l.char.from = l.char.to
+	return l.clearFocus()
+}
+
 // FocusLast fokussiert den letzten fokussierbaren Block — der Uebergang
 // vom Eingabe- in den Antwort-Modus via tab.
 func (l BlockList) FocusLast() BlockList {

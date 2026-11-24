@@ -532,9 +532,14 @@ func (m Model) keyUpDown(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // keyTab: tab laeuft die Kette: Eingabe → Activity-Baum (falls er
 // etwas zeigt) → Antwort-Blöcke → Eingabe. Der Baum ist ein
 // gleichwertiges Ketten-Glied: ↑/↓ navigieren, enter klappt.
+// JEDER Kettenwechsel hebt die Auswahl auf (LiftSelection, User-Report
+// 24.11.: "tab ohne shift sollte auch eine Auswahl aufheben") — im
+// Eingabefeld oder im Baum steht keine Auswahl mehr daneben; nur der
+// Zeichen-Anker ueberlebt (Wiedereinstritt per shift+enter).
 func (m Model) keyTab() (tea.Model, tea.Cmd) {
 	if m.activity.Focused() {
 		m.activity = m.activity.Blur()
+		m.chat = m.chat.LiftSelection()
 		nl := m.chat.FocusVisible()
 		if !nl.Focused() {
 			return m, m.setInputFocus(true)
@@ -543,12 +548,11 @@ func (m Model) keyTab() (tea.Model, tea.Cmd) {
 		return m, m.setInputFocus(false)
 	}
 	if m.chat.Focused() || !m.inputFocus {
-		m.chat = m.chat.Unfocus()
+		m.chat = m.chat.LiftSelection()
 		return m, m.setInputFocus(true)
 	}
 	if m.activityVisible() {
-		m.chat = m.chat.Unfocus()
-		m.chat = m.chat.clearMarks()
+		m.chat = m.chat.LiftSelection()
 		m.activity = m.activity.Focus(m.width, m.activityBudget())
 		return m, m.setInputFocus(false)
 	}
