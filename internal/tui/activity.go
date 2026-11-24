@@ -1235,6 +1235,11 @@ func (a ActivityTree) workHeader() string {
 // Zustand, der Unterstrich soll erst alles DARAUF FOLGENDE markieren —
 // sonst liest sich der Pfeil als Teil der Auswahl statt als Struktur.
 func (a ActivityTree) headerRow(n activityNode, collapsed bool, label string, count int, labelSt lipgloss.Style) string {
+	// childSelected: sitzt der Cursor in einem Tochter-Eintrag des
+	// selektierten Knotens (Call unter einem Tool-Knoten, Gedanke unter
+	// Thinking), zeigt die KINDZEILE den Auswahl-Steg — die Kopfzeile
+	// bleibt dann ununterstrichen. Zwei gleichzeitige Hier-Signale
+	// (Kopf-Unterstrich + Kind-Steg) verwirren (User-Report 24.11.).
 	mark := "▼"
 	if collapsed {
 		mark = "▸"
@@ -1243,10 +1248,23 @@ func (a ActivityTree) headerRow(n activityNode, collapsed bool, label string, co
 	if count >= 0 {
 		txt += " (" + strconv.Itoa(count) + ")"
 	}
-	if n != nodeNone && a.sel == n {
+	if n != nodeNone && a.sel == n && !a.childSelected() {
 		labelSt = labelSt.Underline(true)
 	}
 	return a.valida().Render(mark) + " " + labelSt.Render(txt)
+}
+
+// childSelected meldet, ob der Cursor aktuell IN einem Tochter-Eintrag
+// des selektierten Knotens steht: Gedanke-Sektion unter Thinking
+// (selThought) bzw. einzelner Call unter einem Tool-Knoten (selCall).
+// Beide Felder sind nur fuer den SELEKTIERTEN Knoten gesetzt und werden
+// beim Knotenwechsel zurueckgesetzt (Move setzt alle drei zusammen,
+// Click/Blur loeschen), daher genuegt der einfache Blick.
+func (a ActivityTree) childSelected() bool {
+	if a.sel == nodeThinking {
+		return a.selThought != 0
+	}
+	return a.selCall != ""
 }
 
 // activityNode benennt die aufklappbaren Hauptknoten des Baums: Thinking

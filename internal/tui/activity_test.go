@@ -229,7 +229,10 @@ func TestActivityCursorFollowsStructure(t *testing.T) {
 }
 
 // TestActivitySelectionUnderlineOnHeader: der Auswahlmodus unterstreicht die
-// Kopfzeile des Knotens — genau eine Zeile, nicht die Kindzeilen.
+// Kopfzeile des Knotens — genau eine Zeile, nicht die Kindzeilen. Steigt der
+// Cursor in einen Tochter-Eintrag ab, uebernimmt der Auswahl-Steg der Kind-
+// zeile das Signal und der Kopf verliert den Unterstrich (User-Report
+// 24.11.: Kopf-Unterstrich + Kind-Steg gleichzeitig verwirren).
 func TestActivitySelectionUnderlineOnHeader(t *testing.T) {
 	withTrueColor(t)
 	a := NewActivityTree(mustTheme(t)).
@@ -251,7 +254,8 @@ func TestActivitySelectionUnderlineOnHeader(t *testing.T) {
 	if rows = a.View(60, 20); underlined(rows[0]) || !underlined(rows[1]) {
 		t.Fatalf("Cursor muss auf Tool Calls wandern: %q / %q", rows[0], rows[1])
 	}
-	rows = a.Enter().View(60, 20)
+	a = a.Enter()
+	rows = a.View(60, 20)
 	if !underlined(rows[1]) {
 		t.Fatalf("Kopfzeile nach dem Aufklappen nicht unterstrichen: %q", rows[1])
 	}
@@ -259,6 +263,25 @@ func TestActivitySelectionUnderlineOnHeader(t *testing.T) {
 		if underlined(rows[i]) {
 			t.Fatalf("Kindzeile %d unterstrichen: %q", i, rows[i])
 		}
+	}
+	// Abstieg in den Tochter-Eintrag: der Kopf verliert den Unterstrich,
+	// nur die Kindzeile traegt den Auswahl-Steg.
+	a = a.Move(1, 60, 20)
+	rows = a.View(60, 20)
+	if underlined(rows[1]) {
+		t.Fatalf("Kopfzeile muss beim Kind-Cursor ununterstrichen bleiben: %q", rows[1])
+	}
+	if !strings.Contains(rows[2], "▶") {
+		t.Fatalf("Kindzeile muss den Auswahl-Steg tragen: %q", rows[2])
+	}
+	// Zurueck auf den Kopf: Unterstrich kehrt zurueck, Steg verschwindet.
+	a = a.Move(-1, 60, 20)
+	rows = a.View(60, 20)
+	if !underlined(rows[1]) {
+		t.Fatalf("zurueck auf dem Kopf muss der Unterstrich stehen: %q", rows[1])
+	}
+	if strings.Contains(rows[2], "▶") {
+		t.Fatalf("Kindzeile ohne Cursor darf keinen Auswahl-Steg tragen: %q", rows[2])
 	}
 	a = a.Blur()
 	for _, r := range a.View(60, 20) {
