@@ -291,6 +291,68 @@ func TestActivitySelectionUnderlineOnHeader(t *testing.T) {
 	}
 }
 
+// TestActivityCursorStaysVisible (User-Report 24.11.: "wenn ein Tree sehr
+// viele Elemente hat, sieht man nicht den Select-Indikator"): Die Kind-
+// Historie schneidet das Layout als Tail-Fenster aufs Budget. Wandert der
+// Cursor per ↑/↓ auf einen Call AUSSERHALB des Fensters, verschiebt das
+// Fenster ihn herein — der ▶-Indikator ist immer sichtbar. Dasselbe gilt
+// fuer die Gedanke-Sektionen unter Thinking.
+func TestActivityCursorStaysVisible(t *testing.T) {
+	withTrueColor(t)
+	a := NewActivityTree(mustTheme(t))
+	for i := 0; i < 12; i++ {
+		a = a.Tool(ToolUpdate{CallID: fmt.Sprintf("c%02d", i), Label: "bash",
+			Kind: "execute", Command: "make", Done: true})
+	}
+	a = a.ToggleKind("execute").Focus(60, 6)
+	// 12 Calls, ~5 sichtbare Kind-Zeilen: der Cursor laeuft durch ALLE —
+	// jede Position muss den ▶-Indikator zeigen (Schritt 0 = aeltester
+	// Call, ausserhalb des Tail-Fensters).
+	for i := 0; i < 13; i++ {
+		a = a.Move(1, 60, 6)
+		rows := a.View(60, 6)
+		if !rowHasCursor(rows) {
+			for j, r := range plain(rows) {
+				t.Logf("Zeile %d: %q", j, r)
+			}
+			t.Fatalf("Cursor (Schritt %d) nicht sichtbar — ▶ fehlt", i)
+		}
+	}
+	// Kontrolle: ohne Auswahl steht kein ▶.
+	b := a.Blur()
+	for j, r := range plain(b.View(60, 6)) {
+		if strings.Contains(r, "▶") {
+			t.Fatalf("ohne Auswahl darf kein ▶ stehen (Zeile %d): %q", j, r)
+		}
+	}
+	// Thinking: 12 Sektionen, kleines Fenster, Cursor durch alle.
+	th := NewActivityTree(mustTheme(t))
+	for i := 0; i < 12; i++ {
+		th = th.Thought(fmt.Sprintf("gedanke %d", i)).CloseThought()
+	}
+	th = th.ToggleThinking().Focus(60, 6)
+	for i := 0; i < 12; i++ { // 12 Gedanken; der 13. Schritt verlaesst sie zum Tool-Calls-Platzhalter (Kopf-Unterstrich statt ▶)
+		th = th.Move(1, 60, 6)
+		rows := th.View(60, 6)
+		if !rowHasCursor(rows) {
+			for j, r := range plain(rows) {
+				t.Logf("Zeile %d: %q", j, r)
+			}
+			t.Fatalf("Thinking-Cursor (Schritt %d) nicht sichtbar — ▶ fehlt", i)
+		}
+	}
+}
+
+// rowHasCursor: irgendeine Zeile traegt den Auswahl-Steg (▶).
+func rowHasCursor(rows []string) bool {
+	for _, r := range rows {
+		if strings.Contains(r, "▶") {
+			return true
+		}
+	}
+	return false
+}
+
 // underlined: traegt die Zeile irgendwo die SGR-Unterstreichung (Param 4)?
 func underlined(s string) bool {
 	for {

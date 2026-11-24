@@ -432,7 +432,7 @@ func (a ActivityTree) Wheel(dir int) ActivityTree {
 	if s[kind] < 0 {
 		s[kind] = 0
 	}
-	if rows, _ := a.kindChildren(kind, 80); s[kind] > len(rows)-1 {
+	if rows, _, _ := a.kindChildren(kind, 80); s[kind] > len(rows)-1 {
 		s[kind] = len(rows) - 1
 	}
 	if s[kind] < 0 {
@@ -1047,28 +1047,37 @@ func (a ActivityTree) toolDetail(t activityTool, width int) []string {
 // gerendert); Tail-Anker + Scroll regelt View. lastStart ist der Index der
 // Kopfzeile des LETZTEN Calls — View ankert ihn im Fenster, damit der
 // laufende Call nie mitten im Detail abgeschnitten startet.
-func (a ActivityTree) kindChildren(kind string, width int) (rows []string, lastStart int) {
+func (a ActivityTree) kindChildren(kind string, width int) (rows []string, lastStart, selRow int) {
 	var calls []activityTool
 	for _, t := range a.tools {
 		if t.kindOf() == kind {
 			calls = append(calls, t)
 		}
 	}
+	selRow = -1
 	for i, t := range calls {
 		last := i == len(calls)-1
 		lastStart = len(rows)
+		if a.selCall != "" && t.callID == a.selCall {
+			selRow = len(rows)
+		}
 		rows = append(rows, a.toolRow(t, last, width, a.selCall != "" && t.callID == a.selCall))
 		if t.running {
 			rows = append(rows, a.toolDetail(t, width)...)
 		}
 	}
-	return rows, lastStart
+	return rows, lastStart, selRow
 }
 
 // windowRows schneidet die Kind-Historie aufs Budget: Tail-Fenster,
 // Scroll-Offset und Anker am Kopf des LETZTEN Calls (er startet nie
-// mitten im Detail).
-func windowRows(rows []string, budget, scroll, lastStart int) []string {
+// mitten im Detail). selRow (-1 = keine) ist die Zeile des AUSGEWAEHLTEN
+// Calls: Liegt sie ausserhalb des Fensters — der Cursor lief per ↑/↓
+// hinaus oder die Historie wuchs darueber hinaus —, verschiebt das
+// Fenster sie herein: der ▶-Indikator darf nie unsichtbar werden
+// (User-Report 24.11.: "bei sehr vielen Elementen sieht man den
+// Select-Indikator nicht").
+func windowRows(rows []string, budget, scroll, lastStart, selRow int) []string {
 	if budget <= 0 || len(rows) == 0 {
 		return nil
 	}
@@ -1092,6 +1101,25 @@ func windowRows(rows []string, budget, scroll, lastStart int) []string {
 		bottom = top + n
 		if bottom > len(rows) {
 			bottom = len(rows)
+		}
+	}
+	if selRow >= 0 && selRow < len(rows) && (selRow < top || selRow >= bottom) {
+		if selRow >= bottom {
+			// Unter dem Fenster: Zeile an die UNTERE Kante heben — der
+			// Rest der Historie folgt als Kontext darunter.
+			selRow -= n - 1
+			if selRow < 0 {
+				selRow = 0
+			}
+		}
+		top = selRow
+		bottom = top + n
+		if bottom > len(rows) {
+			bottom = len(rows)
+			top = bottom - n
+			if top < 0 {
+				top = 0
+			}
 		}
 	}
 	return rows[top:bottom]
@@ -1456,8 +1484,8 @@ func (a ActivityTree) layout(width, budget int) activityLayout {
 		if !a.expanded(k) || remaining <= 0 {
 			continue
 		}
-		rows, lastStart := a.kindChildren(k, aw)
-		rows = windowRows(rows, remaining, a.scroll[k], lastStart)
+		rows, lastStart, selRow := a.kindChildren(k, aw)
+		rows = windowRows(rows, remaining, a.scroll[k], lastStart, selRow)
 		kindRows[k] = rows
 		remaining -= len(rows)
 	}
@@ -1468,7 +1496,29 @@ func (a ActivityTree) layout(width, budget int) activityLayout {
 		if n > remaining {
 			n = remaining
 		}
-		thinkRows = all[len(all)-n:]
+		top := len(all) - n
+		// Die ausgewaehlte Gedanke-Sektion bleibt im Fenster — selbe
+		// Scroll-into-View-Pflicht wie windowRows: der ▶-Indikator darf
+		// nie unsichtbar werden (User-Report 24.11.).
+		if a.selThought > 0 && a.selThought <= len(all) {
+			si := a.selThought - 1
+			if si < top || si >= top+n {
+				if si >= top+n {
+					si -= n - 1
+					if si < 0 {
+						si = 0
+					}
+				}
+				top = si
+			}
+			if top+n > len(all) {
+				top = len(all) - n
+			}
+			if top < 0 {
+				top = 0
+			}
+		}
+		thinkRows = all[top : top+n]
 	}
 
 	head := make([]string, 0, len(sel)+len(thinkRows)+len(work))
