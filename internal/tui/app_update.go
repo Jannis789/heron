@@ -591,8 +591,9 @@ func (m Model) keyCopyChip(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	return m, tea.Cmd(nil), false
 }
 
-// keyBlockAction: Activity-Auswahlmodus: esc gibt den Baum frei und kehrt ins
-// Eingabefeld zurueck (Stufen wie im Chat).
+// keyBlockAction: Activity-Auswahlmodus: esc klappt zunaechst offene Knoten
+// zu (Stufe 1) und verlaesst den Baum erst, wenn er geschlossen ist (Stufe 2:
+// Blur + zurueck ins Eingabefeld).
 // Block-Aktionen am fokussierten Block: t toggelt EIN-TASTIG
 // zwischen Bild und Quelltext (FR-38 — i ist entfallen), +/-
 // klappen den Think-Block. Im Zeichen-Cursor kollabiert esc
@@ -601,6 +602,18 @@ func (m Model) keyCopyChip(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 func (m Model) keyBlockAction(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
 	if m.activity.Focused() {
 		if msg.String() == "esc" {
+			// esc raeumt in STUFEN ab (User-Wunsch 23.11., derselbe
+			// Vertrag wie im Chat): ERST offene Knoten zuklappen — der
+			// Baum bleibt fokussiert, der Tab-Modus wechselt nicht —,
+			// erst wenn der Baum ganz geschlossen ist, verlaesst der
+			// naechste Druck ihn und kehrt ins Eingabefeld.
+			if nl, changed := m.activity.CollapseAll(); changed {
+				m.activity = nl
+				// Zuklappen schrumpft die Baumzeilen: Der Chat bekommt
+				// den Platz sofort zurueck (Relayout-Vertrag wie enter).
+				m.relayout()
+				return m, nil, true
+			}
 			m.activity = m.activity.Blur()
 			return m, m.setInputFocus(true), true
 		}

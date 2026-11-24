@@ -180,6 +180,16 @@ func TestActivitySelectionMode(t *testing.T) {
 	if !r.m.activity.Focused() {
 		t.Fatal("Kette muss zurueck in den Baum fuehren")
 	}
+	// esc in STUFEN (User-Wunsch 23.11.): Execute ist noch aufgeklappt —
+	// der ERSTE Druck klappt nur zu (Baum bleibt selektiert), erst der
+	// zweite gibt den Baum frei und kehrt ins Eingabefeld.
+	r.key("esc")
+	if !r.m.activity.Focused() || r.m.inputFocus {
+		t.Fatal("esc muss zunaechst nur zuklappen, nicht den Baum verlassen")
+	}
+	if v := stripANSI(r.m.activityView()); !strings.Contains(v, "▸ "+iconTool+" Execute (1)") {
+		t.Fatalf("esc muss Execute zuklappen: %q", v)
+	}
 	r.key("esc")
 	if r.m.activity.Focused() || !r.m.inputFocus {
 		t.Fatal("esc muss den Baum freigeben und ins Eingabefeld kehren")

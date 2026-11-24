@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"math"
 	"regexp"
 	"strings"
 
@@ -23,9 +24,19 @@ type BlockList struct {
 	offset      int
 	width       int
 	height      int
-	inline      bool // timg-Modell: kein Viewport-Slice, Terminal scrollt nativ
-	focus       int
-	hoverIdx    int
+	// pctAnchor/offsetApplied sichern die Leseposition als Prozentanteil
+	// über Höhenwechsel hinweg (der Activity-Baum verdrängt den Chat Zeile
+	// für Zeile): SetSize gleicht den Offset nach dem Anker aus und merkt
+	// sich ihn. Verschiebt irgendetwas den Offset DANACH (Taste, Rad,
+	// reveal, ScrollEnd), verfällt der Anker — der nächste Ausgleich misst
+	// frisch vom echten Stand. Ohne den Anker würde jede Höhenänderung den
+	// Prozentwert aus dem gerundeten Offset NEU messen und der Rundungsfehler
+	// kumulierte über einen langen Turn (gemessen: 0.500 → 0.583).
+	pctAnchor     float64
+	offsetApplied int
+	inline        bool // timg-Modell: kein Viewport-Slice, Terminal scrollt nativ
+	focus         int
+	hoverIdx      int
 	// hoverX/hoverY merken die Zelle des letzten Hovers: Innerhalb EINES
 	// Blocks kann der Hover zwischen mehreren Zielen wechseln (Kopfzeile
 	// vs. Footer, [ TEXT ] vs. [ COPY ]) — der Fruehabbruch darf dann nicht
@@ -347,7 +358,39 @@ func (l BlockList) imgRowCap() int {
 
 // SetSize stores the viewport size and lets every widget rebuild its layout
 // cache for the new width (dynamic re-flow on terminal resize).
+//
+// HÖHENÄNDERUNG = Scroll-Erhalt in Prozent (User-Anforderung 2): Der
+// Activity-Baum (thinking/execute/other) verdrängt die normale Response-
+// Ausgabe, sobald der Platz knapp wird — relayout ruft SetSize mit dem
+// kleineren Maß. Dabei wird die Leseposition als ANTEIL des scrollbaren
+// Bereichs mitgenommen (Scrollbar-Modell: 0 = Anfang, 1 = Ende), nicht als
+// absoluter Zeilenoffset: Der alte Offset ließ beim Schrumpfen die neuesten
+// Zeilen unten abgeschnitten (bis der nächste Stream-Chunk nachrollte —
+// während des reinen Denkens blieb das Antwortende unsichtbar) und ließ die
+// Prozentposition beim Wachsen driften. Im Bottom-Follow (Standard nach dem
+// Senden) bleibt das Fenster unten gepinnt — die Antwort wandert nach oben
+// aus dem Blick, statt dass ihr Ende verschwindet.
 func (l BlockList) SetSize(w, h int) BlockList {
+	// Prozentanteil VOR dem Resize sichern — totalLines() steht hier noch
+	// auf altem Stand (alter Width-/Höhen-Cache der Widgets). Der Anker
+	// aus dem letzten Ausgleich gilt weiter, SOLANGE der Offset seither
+	// nicht bewegt wurde; jede fremde Bewegung erzwingt eine frische
+	// Messung vom echten Stand.
+	preserve := false
+	pct := l.pctAnchor
+	if l.height > 0 && h != l.height {
+		if l.offset != l.offsetApplied {
+			if maxOff := l.totalLines() - l.height; maxOff > 0 {
+				pct = float64(l.offset) / float64(maxOff)
+			} else {
+				pct = 0
+			}
+		}
+		if l.follow {
+			pct = 1
+		}
+		preserve = true
+	}
 	l.width, l.height = w, h
 	cap := l.imgRowCap()
 	for i, it := range l.items {
@@ -356,6 +399,14 @@ func (l BlockList) SetSize(w, h int) BlockList {
 			it = hc.SetMaxRows(cap)
 		}
 		l.items[i] = it
+	}
+	if preserve {
+		if maxOff := l.totalLines() - h; maxOff > 0 {
+			l.offset = int(math.Round(pct * float64(maxOff)))
+		} else {
+			l.offset = 0
+		}
+		l.pctAnchor, l.offsetApplied = pct, l.offset
 	}
 	return l.clamp()
 }

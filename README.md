@@ -28,7 +28,11 @@ heron -demo      # ohne goose (TUI-Test)
 ```
 Im Prompt: `/model` · `/provider` (Provider-Wechsel inkl. erfrischter Modellliste,
 FR-45) · `/effort` · `/resume` (frühere Sessions laden, FR-44) · `/new` ·
-`/quit`. Prompts während eines laufenden Turns wandern in eine Queue (ctrl+c bricht den Turn ab und schickt die Queue sofort
+`/quit`. Modell & Effort bleiben gewählt: heron merkt sich die letzte Wahl
+global **und** je goose-Session (`~/.config/heron/state.json`) — neue Sessions
+(`/new`, Neustart) starten immer auf dem letzten Modell/Effort, `/resume`
+holt den Stand der damaligen Session nach; explizite `-model`/`-effort`-Flags
+unterdrücken das Auto-Apply. Prompts während eines laufenden Turns wandern in eine Queue (ctrl+c bricht den Turn ab und schickt die Queue sofort
 raus; 2× ctrl+c beendet heron, FR-46); API-Fehler erscheinen als ⚠-Karte mit `r retry` (FR-33). `acp-probe -list`/`-load <id>` proben das Protokoll gegen
 echtes goose.
 

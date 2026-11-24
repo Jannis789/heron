@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"heron/internal/acp"
+	"heron/internal/prefs"
 	"heron/internal/tui"
 )
 
@@ -26,6 +27,10 @@ type backend struct {
 	// pinned merkt, welche Flags der Nutzer explizit gesetzt hat
 	// (-model/-effort) — deren Auto-Erkennung bleibt dann stumm.
 	pinned map[string]bool
+	// prefs persistiert den zuletzt genutzten Modell/Effort-Stand global
+	// und je Session-ID: neue Sessions starten darauf, /resume holt den
+	// Stand der damaligen Session nach.
+	prefs *prefs.Store
 
 	// sess wird vom Prompt-Goroutine und von Ctrl+C im Event-Loop
 	// beruehrt: jeder Zugriff geht durch sessMu (NFR-2: keine Data Races).
@@ -36,7 +41,7 @@ type backend struct {
 // newBackend verdrahtet die Stream-Events: Alles, was die ACP-Reader-
 // Goroutine meldet, wandert ueber den Stream in die TUI (FR-2).
 func newBackend(gooseBin, wd string, stream *tui.Stream, pinned map[string]bool) *backend {
-	b := &backend{gooseBin: gooseBin, wd: wd, stream: stream, pinned: pinned}
+	b := &backend{gooseBin: gooseBin, wd: wd, stream: stream, pinned: pinned, prefs: prefs.Open()}
 	b.events = &acp.Events{
 		OnChunk:   func(text string) { stream.Chunk(text) },
 		OnThought: func(text string) { stream.Thought(text) },
@@ -88,7 +93,75 @@ func (b *backend) ensureSession() (*acp.Session, error) {
 		return nil, err
 	}
 	b.sess = s
+	b.applyPrefs(s)
 	return b.sess, nil
+}
+
+// applyPrefs spielt den GLOBAL gespeicherten "zuletzt genutzt"-Stand auf
+// eine frische goose-Session (User-Wunsch 2026-11-23: neue Sessions
+// starten immer auf dem letzten Modell/Effort, nicht auf goose-Defaults).
+// Explizite -model/-effort-Flags bleiben vorrangig (pinned) — und ein
+// stiller No-op von goose (FR-45-Nachfass) ist folgenlos: applyOption
+// publiziert nur, was goose wirklich übernommen hat, gespeichert wird
+// hier bewusst nichts (ein abgelehnter Wert darf den letzten Stand nicht
+// überschreiben — die nächste Session probiert ihn erneut).
+func (b *backend) applyPrefs(s *acp.Session) {
+	if b.prefs == nil {
+		return
+	}
+	model, effort := b.prefs.Last()
+	if b.pinned["model"] {
+		model = ""
+	}
+	if b.pinned["effort"] {
+		effort = ""
+	}
+	b.applyOption(s, "model", model)
+	b.applyOption(s, "thinking_effort", effort)
+}
+
+// applySessionPrefs holt den je Session-ID gespeicherten Stand nach einem
+// /resume nach: goose meldet den Stand der geladenen Session zwar in den
+// configOptions, aber nur was es zuverlässig restauriert — weicht der
+// gemerkte Stand ab, setzen wir ihn explizit (pro Session speichern).
+func (b *backend) applySessionPrefs(s *acp.Session) {
+	if b.prefs == nil {
+		return
+	}
+	model, effort := b.prefs.Session(s.SessionID())
+	if b.pinned["model"] {
+		model = ""
+	}
+	if b.pinned["effort"] {
+		effort = ""
+	}
+	b.applyOption(s, "model", model)
+	b.applyOption(s, "thinking_effort", effort)
+}
+
+// applyOption setzt EINE Config-Option, wenn der Zielwert vom gemeldeten
+// Stand abweicht, und publiziert die erfrischten configOptions (Picker und
+// Footer stehen danach nicht auf Altbestand — derselbe Vertrag wie beim
+// manuellen Wechsel über configSet).
+func (b *backend) applyOption(s *acp.Session, id, want string) {
+	if want == "" {
+		return
+	}
+	var cur string
+	switch id {
+	case "model":
+		cur = s.Model()
+	case "thinking_effort":
+		cur = s.Effort()
+	default:
+		return
+	}
+	if cur == want {
+		return
+	}
+	if res, err := s.SetConfigOption(context.Background(), id, want); err == nil {
+		b.publishConfigResult(res)
+	}
 }
 
 // publishModelInfo: The prompt box shows what goose really runs (ACP
@@ -214,6 +287,7 @@ func (b *backend) startResume(id string) error {
 		return err
 	}
 	b.sess = s
+	b.applySessionPrefs(s)
 	b.publishModelInfo(s)
 	return nil
 }
@@ -322,7 +396,10 @@ func (b *backend) cancel() {
 }
 
 // configSet: The model/effort popup changes session config options
-// through the live session — same mutex discipline as send (NFR-2).
+// through the live session — same mutex discipline as send (NFR-2). Ein
+// erfolgreicher Wechsel wird zugleich persistiert (persistConfig): global
+// als "zuletzt genutzt" für alle künftigen Sessions und je Session-ID für
+// ein späteres /resume.
 func (b *backend) configSet(id, value string) error {
 	s := b.session()
 	if s == nil {
@@ -331,13 +408,30 @@ func (b *backend) configSet(id, value string) error {
 	res, err := s.SetConfigOption(context.Background(), id, value)
 	if err == nil {
 		b.publishConfigResult(res)
+		b.persistConfig(s)
 	}
 	return err
 }
 
+// persistConfig merkt den AKTUELLEN Stand nach einem Config-Wechsel —
+// SetConfigOption spiegelt die Antwort bereits in den Session-Cache.
+// Gespeichert wird, was goose wirklich übernommen hat: ein stiller No-op
+// (FR-45-Nachfass) persistiert den alten Stand statt des abgelehnten
+// Wunschs, und ein Provider-Wechsel mit still zurückgesetztem Modell
+// persistiert genau dieses. Auch der Provider selbst fließt in den
+// globalen Last-Stand ein, wenn goose ihn meldet.
+func (b *backend) persistConfig(s *acp.Session) {
+	if b.prefs == nil {
+		return
+	}
+	b.prefs.SetLast(s.Model(), s.Effort())
+	b.prefs.SetSession(s.SessionID(), s.Model(), s.Effort())
+}
+
 // resetSession: /new starts a fresh session: close the old goose
 // subprocess and spawn a new one — the cleanest cut, no shared history
-// state (FR-20).
+// state (FR-20). Modell/Effort übernehmen wir vom gespeicherten letzten
+// Stand: /new bleibt damit auf der Wahl der vorherigen Session.
 func (b *backend) resetSession() error {
 	b.sessMu.Lock()
 	defer b.sessMu.Unlock()
@@ -350,6 +444,7 @@ func (b *backend) resetSession() error {
 		return err
 	}
 	b.sess = s
+	b.applyPrefs(s)
 	b.publishModelInfo(s)
 	b.publishInventory(s)
 	return nil

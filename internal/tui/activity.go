@@ -373,6 +373,35 @@ func (a ActivityTree) ToggleAllTools() ActivityTree {
 // ToggleTools bleibt als Alias fuer den Gesamt-Schalter (Tests/Demo).
 func (a ActivityTree) ToggleTools() ActivityTree { return a.ToggleAllTools() }
 
+// CollapseAll klappt ALLE offenen Knoten zu (Thinking und jedes Tool-Kind)
+// und setzt deren Scrollpositionen zurueck — esc-Stufe 1 im Baum-Fokus
+// (User-Wunsch 23.11.): esc SCHLIESST den Baum erst, bevor der naechste
+// Druck ihn verlaesst und den Tab-Modus wechselt — derselbe Stufen-Vertrag
+// wie im Chat (esc kollabiert erst die Auswahl, dann verlaesst sie den
+// Modus). Meldet changed, ob ueberhaupt etwas offen war.
+func (a ActivityTree) CollapseAll() (ActivityTree, bool) {
+	changed := false
+	if a.expandThinking {
+		a.expandThinking = false
+		if a.sel == nodeThinking {
+			a.selThought = 0
+		}
+		changed = true
+	}
+	if len(a.expandKinds) > 0 {
+		a.expandKinds = nil
+		a.scroll = nil
+		// Cursor auf einem zugeklappten Call: zurueck auf den Kopf —
+		// derselbe Aufräum-Schritt wie in ToggleKind (snap haelt ihn
+		// sichtbar).
+		if a.selCall != "" {
+			a.selCall = ""
+		}
+		changed = true
+	}
+	return a, changed
+}
+
 // expanded meldet, ob der Knoten eines Kinds offen ist.
 func (a ActivityTree) expanded(kind string) bool { return a.expandKinds[kind] }
 
@@ -1199,9 +1228,12 @@ func (a ActivityTree) workHeader() string {
 // headerRow baut eine Hauptknoten-Zeile: Faltmarke in Valida, Label in der
 // Knotenfarbe (Thinking Neon-Pink, Tool Calls Valida). Steht der
 // Auswahlmodus auf diesem Knoten, traegt seine Kopfzeile den Unterstrich —
-// gesetzt auf Marke UND Label, nie ueber die fertige Zeile: deren innere
+// gesetzt NUR auf das Label, nie ueber die fertige Zeile: deren innere
 // Resets wuerden den Unterstrich nach dem ersten Segment abreissen und die
-// Sequenz zeichenweise zerlegen.
+// Sequenz zeichenweise zerlegen. Die Faltmarke bleibt bewusst UNTER-
+// STRICHLOS (User-Report 23.11.): links markiert der Pfeil den Aufklapp-
+// Zustand, der Unterstrich soll erst alles DARAUF FOLGENDE markieren —
+// sonst liest sich der Pfeil als Teil der Auswahl statt als Struktur.
 func (a ActivityTree) headerRow(n activityNode, collapsed bool, label string, count int, labelSt lipgloss.Style) string {
 	mark := "▼"
 	if collapsed {
@@ -1211,12 +1243,10 @@ func (a ActivityTree) headerRow(n activityNode, collapsed bool, label string, co
 	if count >= 0 {
 		txt += " (" + strconv.Itoa(count) + ")"
 	}
-	markSt := a.valida()
 	if n != nodeNone && a.sel == n {
-		markSt = markSt.Underline(true)
 		labelSt = labelSt.Underline(true)
 	}
-	return markSt.Render(mark) + " " + labelSt.Render(txt)
+	return a.valida().Render(mark) + " " + labelSt.Render(txt)
 }
 
 // activityNode benennt die aufklappbaren Hauptknoten des Baums: Thinking
